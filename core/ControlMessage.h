@@ -30,6 +30,7 @@ public:
     encoder << message_piece_header;
     encoder << value;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -48,6 +49,7 @@ public:
     encoder << message_piece_header;
     encoder << value;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -62,6 +64,7 @@ public:
     Encoder encoder(message.data);
     encoder << message_piece_header;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -76,6 +79,7 @@ public:
     Encoder encoder(message.data);
     encoder << message_piece_header;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 };

@@ -89,13 +89,18 @@ public:
           auto partition_id = get_partition_id();
 
           transaction =
-              workload.next_transaction(context, partition_id, storage);
+              workload.next_transaction(context, partition_id, storage, this->id);
           setupHandlers(*transaction);
         }
 
         auto result = transaction->execute(id);
         if (result == TransactionResult::READY_TO_COMMIT) {
+          auto commit_start = std::chrono::steady_clock::now();
           bool commit = protocol.commit(*transaction, messages);
+          auto ltc = std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - commit_start)
+                    .count();
+          commit_latency.add(ltc);
           n_network_size.fetch_add(transaction->network_size);
           if (commit) {
             n_commit.fetch_add(1);
@@ -166,6 +171,9 @@ public:
               << " us (99%). local txn latency: " << local_latency.nth(50)
               << " us (50%) " << local_latency.nth(75) << " us (75%) "
               << local_latency.nth(95) << " us (95%) " << local_latency.nth(99)
+              << " us (99%). txn commit latency: " << commit_latency.nth(50)
+              << " us (50%) " << commit_latency.nth(75) << " us (75%) "
+              << commit_latency.nth(95) << " us (95%) " << commit_latency.nth(99)
               << " us (99%).";
 
     if (id == 0) {
@@ -223,6 +231,7 @@ public:
     std::size_t size = 0;
 
     while (!in_queue.empty()) {
+      size++;
       std::unique_ptr<Message> message(in_queue.front());
       bool ok = in_queue.pop();
       CHECK(ok);
@@ -251,8 +260,7 @@ public:
 
   virtual void setupHandlers(TransactionType &txn) = 0;
 
-protected:
-  void flush_messages() {
+  virtual void flush_messages() {
 
     for (auto i = 0u; i < messages.size(); i++) {
       if (i == coordinator_id) {
@@ -264,8 +272,9 @@ protected:
       }
 
       auto message = messages[i].release();
-
       out_queue.push(message);
+      message->set_put_to_out_queue_time(Time::now());
+
       messages[i] = std::make_unique<Message>();
       init_message(messages[i].get(), i);
     }
@@ -277,9 +286,9 @@ protected:
     message->set_worker_id(id);
   }
 
-protected:
+public:
   DatabaseType &db;
-  const ContextType &context;
+  ContextType context;
   std::atomic<uint32_t> &worker_status;
   std::atomic<uint32_t> &n_complete_workers, &n_started_workers;
   std::unique_ptr<Partitioner> partitioner;
@@ -287,13 +296,13 @@ protected:
   ProtocolType protocol;
   WorkloadType workload;
   std::unique_ptr<Delay> delay;
-  Percentile<int64_t> percentile, dist_latency, local_latency;
+  Percentile<int64_t> percentile, dist_latency, local_latency, commit_latency;
   std::unique_ptr<TransactionType> transaction;
   std::vector<std::unique_ptr<Message>> messages;
   std::vector<
       std::function<void(MessagePiece, Message &, ITable &, TransactionType *)>>
       messageHandlers;
   std::vector<std::size_t> message_stats, message_sizes;
-  LockfreeQueue<Message *> in_queue, out_queue;
+  LockfreeQueue<Message *> in_queue, out_queue, master_unlock_in_queue;
 };
 } // namespace star

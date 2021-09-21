@@ -183,7 +183,7 @@ public:
         // generate transaction
         auto partition_id = random.uniform_dist(0, context.partition_num - 1);
         transactions[i] =
-            workload.next_transaction(context, partition_id, storages[i]);
+            workload.next_transaction(context, partition_id, storages[i], this->id);
         transactions[i]->set_id(i);
         prepare_transaction(*transactions[i]);
       }
@@ -431,7 +431,7 @@ public:
 
 private:
   DatabaseType &db;
-  const ContextType &context;
+  ContextType context;
   std::vector<std::unique_ptr<TransactionType>> &transactions;
   std::vector<StorageType> &storages;
   std::atomic<uint32_t> &lock_manager_status, &worker_status;

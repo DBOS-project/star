@@ -34,6 +34,10 @@ public:
         partition_id(partition_id),
         query(makeNewOrderQuery()(context, partition_id + 1, random)) {}
 
+  virtual const std::vector<int32_t> & get_partitions() override { return query.get_parts(); }
+  
+  bool is_single_partition() override { return query.isRemote() == false; }
+
   virtual ~NewOrder() override = default;
 
   TransactionResult execute(std::size_t worker_id) override {
@@ -285,6 +289,8 @@ public:
         context(context), random(random), storage(storage),
         partition_id(partition_id),
         query(makePaymentQuery()(context, partition_id + 1, random)) {}
+
+  bool is_single_partition() override { return query.isRemote() == false; }
 
   virtual ~Payment() override = default;
 

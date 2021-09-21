@@ -66,13 +66,13 @@ template <> class StarQueryNum<star::ycsb::Context> {
 public:
   static std::size_t get_s_phase_query_num(const star::ycsb::Context &context,
                                            uint32_t batch_size) {
-    return batch_size * (100 - context.crossPartitionProbability) / 100;
+    return batch_size * (100 - context.crossPartitionProbability) / 100.0;
   }
 
   static std::size_t get_c_phase_query_num(const star::ycsb::Context &context,
                                            uint32_t batch_size) {
     return context.coordinator_num * batch_size *
-           context.crossPartitionProbability / 100;
+           context.crossPartitionProbability / 100.0;
   }
 };
 } // namespace star

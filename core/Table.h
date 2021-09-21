@@ -123,4 +123,83 @@ private:
   std::size_t tableID_;
   std::size_t partitionID_;
 };
+template <class KeyType, class ValueType>
+class HStoreTable : public ITable {
+public:
+  using MetaDataType = std::atomic<uint64_t>;
+
+  virtual ~HStoreTable() override = default;
+
+  HStoreTable(std::size_t tableID, std::size_t partitionID)
+      : tableID_(tableID), partitionID_(partitionID) {}
+
+  std::tuple<MetaDataType *, void *> search(const void *key) override {
+    const auto &k = *static_cast<const KeyType *>(key);
+    auto &v = map_[k];
+    return std::make_tuple(nullptr, &(v));
+  }
+
+  void *search_value(const void *key) override {
+    const auto &k = *static_cast<const KeyType *>(key);
+    return &map_[k];
+  }
+
+  MetaDataType &search_metadata(const void *key) override {
+    static MetaDataType v;
+    return v;
+  }
+
+  void insert(const void *key, const void *value) override {
+    const auto &k = *static_cast<const KeyType *>(key);
+    const auto &v = *static_cast<const ValueType *>(value);
+    bool ok = map_.contains(k);
+    DCHECK(ok == false);
+    auto &row = map_[k];
+    row = v;
+  }
+
+  void update(const void *key, const void *value) override {
+    const auto &k = *static_cast<const KeyType *>(key);
+    const auto &v = *static_cast<const ValueType *>(value);
+    auto &row = map_[k];
+    row = v;
+  }
+
+  void deserialize_value(const void *key, StringPiece stringPiece) override {
+
+    std::size_t size = stringPiece.size();
+    const auto &k = *static_cast<const KeyType *>(key);
+    auto &row = map_[k];
+    auto &v = row;
+
+    Decoder dec(stringPiece);
+    dec >> v;
+
+    DCHECK(size - dec.size() == ClassOf<ValueType>::size());
+  }
+
+  void serialize_value(Encoder &enc, const void *value) override {
+
+    std::size_t size = enc.size();
+    const auto &v = *static_cast<const ValueType *>(value);
+    enc << v;
+
+    DCHECK(enc.size() - size == ClassOf<ValueType>::size());
+  }
+
+  std::size_t key_size() override { return sizeof(KeyType); }
+
+  std::size_t value_size() override { return sizeof(ValueType); }
+
+  std::size_t field_size() override { return ClassOf<ValueType>::size(); }
+
+  std::size_t tableID() override { return tableID_; }
+
+  std::size_t partitionID() override { return partitionID_; }
+
+private:
+  UnsafeHashMap<KeyType, ValueType> map_;
+  std::size_t tableID_;
+  std::size_t partitionID_;
+};
 } // namespace star

@@ -78,9 +78,15 @@ public:
 
     for (auto partitionID = 0u; partitionID < partitionNum; partitionID++) {
       auto ycsbTableID = ycsb::tableID;
-      tbl_ycsb_vec.push_back(
+      if (context.protocol != "HStore") {
+        tbl_ycsb_vec.push_back(
           std::make_unique<Table<9973, ycsb::key, ycsb::value>>(ycsbTableID,
                                                                 partitionID));
+      } else {
+        tbl_ycsb_vec.push_back(
+          std::make_unique<HStoreTable<ycsb::key, ycsb::value>>(ycsbTableID,
+                                                                partitionID));
+      }
     }
 
     // there is 1 table in ycsb

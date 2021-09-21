@@ -205,7 +205,7 @@ public:
     StorageType storage;
 
     uint64_t last_seed = 0;
-
+    //LOG(INFO) << "query_num " << query_num << " batch_size " << batch_size;
     for (auto i = 0u; i < query_num; i++) {
 
       bool retry_transaction = false;
@@ -219,7 +219,7 @@ public:
         } else {
           std::size_t partition_id = get_partition_id(status);
           transaction =
-              workload.next_transaction(phase_context, partition_id, storage);
+              workload.next_transaction(phase_context, partition_id, storage, this->id);
           setupHandlers(*transaction, protocol);
         }
 
@@ -251,6 +251,7 @@ public:
         flush_async_messages();
       }
     }
+    //LOG(INFO) << "query_num " << query_num << " Done";
     flush_async_messages();
   }
 
@@ -361,7 +362,7 @@ private:
 
 private:
   DatabaseType &db;
-  const ContextType &context;
+  ContextType context;
   uint32_t &batch_size;
   std::unique_ptr<Partitioner> s_partitioner, c_partitioner;
   RandomType random;

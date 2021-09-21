@@ -18,7 +18,7 @@ DEFINE_bool(sleep_on_retry, true, "sleep when retry aborted transactions");
 DEFINE_int32(batch_size, 100, "star or calvin batch size");
 DEFINE_int32(group_time, 10, "group commit frequency");
 DEFINE_int32(batch_flush, 50, "batch flush");
-DEFINE_int32(sleep_time, 1000, "retry sleep time");
+DEFINE_int32(sleep_time, 100, "retry sleep time");
 DEFINE_string(protocol, "Scar", "transaction protocol");
 DEFINE_string(replica_group, "1,3", "calvin replica group");
 DEFINE_string(lock_manager, "1,1", "calvin lock manager");
@@ -36,8 +36,10 @@ DEFINE_int32(delay, 0, "delay time in us.");
 DEFINE_string(cdf_path, "", "path to cdf");
 DEFINE_string(log_path, "", "path to disk logging.");
 DEFINE_bool(tcp_no_delay, true, "TCP Nagle algorithm, true: disable nagle");
-DEFINE_bool(tcp_quick_ack, false, "TCP quick ack mode, true: enable quick ack");
-DEFINE_bool(cpu_affinity, true, "pinning each thread to a separate core");
+DEFINE_bool(tcp_quick_ack, true, "TCP quick ack mode, true: enable quick ack");
+DEFINE_bool(enable_hstore_master, true, "enable hstore master for lock scheduling");
+DEFINE_bool(cpu_affinity, false, "pinning each thread to a separate core");
+DEFINE_int32(cross_txn_workers, 0, "number of workers generating cross-partition transactions");
 DEFINE_int32(cpu_core_id, 0, "cpu core id");
 
 #define SETUP_CONTEXT(context)                                                 \
@@ -73,5 +75,7 @@ DEFINE_int32(cpu_core_id, 0, "cpu core id");
   context.tcp_no_delay = FLAGS_tcp_no_delay;                                   \
   context.tcp_quick_ack = FLAGS_tcp_quick_ack;                                 \
   context.cpu_affinity = FLAGS_cpu_affinity;                                   \
+  context.enable_hstore_master = FLAGS_enable_hstore_master;                   \
   context.cpu_core_id = FLAGS_cpu_core_id;                                     \
+  context.cross_txn_workers = FLAGS_cross_txn_workers;                         \
   context.set_star_partitioner();

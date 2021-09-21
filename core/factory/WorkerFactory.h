@@ -16,6 +16,9 @@
 #include "protocol/TwoPL/TwoPL.h"
 #include "protocol/TwoPL/TwoPLExecutor.h"
 
+#include "protocol/H-Store/HStore.h"
+#include "protocol/H-Store/HStoreExecutor.h"
+
 #include "core/group_commit/Executor.h"
 #include "core/group_commit/Manager.h"
 #include "protocol/SiloGC/SiloGC.h"
@@ -59,7 +62,7 @@ public:
                  const Context &context, std::atomic<bool> &stop_flag) {
 
     std::unordered_set<std::string> protocols = {"Silo",  "SiloGC",  "Star",
-                                                 "TwoPL", "TwoPLGC", "Calvin"};
+                                                 "TwoPL", "TwoPLGC", "Calvin", "HStore"};
     CHECK(protocols.count(context.protocol) == 1);
 
     std::vector<std::shared_ptr<Worker>> workers;
@@ -151,6 +154,26 @@ public:
       }
 
       workers.push_back(manager);
+    } else if (context.protocol == "HStore") {
+
+      using TransactionType = star::HStoreTransaction;
+      using WorkloadType =
+          typename InferType<Context>::template WorkloadType<TransactionType>;
+
+      auto manager = std::make_shared<Manager>(
+          coordinator_id, context.worker_num, context, stop_flag);
+
+      for (auto i = 0u; i < context.worker_num; i++) {
+        workers.push_back(std::make_shared<HStoreExecutor<WorkloadType>>(
+            coordinator_id, i, db, context, manager->worker_status,
+            manager->n_completed_workers, manager->n_started_workers));
+      }
+      workers.push_back(manager);
+      if (context.coordinator_id == 0 && context.enable_hstore_master) {
+        workers.push_back(std::make_shared<HStoreExecutor<WorkloadType>>(
+            coordinator_id, context.worker_num + 1, db, context, manager->worker_status,
+            manager->n_completed_workers, manager->n_started_workers));
+      }
     } else if (context.protocol == "Calvin") {
 
       using TransactionType = star::CalvinTransaction;

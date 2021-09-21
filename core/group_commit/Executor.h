@@ -113,7 +113,7 @@ public:
             auto partition_id = get_partition_id();
 
             transaction =
-                workload.next_transaction(context, partition_id, storage);
+                workload.next_transaction(context, partition_id, storage, this->id);
             setupHandlers(*transaction);
           }
 
@@ -317,7 +317,7 @@ protected:
 
 protected:
   DatabaseType &db;
-  const ContextType &context;
+  ContextType context;
   std::atomic<uint32_t> &worker_status;
   std::atomic<uint32_t> &n_complete_workers, &n_started_workers;
   std::unique_ptr<Partitioner> partitioner;

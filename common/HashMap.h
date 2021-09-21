@@ -113,4 +113,44 @@ private:
   SpinLock locks_[N];
 };
 
+template <class KeyType, class ValueType> class UnsafeHashMap {
+public:
+  bool remove(const KeyType &key) {
+    auto it = map.find(key);
+    if (it == map.end()) {
+      return false;
+    } else {
+      map.erase(it);
+      return true;
+    }
+  }
+
+  bool contains(const KeyType &key) {
+    return map.find(key) != map.end();
+  }
+
+  bool insert(const KeyType &key, const ValueType &value) {
+    if (map.find(key) != map.end()) {
+      return false;
+    }
+    map[key] = value;
+    return true;
+  }
+
+  ValueType &operator[](const KeyType &key) {
+    return map[key];
+  }
+
+  std::size_t size() {
+    return map.size();
+  }
+
+  void clear() {
+    map.clear();
+  }
+
+private:
+  std::unordered_map<KeyType, ValueType> map;
+};
+
 } // namespace star

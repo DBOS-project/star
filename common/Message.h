@@ -6,8 +6,10 @@
 
 #include "StringPiece.h"
 #include "common/MessagePiece.h"
+#include "common/Time.h"
 #include <chrono>
 #include <string>
+#include <functional>
 
 namespace star {
 
@@ -88,12 +90,20 @@ public:
 
   using header_type = uint64_t;
   using deadbeef_type = uint32_t;
+  using source_cluster_worker_id_type = int32_t;
   using iterator_type = Iterator;
 
   Message() : data(get_prefix_size(), 0) {
     set_message_length(data.size());
     get_deadbeef_ref() = DEADBEEF;
+    gen_time = Time::now();
   }
+
+  void set_gen_time(uint64_t ts) { gen_time = ts; }
+  uint64_t get_gen_time() { return gen_time; }
+  void set_put_to_out_queue_time(uint64_t t) { put_to_out_queue_time = t; }
+  uint64_t get_put_to_out_queue_time() { return put_to_out_queue_time; }
+  std::chrono::steady_clock::time_point get_flush_time() { return time; }
 
   void resize(std::size_t size) {
     DCHECK(data.size() == get_prefix_size());
@@ -173,6 +183,13 @@ public:
     return (get_header_ref() >> MESSAGE_LENGTH_OFFSET) & MESSAGE_LENGTH_MASK;
   }
 
+  int32_t get_source_cluster_worker_id() {
+    return *reinterpret_cast<uint32_t *>(&data[0] + sizeof(header_type) + sizeof(deadbeef_type));
+  }
+
+  void set_source_cluster_worker_id(int32_t id) {
+    *reinterpret_cast<uint32_t *>(&data[0] + sizeof(header_type) + sizeof(deadbeef_type)) = id;
+  }
 private:
   void clear_source_node_id() {
     get_header_ref() &= ~(SOURCE_NODE_ID_MASK << SOURCE_NODE_ID_OFFSET);
@@ -216,10 +233,11 @@ private:
 public:
   std::string data;
   std::chrono::steady_clock::time_point time;
-
+  uint64_t gen_time;
+  uint64_t put_to_out_queue_time;
 public:
   static constexpr uint32_t get_prefix_size() {
-    return sizeof(header_type) + sizeof(deadbeef_type);
+    return sizeof(header_type) + sizeof(deadbeef_type) + sizeof(source_cluster_worker_id_type);
   }
 
   static uint64_t get_message_length(uint64_t v) {

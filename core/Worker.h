@@ -31,6 +31,14 @@ public:
 
   virtual void onExit() {}
 
+  virtual void start_hstore_master() {}
+
+  virtual void push_master_special_message(Message *message) { }
+
+  virtual Message *pop_master_message() { return nullptr; }
+
+  virtual void push_master_message(Message *message) { }
+
   virtual void push_message(Message *message) = 0;
 
   virtual Message *pop_message() = 0;

@@ -18,7 +18,7 @@ public:
   StarManager(std::size_t coordinator_id, std::size_t id,
               const Context &context, std::atomic<bool> &stopFlag)
       : base_type(coordinator_id, id, context, stopFlag) {
-
+    LOG(INFO) << "batch_size " << context.batch_size;
     batch_size = context.batch_size;
   }
 

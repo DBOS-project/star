@@ -28,9 +28,9 @@ public:
       : coordinator_id(coordinator_id), db(db), random(random),
         partitioner(partitioner) {}
 
-  std::unique_ptr<TransactionType> next_transaction(const ContextType &context,
+  std::unique_ptr<TransactionType> next_transaction(ContextType &context,
                                                     std::size_t partition_id,
-                                                    StorageType &storage) {
+                                                    StorageType &storage, std::size_t worker_id) {
 
     int x = random.uniform_dist(1, 100);
     std::unique_ptr<TransactionType> p;

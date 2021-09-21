@@ -56,6 +56,7 @@ public:
   }
 
   void disable_nagle_algorithm() {
+    LOG(INFO) << "Disabling nagle";
     DCHECK(fd >= 0);
     // disable Nagle's algorithm
     int flag = 1;
@@ -204,7 +205,10 @@ public:
 private:
   void bind(const char *addr, int port) {
     sockaddr_in serv = Socket::make_endpoint(addr, port);
-    int ret = ::bind(fd, (sockaddr *)(&serv), sizeof(serv));
+    int enable = 1;
+    int ret = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int));
+    CHECK(ret >= 0);
+    ret = ::bind(fd, (sockaddr *)(&serv), sizeof(serv));
     CHECK(ret >= 0);
   }
 

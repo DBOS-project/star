@@ -56,7 +56,7 @@ public:
   int readWriteRatio = 0;            // out of 100
   int readOnlyTransaction = 0;       //  out of 100
   int crossPartitionProbability = 0; // out of 100
-
+  int crossPartitionPartNum = 2;
   std::size_t keysPerTransaction = 10;
   std::size_t keysPerPartition = 200000;
 

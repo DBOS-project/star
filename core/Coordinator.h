@@ -16,6 +16,8 @@
 #include <glog/logging.h>
 #include <thread>
 #include <vector>
+#include <chrono>
+#include <memory>
 
 namespace star {
 
@@ -43,12 +45,79 @@ public:
 
   ~Coordinator() = default;
 
+  void sendMessage(Message *message, Socket & dest_socket) {
+    auto dest_node_id = message->get_dest_node_id();
+    DCHECK(message->get_message_length() == message->data.length());
+
+    dest_socket.write_n_bytes(message->get_raw_ptr(),
+                                        message->get_message_length());
+  }
+
+  void measure_round_trip() {
+    auto init_message = [](Message *message, std::size_t coordinator_id,
+                           std::size_t dest_node_id) {
+      message->set_source_node_id(coordinator_id);
+      message->set_dest_node_id(dest_node_id);
+      message->set_worker_id(0);
+    };
+    Percentile<uint64_t> round_trip_latency;
+    if (id == 0) {
+      int i = 0;
+      BufferedReader reader(inSockets[0][1]);
+      while (i < 1000) {
+        ++i;
+        auto r_start = std::chrono::steady_clock::now();
+        //LOG(INFO) << "Message " << i << " to";
+        auto message = std::make_unique<Message>();
+        init_message(message.get(), 0, 1);
+        ControlMessageFactory::new_statistics_message(*message, 0);
+        sendMessage(message.get(), outSockets[0][1]);
+        while (true) {
+          auto message = reader.next_message();
+          if (message == nullptr) {
+            std::this_thread::yield();
+            continue;
+          }
+          break;
+        }
+        auto ltc = std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - r_start)
+                    .count();
+        round_trip_latency.add(ltc);
+        //LOG(INFO) << "Message " << i << " back";
+      }
+      LOG(INFO) << "round_trip_latency " << round_trip_latency.nth(50) << " (50th) "
+                << round_trip_latency.nth(75) << " (75th) "
+                << round_trip_latency.nth(95) << " (95th) "
+                << round_trip_latency.nth(95) << " (99th) ";
+    } else if (id == 1) {
+      BufferedReader reader(inSockets[0][0]);
+      int i = 0;
+      while (i < 1000) {
+        while (true) {
+          auto message = reader.next_message();
+          if (message == nullptr) {
+            std::this_thread::yield();
+            continue;
+          }
+          break;
+        }
+        auto message = std::make_unique<Message>();
+        init_message(message.get(), 1, 0);
+        ControlMessageFactory::new_statistics_message(*message, 0);
+        sendMessage(message.get(), outSockets[0][0]);
+        ++i;
+      }
+    }
+    //exit(0);
+  }
   void start() {
 
     // init dispatcher vector
     iDispatchers.resize(context.io_thread_num);
     oDispatchers.resize(context.io_thread_num);
 
+    //measure_round_trip();
     // start dispatcher threads
 
     std::vector<std::thread> iDispatcherThreads, oDispatcherThreads;
@@ -57,10 +126,10 @@ public:
 
       iDispatchers[i] = std::make_unique<IncomingDispatcher>(
           id, i, context.io_thread_num, inSockets[i], workers, in_queue,
-          ioStopFlag);
+          out_to_in_queue, ioStopFlag, context);
       oDispatchers[i] = std::make_unique<OutgoingDispatcher>(
           id, i, context.io_thread_num, outSockets[i], workers, out_queue,
-          ioStopFlag);
+          out_to_in_queue, ioStopFlag, context);
 
       iDispatcherThreads.emplace_back(&IncomingDispatcher::start,
                                       iDispatchers[i].get());
@@ -77,14 +146,19 @@ public:
     LOG(INFO) << "Coordinator starts to run " << workers.size() << " workers.";
 
     for (auto i = 0u; i < workers.size(); i++) {
-      threads.emplace_back(&Worker::start, workers[i].get());
+      if (context.enable_hstore_master && context.protocol == "HStore" && id == 0 && i == context.worker_num + 1) {
+        threads.emplace_back(&Worker::start_hstore_master, workers[i].get());
+      } else {
+        threads.emplace_back(&Worker::start, workers[i].get());
+      }
+
       if (context.cpu_affinity) {
         pin_thread_to_core(threads[i]);
       }
     }
 
     // run timeToRun seconds
-    auto timeToRun = 25, warmup = 10, cooldown = 5;
+    auto timeToRun = 30, warmup = 10, cooldown = 5;
     auto startTime = std::chrono::steady_clock::now();
 
     uint64_t total_commit = 0, total_abort_no_retry = 0, total_abort_lock = 0,
@@ -187,6 +261,7 @@ public:
       oDispatcherThreads[i].join();
     }
 
+    //measure_round_trip();
     close_sockets();
 
     LOG(INFO) << "Coordinator exits.";
@@ -214,7 +289,8 @@ public:
       listenerThreads.emplace_back(
           [id = this->id, peers = this->peers, &inSockets = this->inSockets[i],
            &getAddressPort,
-           tcp_quick_ack = context.tcp_quick_ack](std::size_t listener_id) {
+           tcp_quick_ack = context.tcp_quick_ack,
+           tcp_no_delay = context.tcp_no_delay](std::size_t listener_id) {
             std::vector<std::string> addressPort = getAddressPort(peers[id]);
 
             Listener l(addressPort[0].c_str(),
@@ -229,6 +305,9 @@ public:
               std::size_t c_id;
               socket.read_number(c_id);
               // set quick ack flag
+              if (tcp_no_delay) {
+                socket.disable_nagle_algorithm();
+              }
               socket.set_quick_ack_flag(tcp_quick_ack);
               inSockets[c_id] = std::move(socket);
             }
@@ -347,6 +426,7 @@ private:
   void pin_thread_to_core(std::thread &t) {
 #ifndef __APPLE__
     static std::size_t core_id = context.cpu_core_id;
+    LOG(INFO) << "pinned thread to core " << core_id;
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(core_id++, &cpuset);
@@ -366,12 +446,15 @@ private:
 
   std::size_t id, coordinator_num;
   const std::vector<std::string> &peers;
-  const Context &context;
+  Context context;
   std::vector<std::vector<Socket>> inSockets, outSockets;
   std::atomic<bool> workerStopFlag, ioStopFlag;
   std::vector<std::shared_ptr<Worker>> workers;
   std::vector<std::unique_ptr<IncomingDispatcher>> iDispatchers;
   std::vector<std::unique_ptr<OutgoingDispatcher>> oDispatchers;
   LockfreeQueue<Message *> in_queue, out_queue;
+  // Side channel that connects oDispatcher to iDispatcher.
+  // Useful for transfering messages between partitions for HStore.
+  LockfreeQueue<Message *> out_to_in_queue; 
 };
 } // namespace star

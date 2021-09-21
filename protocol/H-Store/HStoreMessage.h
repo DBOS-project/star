@@ -1,5 +1,5 @@
 //
-// Created by Yi Lu on 9/11/18.
+// Created by Xinjing on 9/12/21.
 //
 
 #pragma once
@@ -10,13 +10,13 @@
 #include "core/ControlMessage.h"
 #include "core/Table.h"
 
-#include "protocol/TwoPL/TwoPLHelper.h"
+#include "protocol/H-Store/HStoreHelper.h"
 #include "protocol/TwoPL/TwoPLRWKey.h"
-#include "protocol/TwoPL/TwoPLTransaction.h"
+#include "protocol/H-Store/HStoreTransaction.h"
 
 namespace star {
 
-enum class TwoPLMessage {
+enum class HStoreMessage {
   READ_LOCK_REQUEST = static_cast<int>(ControlMessage::NFIELDS),
   READ_LOCK_RESPONSE,
   WRITE_LOCK_REQUEST,
@@ -30,12 +30,141 @@ enum class TwoPLMessage {
   RELEASE_READ_LOCK_RESPONSE,
   RELEASE_WRITE_LOCK_REQUEST,
   RELEASE_WRITE_LOCK_RESPONSE,
+  MASTER_LOCK_PARTITION_REQUEST,
+  MASTER_LOCK_PARTITION_RESPONSE,
+  MASTER_UNLOCK_PARTITION_REQUEST,
+  MASTER_UNLOCK_PARTITION_RESPONSE,
+  ACQUIRE_PARTITION_LOCK_REQUEST,
+  ACQUIRE_PARTITION_LOCK_RESPONSE,
+  WRITE_BACK_REQUEST,
+  WRITE_BACK_RESPONSE,
+  RELEASE_PARTITION_LOCK_REQUEST,
+  RELEASE_PARTITION_LOCK_RESPONSE,
   NFIELDS
 };
 
-class TwoPLMessageFactory {
+class HStoreMessageFactory {
 
 public:
+
+  static std::size_t new_master_lock_partition_message(Message &message, ITable & table, uint32_t this_worker_id, const std::vector<int32_t> & parts) {
+
+    /*
+     * The structure of a partition lock request: (remote_worker_id, # parts, part1, part2...)
+     */
+
+    auto message_size =
+        MessagePiece::get_header_size() + sizeof(uint32_t) + + sizeof(uint32_t) + sizeof(int32_t) * parts.size();
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(HStoreMessage::MASTER_LOCK_PARTITION_REQUEST), message_size,
+        table.tableID(), table.partitionID());
+
+    Encoder encoder(message.data);
+    encoder << message_piece_header;
+    encoder << this_worker_id;
+    encoder << (uint32_t)parts.size();
+    // std::string dbg_str;
+    // for (size_t i = 0; i < parts.size(); ++i) {
+    //   dbg_str += std::to_string(parts[i]) + ",";
+    // }
+    // LOG(INFO) << "new_master_lock_partition_message cluster_worker " << this_worker_id
+    //           << " need locks on partitions: " << dbg_str;
+    for (size_t i = 0; i < parts.size(); ++i) {
+      encoder << parts[i];
+    }
+    message.flush();
+    return message_size;
+  }
+
+  static std::size_t new_master_unlock_partition_message(Message &message, ITable & table, uint32_t this_worker_id) {
+
+    /*
+     * The structure of a partition lock request: (remote_worker_id)
+     */
+
+    auto message_size =
+        MessagePiece::get_header_size() + sizeof(uint32_t);
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(HStoreMessage::MASTER_UNLOCK_PARTITION_REQUEST), message_size,
+        table.tableID(), table.partitionID());
+
+    Encoder encoder(message.data);
+    encoder << message_piece_header;
+    encoder << this_worker_id;
+    message.flush();
+    return message_size;
+  }
+
+  static std::size_t new_release_partition_lock_message(Message &message, ITable & table, uint32_t this_worker_id, bool sync) {
+
+    /*
+     * The structure of a partition lock request: (remote_worker_id)
+     */
+
+    auto message_size =
+        MessagePiece::get_header_size() + sizeof(uint32_t) + sizeof(bool);
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(HStoreMessage::RELEASE_PARTITION_LOCK_REQUEST), message_size,
+        table.tableID(), table.partitionID());
+
+    Encoder encoder(message.data);
+    encoder << message_piece_header;
+    encoder << this_worker_id;
+    encoder << sync;
+    message.flush();
+    return message_size;
+  }
+
+  static std::size_t new_acquire_partition_lock_message(Message &message, ITable &table,
+                                           const void *key,
+                                           uint32_t key_offset,
+                                           uint32_t this_worker_id) {
+
+    /*
+     * The structure of a partition lock request: (primary key, key offset, remote_worker_id)
+     */
+
+    auto key_size = table.key_size();
+
+    auto message_size =
+        MessagePiece::get_header_size() + key_size + sizeof(key_offset) + sizeof(uint32_t);
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(HStoreMessage::ACQUIRE_PARTITION_LOCK_REQUEST), message_size,
+        table.tableID(), table.partitionID());
+
+    Encoder encoder(message.data);
+    encoder << message_piece_header;
+    encoder.write_n_bytes(key, key_size);
+    encoder << key_offset;
+    encoder << this_worker_id;
+    message.flush();
+    return message_size;
+  }
+
+  static std::size_t new_write_back_message(Message &message, ITable &table,
+                                       const void *key, const void *value, uint32_t this_worker_id) {
+
+    /*
+     * The structure of a write request: (request_remote_worker, nowrite, primary key, field value)
+     */
+
+    auto key_size = table.key_size();
+    auto field_size = table.field_size();
+
+    auto message_size = MessagePiece::get_header_size() + sizeof(uint32_t) + key_size + field_size;;
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(HStoreMessage::WRITE_BACK_REQUEST), message_size,
+        table.tableID(), table.partitionID());
+
+    Encoder encoder(message.data);
+    encoder << message_piece_header;
+    encoder << this_worker_id;
+    encoder.write_n_bytes(key, key_size);
+    table.serialize_value(encoder, value);
+    message.flush();
+    return message_size;
+  }
+
   static std::size_t new_read_lock_message(Message &message, ITable &table,
                                            const void *key,
                                            uint32_t key_offset) {
@@ -49,7 +178,7 @@ public:
     auto message_size =
         MessagePiece::get_header_size() + key_size + sizeof(key_offset);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(TwoPLMessage::READ_LOCK_REQUEST), message_size,
+        static_cast<uint32_t>(HStoreMessage::READ_LOCK_REQUEST), message_size,
         table.tableID(), table.partitionID());
 
     Encoder encoder(message.data);
@@ -57,7 +186,6 @@ public:
     encoder.write_n_bytes(key, key_size);
     encoder << key_offset;
     message.flush();
-    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -74,7 +202,7 @@ public:
     auto message_size =
         MessagePiece::get_header_size() + key_size + sizeof(key_offset);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(TwoPLMessage::WRITE_LOCK_REQUEST), message_size,
+        static_cast<uint32_t>(HStoreMessage::WRITE_LOCK_REQUEST), message_size,
         table.tableID(), table.partitionID());
 
     Encoder encoder(message.data);
@@ -82,7 +210,6 @@ public:
     encoder.write_n_bytes(key, key_size);
     encoder << key_offset;
     message.flush();
-    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -97,7 +224,7 @@ public:
     auto message_size =
         MessagePiece::get_header_size() + key_size + sizeof(bool);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(TwoPLMessage::ABORT_REQUEST), message_size,
+        static_cast<uint32_t>(HStoreMessage::ABORT_REQUEST), message_size,
         table.tableID(), table.partitionID());
 
     Encoder encoder(message.data);
@@ -105,7 +232,6 @@ public:
     encoder.write_n_bytes(key, key_size);
     encoder << write_lock;
     message.flush();
-    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -121,7 +247,7 @@ public:
 
     auto message_size = MessagePiece::get_header_size() + key_size + field_size;
     auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(TwoPLMessage::WRITE_REQUEST), message_size,
+        static_cast<uint32_t>(HStoreMessage::WRITE_REQUEST), message_size,
         table.tableID(), table.partitionID());
 
     Encoder encoder(message.data);
@@ -129,7 +255,6 @@ public:
     encoder.write_n_bytes(key, key_size);
     table.serialize_value(encoder, value);
     message.flush();
-    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -146,9 +271,9 @@ public:
     auto field_size = table.field_size();
 
     auto message_size = MessagePiece::get_header_size() + key_size +
-                        field_size + sizeof(commit_tid) + sizeof(uint64_t);
+                        field_size + sizeof(commit_tid);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(TwoPLMessage::REPLICATION_REQUEST), message_size,
+        static_cast<uint32_t>(HStoreMessage::REPLICATION_REQUEST), message_size,
         table.tableID(), table.partitionID());
 
     Encoder encoder(message.data);
@@ -156,10 +281,7 @@ public:
     encoder.write_n_bytes(key, key_size);
     table.serialize_value(encoder, value);
     encoder << commit_tid;
-    uint64_t current_ts_micro = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count();
-    encoder << current_ts_micro;
     message.flush();
-    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -174,14 +296,13 @@ public:
 
     auto message_size = MessagePiece::get_header_size() + key_size;
     auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(TwoPLMessage::RELEASE_READ_LOCK_REQUEST),
+        static_cast<uint32_t>(HStoreMessage::RELEASE_READ_LOCK_REQUEST),
         message_size, table.tableID(), table.partitionID());
 
     Encoder encoder(message.data);
     encoder << message_piece_header;
     encoder.write_n_bytes(key, key_size);
     message.flush();
-    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -199,7 +320,7 @@ public:
     auto message_size =
         MessagePiece::get_header_size() + key_size + sizeof(commit_tid);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(TwoPLMessage::RELEASE_WRITE_LOCK_REQUEST),
+        static_cast<uint32_t>(HStoreMessage::RELEASE_WRITE_LOCK_REQUEST),
         message_size, table.tableID(), table.partitionID());
 
     Encoder encoder(message.data);
@@ -207,20 +328,19 @@ public:
     encoder.write_n_bytes(key, key_size);
     encoder << commit_tid;
     message.flush();
-    message.set_gen_time(Time::now());
     return message_size;
   }
 };
 
-class TwoPLMessageHandler {
-  using Transaction = TwoPLTransaction;
+class HStoreMessageHandler {
+  using Transaction = HStoreTransaction;
 
 public:
   static void read_lock_request_handler(MessagePiece inputPiece,
                                         Message &responseMessage, ITable &table,
                                         Transaction *txn) {
     DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(TwoPLMessage::READ_LOCK_REQUEST));
+           static_cast<uint32_t>(HStoreMessage::READ_LOCK_REQUEST));
     auto table_id = inputPiece.get_table_id();
     auto partition_id = inputPiece.get_partition_id();
     DCHECK(table_id == table.tableID());
@@ -262,7 +382,7 @@ public:
     }
 
     auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(TwoPLMessage::READ_LOCK_RESPONSE), message_size,
+        static_cast<uint32_t>(HStoreMessage::READ_LOCK_RESPONSE), message_size,
         table_id, partition_id);
 
     star::Encoder encoder(responseMessage.data);
@@ -280,14 +400,13 @@ public:
     }
 
     responseMessage.flush();
-    responseMessage.set_gen_time(Time::now());
   }
 
   static void read_lock_response_handler(MessagePiece inputPiece,
                                          Message &responseMessage,
                                          ITable &table, Transaction *txn) {
     DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(TwoPLMessage::READ_LOCK_RESPONSE));
+           static_cast<uint32_t>(HStoreMessage::READ_LOCK_RESPONSE));
     auto table_id = inputPiece.get_table_id();
     auto partition_id = inputPiece.get_partition_id();
     DCHECK(table_id == table.tableID());
@@ -335,7 +454,7 @@ public:
                                          ITable &table, Transaction *txn) {
 
     DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(TwoPLMessage::WRITE_LOCK_REQUEST));
+           static_cast<uint32_t>(HStoreMessage::WRITE_LOCK_REQUEST));
     auto table_id = inputPiece.get_table_id();
     auto partition_id = inputPiece.get_partition_id();
     DCHECK(table_id == table.tableID());
@@ -377,7 +496,7 @@ public:
     }
 
     auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(TwoPLMessage::WRITE_LOCK_RESPONSE), message_size,
+        static_cast<uint32_t>(HStoreMessage::WRITE_LOCK_RESPONSE), message_size,
         table_id, partition_id);
 
     star::Encoder encoder(responseMessage.data);
@@ -393,7 +512,7 @@ public:
       TwoPLHelper::read(row, dest, value_size);
       encoder << latest_tid;
     }
-    responseMessage.set_gen_time(Time::now());
+
     responseMessage.flush();
   }
 
@@ -401,7 +520,7 @@ public:
                                           Message &responseMessage,
                                           ITable &table, Transaction *txn) {
     DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(TwoPLMessage::WRITE_LOCK_RESPONSE));
+           static_cast<uint32_t>(HStoreMessage::WRITE_LOCK_RESPONSE));
     auto table_id = inputPiece.get_table_id();
     auto partition_id = inputPiece.get_partition_id();
     DCHECK(table_id == table.tableID());
@@ -449,7 +568,7 @@ public:
                                     Transaction *txn) {
 
     DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(TwoPLMessage::ABORT_REQUEST));
+           static_cast<uint32_t>(HStoreMessage::ABORT_REQUEST));
     auto table_id = inputPiece.get_table_id();
     auto partition_id = inputPiece.get_partition_id();
     DCHECK(table_id == table.tableID());
@@ -487,7 +606,7 @@ public:
                                     Transaction *txn) {
 
     DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(TwoPLMessage::WRITE_REQUEST));
+           static_cast<uint32_t>(HStoreMessage::WRITE_REQUEST));
     auto table_id = inputPiece.get_table_id();
     auto partition_id = inputPiece.get_partition_id();
     DCHECK(table_id == table.tableID());
@@ -513,13 +632,12 @@ public:
     // prepare response message header
     auto message_size = MessagePiece::get_header_size();
     auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(TwoPLMessage::WRITE_RESPONSE), message_size,
+        static_cast<uint32_t>(HStoreMessage::WRITE_RESPONSE), message_size,
         table_id, partition_id);
 
     star::Encoder encoder(responseMessage.data);
     encoder << message_piece_header;
     responseMessage.flush();
-    responseMessage.set_gen_time(Time::now());
   }
 
   static void write_response_handler(MessagePiece inputPiece,
@@ -527,7 +645,7 @@ public:
                                      Transaction *txn) {
 
     DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(TwoPLMessage::WRITE_RESPONSE));
+           static_cast<uint32_t>(HStoreMessage::WRITE_RESPONSE));
     auto table_id = inputPiece.get_table_id();
     auto partition_id = inputPiece.get_partition_id();
     DCHECK(table_id == table.tableID());
@@ -546,7 +664,7 @@ public:
                                           Message &responseMessage,
                                           ITable &table, Transaction *txn) {
     DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(TwoPLMessage::REPLICATION_REQUEST));
+           static_cast<uint32_t>(HStoreMessage::REPLICATION_REQUEST));
     auto table_id = inputPiece.get_table_id();
     auto partition_id = inputPiece.get_partition_id();
     DCHECK(table_id == table.tableID());
@@ -554,7 +672,6 @@ public:
     auto key_size = table.key_size();
     auto field_size = table.field_size();
 
-    uint64_t current_ts_micro1 = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count();
     /*
      * The structure of a replication request: (primary key, field value, commit
      * tid) The structure of a replication response: ()
@@ -567,9 +684,9 @@ public:
     auto valueStringPiece = stringPiece;
     stringPiece.remove_prefix(field_size);
 
-    uint64_t commit_tid, req_timestamp;
+    uint64_t commit_tid;
     Decoder dec(stringPiece);
-    dec >> commit_tid >> req_timestamp;
+    dec >> commit_tid;
 
     DCHECK(dec.size() == 0);
 
@@ -581,16 +698,14 @@ public:
     TwoPLHelper::write_lock_release(tid, commit_tid);
 
     // prepare response message header
-    auto message_size = MessagePiece::get_header_size() + sizeof(uint64_t) * 3;
+    auto message_size = MessagePiece::get_header_size();
     auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(TwoPLMessage::REPLICATION_RESPONSE), message_size,
+        static_cast<uint32_t>(HStoreMessage::REPLICATION_RESPONSE), message_size,
         table_id, partition_id);
 
-    uint64_t current_ts_micro2 = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count();
     star::Encoder encoder(responseMessage.data);
-    encoder << message_piece_header << req_timestamp << current_ts_micro1 << current_ts_micro2;
+    encoder << message_piece_header;
     responseMessage.flush();
-    responseMessage.set_gen_time(Time::now());
   }
 
   static void replication_response_handler(MessagePiece inputPiece,
@@ -598,24 +713,13 @@ public:
                                            ITable &table, Transaction *txn) {
 
     DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(TwoPLMessage::REPLICATION_RESPONSE));
+           static_cast<uint32_t>(HStoreMessage::REPLICATION_RESPONSE));
     auto table_id = inputPiece.get_table_id();
     auto partition_id = inputPiece.get_partition_id();
     DCHECK(table_id == table.tableID());
     DCHECK(partition_id == table.partitionID());
     auto key_size = table.key_size();
 
-
-    auto stringPiece = inputPiece.toStringPiece();
-    uint64_t req_ts, req_recv_ts, response_generate_ts;
-    Decoder dec(stringPiece);
-    dec >> req_ts >> req_recv_ts >> response_generate_ts;
-    uint64_t current_ts_micro = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count();
-
-    // LOG(INFO) << "Txn " << (uint64_t)txn << " req_ts " << req_ts
-    //           << " resp_recv_ts " << req_recv_ts
-    //           << " resp_gen_ts " << response_generate_ts
-    //           << " cur_ts " << current_ts_micro;
     /*
      * The structure of a replication response: ()
      */
@@ -630,7 +734,7 @@ public:
                                                 Transaction *txn) {
 
     DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(TwoPLMessage::RELEASE_READ_LOCK_REQUEST));
+           static_cast<uint32_t>(HStoreMessage::RELEASE_READ_LOCK_REQUEST));
     auto table_id = inputPiece.get_table_id();
     auto partition_id = inputPiece.get_partition_id();
     DCHECK(table_id == table.tableID());
@@ -657,13 +761,12 @@ public:
     // prepare response message header
     auto message_size = MessagePiece::get_header_size();
     auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(TwoPLMessage::RELEASE_READ_LOCK_RESPONSE),
+        static_cast<uint32_t>(HStoreMessage::RELEASE_READ_LOCK_RESPONSE),
         message_size, table_id, partition_id);
 
     star::Encoder encoder(responseMessage.data);
     encoder << message_piece_header;
     responseMessage.flush();
-    responseMessage.set_gen_time(Time::now());
   }
 
   static void release_read_lock_response_handler(MessagePiece inputPiece,
@@ -672,7 +775,7 @@ public:
                                                  Transaction *txn) {
 
     DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(TwoPLMessage::RELEASE_READ_LOCK_RESPONSE));
+           static_cast<uint32_t>(HStoreMessage::RELEASE_READ_LOCK_RESPONSE));
     auto table_id = inputPiece.get_table_id();
     auto partition_id = inputPiece.get_partition_id();
     DCHECK(table_id == table.tableID());
@@ -693,7 +796,7 @@ public:
                                                  Transaction *txn) {
 
     DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(TwoPLMessage::RELEASE_WRITE_LOCK_REQUEST));
+           static_cast<uint32_t>(HStoreMessage::RELEASE_WRITE_LOCK_REQUEST));
     auto table_id = inputPiece.get_table_id();
     auto partition_id = inputPiece.get_partition_id();
     DCHECK(table_id == table.tableID());
@@ -722,13 +825,12 @@ public:
     // prepare response message header
     auto message_size = MessagePiece::get_header_size();
     auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(TwoPLMessage::RELEASE_WRITE_LOCK_RESPONSE),
+        static_cast<uint32_t>(HStoreMessage::RELEASE_WRITE_LOCK_RESPONSE),
         message_size, table_id, partition_id);
 
     star::Encoder encoder(responseMessage.data);
     encoder << message_piece_header;
     responseMessage.flush();
-    responseMessage.set_gen_time(Time::now());
   }
 
   static void release_write_lock_response_handler(MessagePiece inputPiece,
@@ -736,7 +838,7 @@ public:
                                                   ITable &table,
                                                   Transaction *txn) {
     DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(TwoPLMessage::RELEASE_WRITE_LOCK_RESPONSE));
+           static_cast<uint32_t>(HStoreMessage::RELEASE_WRITE_LOCK_RESPONSE));
     auto table_id = inputPiece.get_table_id();
     auto partition_id = inputPiece.get_partition_id();
     DCHECK(table_id == table.tableID());

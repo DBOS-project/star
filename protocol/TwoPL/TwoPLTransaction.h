@@ -29,6 +29,10 @@ public:
 
   virtual ~TwoPLTransaction() = default;
 
+  virtual bool is_single_partition() = 0;
+  
+  virtual const std::vector<int32_t> & get_partitions() { static std::vector<int32_t>  v; return v; }
+
   void reset() {
     pendingResponses = 0;
     network_size = 0;

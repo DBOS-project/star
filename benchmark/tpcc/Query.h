@@ -8,6 +8,7 @@
 #include "benchmark/tpcc/Random.h"
 #include "common/FixedString.h"
 #include <string>
+#include <vector>
 
 namespace star {
 namespace tpcc {
@@ -22,6 +23,20 @@ struct NewOrderQuery {
     return false;
   }
 
+  const std::vector<int32_t> & get_parts() {
+    if (parts.empty() == false)
+      return parts;
+    for (auto i = 0; i < O_OL_CNT; i++) {
+      if (INFO[i].OL_SUPPLY_W_ID != W_ID) {
+        parts.push_back(INFO[i].OL_SUPPLY_W_ID);
+        parts.push_back(W_ID);
+        return parts;
+      }
+    }
+    parts = {W_ID};
+    return parts;
+  }
+
   int32_t W_ID;
   int32_t D_ID;
   int32_t C_ID;
@@ -34,6 +49,7 @@ struct NewOrderQuery {
   };
 
   NewOrderQueryInfo INFO[15];
+  std::vector<int> parts;
 };
 
 class makeNewOrderQuery {
@@ -111,6 +127,7 @@ public:
 };
 
 struct PaymentQuery {
+  bool isRemote() { return W_ID != C_W_ID; }
   int32_t W_ID;
   int32_t D_ID;
   int32_t C_ID;

@@ -28,6 +28,10 @@ public:
 
   virtual ~CalvinTransaction() = default;
 
+  virtual bool is_single_partition() = 0;
+  
+  virtual const std::vector<int32_t> & get_partitions() { static std::vector<int32_t>  v; return v; }
+
   void reset() {
     abort_lock = false;
     abort_no_retry = false;
