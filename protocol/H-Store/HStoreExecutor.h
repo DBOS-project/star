@@ -903,7 +903,7 @@ public:
       flush_hstore_master_messages();
     }
 
-    while (!this->hstore_master_in_queue.empty()) {
+    while (!this->hstore_master_in_queue.empty() && status != ExecutorStatus::STOP && status != ExecutorStatus::CLEANUP) {
       ++size;
       Message * message = this->hstore_master_in_queue.front();
       bool should_pop = true;
