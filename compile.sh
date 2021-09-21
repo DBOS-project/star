@@ -1,5 +1,5 @@
 #!/bin/bash
 
 rm -rf CMakeFiles/ CMakeCache.txt 
-cmake
+cmake .
 make -j 4
