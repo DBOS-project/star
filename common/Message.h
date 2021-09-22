@@ -99,6 +99,8 @@ public:
     gen_time = Time::now();
   }
 
+  void set_put_to_in_queue_time(uint64_t ts) { put_to_in_queue_time = ts; }
+  uint64_t get_put_to_in_queue_time() { return put_to_in_queue_time; }
   void set_gen_time(uint64_t ts) { gen_time = ts; }
   uint64_t get_gen_time() { return gen_time; }
   void set_put_to_out_queue_time(uint64_t t) { put_to_out_queue_time = t; }
@@ -234,6 +236,7 @@ public:
   std::string data;
   std::chrono::steady_clock::time_point time;
   uint64_t gen_time;
+  uint64_t put_to_in_queue_time;
   uint64_t put_to_out_queue_time;
 public:
   static constexpr uint32_t get_prefix_size() {

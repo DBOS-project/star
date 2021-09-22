@@ -25,6 +25,8 @@ private:
   std::vector<bool> parts_touched;
   std::vector<int> parts_touched_tables;
   Percentile<uint64_t> txn_try_times;
+  Percentile<uint64_t> hstore_master_queuing_time;
+  Percentile<uint64_t> avg_num_concurrent_mp;
 
   uint64_t worker_commit = 0;
 public:
@@ -675,11 +677,13 @@ public:
   
   virtual void push_master_special_message(Message *message) override { 
     //LOG(INFO) << "special message for hstore master";
+    message->set_put_to_in_queue_time(Time::now());
     this->hstore_master_in_queue2.push(message);
   }
 
   virtual void push_master_message(Message *message) override { 
     //LOG(INFO) << "message for hstore master";
+    message->set_put_to_in_queue_time(Time::now());
     this->hstore_master_in_queue.push(message); 
   }
 
@@ -872,6 +876,22 @@ public:
     //  << " pending responses " << txn->pendingResponses;
   }
 
+  int get_concurrent_mp_num() {
+    std::vector<bool> parts(this->context.partition_num, false);
+    for (size_t i = 0; i < this->context.partition_num; ++i) {
+      if (master_partition_owned_by[i] != -1) {
+        parts[master_partition_owned_by[i]] = 1;
+      }
+    }
+    int cnt = 0;
+    for (size_t i = 0; i < this->context.partition_num; ++i) {
+      if (parts[i]) {
+        cnt++;
+      }
+    }
+    return cnt;
+  }
+
   std::size_t process_hstore_master_requests() {
     std::size_t size = 0;
     int times = 0;
@@ -920,7 +940,6 @@ public:
             should_pop = false;
             break;
           }
-            
         } else {
           CHECK(false);
         }
@@ -932,6 +951,7 @@ public:
           break;
       }
       bool ok = hstore_master_in_queue.pop();
+      hstore_master_queuing_time.add((Time::now() - message->get_put_to_in_queue_time()) / 1000);
       CHECK(ok);
       std::unique_ptr<Message> mptr(message);
 
@@ -951,12 +971,32 @@ public:
     }
     this->n_started_workers.fetch_add(1);
 
+    int cnt = 0;
+    uint64_t last_time_check = Time::now();
     do {
       process_hstore_master_requests();
       status = static_cast<ExecutorStatus>(this->worker_status.load());
+      if (++cnt == 100) {
+        if (Time::now() - last_time_check >= 1000000) { // sample at every 10ms
+          avg_num_concurrent_mp.add(get_concurrent_mp_num());
+          last_time_check = Time::now();
+        }
+        cnt = 0;
+      }
     } while (status != ExecutorStatus::STOP);
 
     this->n_complete_workers.fetch_add(1);
+
+    LOG(INFO) << "HStore master message_queuing time: "
+              << hstore_master_queuing_time.nth(50) << " us(50th) "
+              << hstore_master_queuing_time.nth(75) << " us(75th) "
+              << hstore_master_queuing_time.nth(95) << " us(95th) "
+              << hstore_master_queuing_time.nth(99) << " us(99th) "
+              << " MP concurrency: "
+              << avg_num_concurrent_mp.nth(50) << " (50th) "
+              << avg_num_concurrent_mp.nth(75) << " (75th) "
+              << avg_num_concurrent_mp.nth(95) << " (95th) "
+              << avg_num_concurrent_mp.nth(99) << " (99th) ";
 
     // once all workers are stop, we need to process the replication
     // requests
