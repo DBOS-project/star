@@ -27,6 +27,7 @@ private:
   Percentile<uint64_t> txn_try_times;
   Percentile<uint64_t> hstore_master_queuing_time;
   Percentile<uint64_t> avg_num_concurrent_mp;
+  Percentile<uint64_t> avg_mp_queue_depth;
 
   uint64_t worker_commit = 0;
 public:
@@ -892,6 +893,8 @@ public:
     return cnt;
   }
 
+  std::vector<Message*> master_lock_request_messages;
+
   std::size_t process_hstore_master_requests() {
     std::size_t size = 0;
     int times = 0;
@@ -922,40 +925,52 @@ public:
       size += message->get_message_count();
       flush_hstore_master_messages();
     }
+
     ExecutorStatus status;
-    while (!this->hstore_master_in_queue.empty() && (status = static_cast<ExecutorStatus>(this->worker_status.load())) != ExecutorStatus::STOP && status != ExecutorStatus::CLEANUP) {
-      ++size;
-      Message * message = this->hstore_master_in_queue.front();
-      bool should_pop = true;
-      for (auto it = message->begin(); it != message->end(); it++) {
+    // while ((!this->hstore_master_in_queue.empty() || !master_lock_request_messages.empty() ) 
+    // && (status = static_cast<ExecutorStatus>(this->worker_status.load())) != ExecutorStatus::STOP && status != ExecutorStatus::CLEANUP) {
+    //   ++size;
+      while (!this->hstore_master_in_queue.empty()) {
+        Message * message = this->hstore_master_in_queue.front();
+        bool ok = hstore_master_in_queue.pop();
+        CHECK(ok);
+        master_lock_request_messages.push_back(message);
+      }
 
-        MessagePiece messagePiece = *it;
-        auto type = messagePiece.get_message_type();
+      std::vector<Message*> tmp_master_lock_request_messages;
 
-        DCHECK(message->get_source_cluster_worker_id() < (int32_t)this->context.partition_num);
-        if (type == (int)HStoreMessage::MASTER_LOCK_PARTITION_REQUEST) {
-          bool success = master_lock_partitions_request_handler(messagePiece,
-                                                *hstore_master_partition_messages[message->get_source_cluster_worker_id()]);
-          if (success == false) {
-            should_pop = false;
-            break;
+      for (size_t i = 0; i < master_lock_request_messages.size(); ++i) {
+        Message * message = master_lock_request_messages[i];
+        bool success = false;
+        int msg_cnt = message->get_message_count();
+        CHECK(msg_cnt == 1);
+        for (auto it = message->begin(); it != message->end(); it++) {
+
+          MessagePiece messagePiece = *it;
+          auto type = messagePiece.get_message_type();
+
+          DCHECK(message->get_source_cluster_worker_id() < (int32_t)this->context.partition_num);
+          if (type == (int)HStoreMessage::MASTER_LOCK_PARTITION_REQUEST) {
+            success = master_lock_partitions_request_handler(messagePiece,
+                                                  *hstore_master_partition_messages[message->get_source_cluster_worker_id()]);
+            if (success == false) {
+              // Wait until the next round.
+              tmp_master_lock_request_messages.push_back(message);
+            } else {
+              hstore_master_queuing_time.add((Time::now() - message->get_put_to_in_queue_time()) / 1000);
+              size += message->get_message_count();
+            }
+          } else {
+            CHECK(false);
           }
-        } else {
-          CHECK(false);
+        }
+        if (success) {
+          flush_hstore_master_messages();
+          std::unique_ptr<Message> rel(message);
         }
       }
-
-      flush_hstore_master_messages();
-      size += message->get_message_count();
-      if (should_pop == false) {
-          break;
-      }
-      bool ok = hstore_master_in_queue.pop();
-      hstore_master_queuing_time.add((Time::now() - message->get_put_to_in_queue_time()) / 1000);
-      CHECK(ok);
-      std::unique_ptr<Message> mptr(message);
-
-    }
+      master_lock_request_messages = tmp_master_lock_request_messages;
+    //}
     return size;
   }
 
@@ -980,6 +995,7 @@ public:
         if (Time::now() - last_time_check >= 1000000) { // sample at every 10ms
           avg_num_concurrent_mp.add(get_concurrent_mp_num());
           last_time_check = Time::now();
+          avg_mp_queue_depth.add(hstore_master_in_queue.read_available());
         }
         cnt = 0;
       }
@@ -996,7 +1012,13 @@ public:
               << avg_num_concurrent_mp.nth(50) << " (50th) "
               << avg_num_concurrent_mp.nth(75) << " (75th) "
               << avg_num_concurrent_mp.nth(95) << " (95th) "
-              << avg_num_concurrent_mp.nth(99) << " (99th) ";
+              << avg_num_concurrent_mp.nth(99) << " (99th) "
+              << " MP queue depth: "
+              << avg_mp_queue_depth.nth(50) << " (50th) "
+              << avg_mp_queue_depth.nth(75) << " (75th) "
+              << avg_mp_queue_depth.nth(95) << " (95th) "
+              << avg_mp_queue_depth.nth(99) << " (99th) "
+              ;
 
     // once all workers are stop, we need to process the replication
     // requests
