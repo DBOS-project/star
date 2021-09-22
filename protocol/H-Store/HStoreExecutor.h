@@ -1084,6 +1084,7 @@ public:
     int cnt = 0;
     int try_times = 0;
     worker_commit = 0;
+    auto startTime = std::chrono::steady_clock::now();
     do {
       process_request();
       if (owned_partition_locked_by == -1) {
@@ -1130,7 +1131,7 @@ public:
               retry_transaction = false;
               auto latency =
                   std::chrono::duration_cast<std::chrono::microseconds>(
-                      std::chrono::steady_clock::now() - this->transaction->startTime)
+                      std::chrono::steady_clock::now() - startTime)
                       .count();
               this->percentile.add(latency);
               if (this->transaction->distributed_transaction) {
@@ -1138,6 +1139,7 @@ public:
               } else {
                 this->local_latency.add(latency);
               }
+              startTime = std::chrono::steady_clock::now();
             } else {
               if (this->transaction->abort_lock) {
                 this->n_abort_lock.fetch_add(1);
