@@ -365,9 +365,9 @@ public:
       //  LOG(INFO) << "Partition " << partition_id << " was failed to be locked by cluster worker " << request_remote_worker_id 
       //            << " already locked by " << owned_partition_locked_by[partition_id];
     }
-    if (this->context.enable_hstore_master) {
-      DCHECK(success);
-    }
+    // if (this->context.enable_hstore_master) {
+    //   DCHECK(success);
+    // }
     // prepare response message header
     auto message_size =
         MessagePiece::get_header_size() + sizeof(bool) + sizeof(key_offset);
@@ -903,8 +903,8 @@ public:
     
     DCHECK(success);
 
-    txn->pendingResponses--;
-    txn->network_size += inputPiece.get_message_length();
+    //txn->pendingResponses--;
+    //txn->network_size += inputPiece.get_message_length();
     //LOG(INFO) << "master_unlock_partitions_response_handler for worker " << this_cluster_worker_id
     //  << " remote partitions locked " << success 
     //  << " pending responses " << txn->pendingResponses;
@@ -1093,9 +1093,9 @@ public:
     cluster_worker_messages[0]->set_worker_id(this->context.worker_num + 2);
     txn.network_size += MessageFactoryType::new_master_unlock_partition_message(
         *cluster_worker_messages[0], *table, this_cluster_worker_id);
-    txn.pendingResponses++;
+    //txn.pendingResponses++;
     //LOG(INFO) << "release_master_partitions_lock wait, cluster worker " << this_cluster_worker_id ;
-    sync_messages(txn, true);
+    sync_messages(txn, false);
     //LOG(INFO) << "release_master_partitions_lock done, cluster worker"  << this_cluster_worker_id ;
   }
 
