@@ -95,11 +95,16 @@ public:
         }
       } while (retry);
     }
-    if ((int)N > context.crossPartitionPartNum) {
-      query.parts = crossParts;
+    if (query.cross_partition == false) {
+      query.parts.push_back(partitionID);
     } else {
-      query.parts = std::vector<int32_t>(crossParts.begin(), crossParts.begin() + N);
+      if ((int)N > context.crossPartitionPartNum) {
+       query.parts = crossParts;
+      } else {
+        query.parts = std::vector<int32_t>(crossParts.begin(), crossParts.begin() + N);
+      }
     }
+    
     return query;
   }
 };

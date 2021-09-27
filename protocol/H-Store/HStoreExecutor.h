@@ -63,7 +63,7 @@ public:
       DCHECK(this->context.partition_num % this->context.coordinator_num == 0);
       DCHECK(this->context.partition_num % this->context.worker_num == 0);
       if (worker_id > context.worker_num) {
-        LOG(INFO) << "HStore Master Executor " << worker_id;
+        //LOG(INFO) << "HStore Master Executor " << worker_id;
         this_cluster_worker_id = 0;
         hstore_master = true;
       } else {
@@ -79,8 +79,8 @@ public:
         }
         DCHECK(managed_partitions.empty() == false);
         managed_partitions_str.pop_back(); // Remove last ,
-        LOG(INFO) << "Cluster worker id " << this_cluster_worker_id << " node worker id "<< worker_id
-                  << " partitions managed [" << managed_partitions_str << "]";
+        //LOG(INFO) << "Cluster worker id " << this_cluster_worker_id << " node worker id "<< worker_id
+                  //<< " partitions managed [" << managed_partitions_str << "]";
       }
 
       owned_partition_locked_by.resize(this->context.partition_num, -1);
@@ -127,20 +127,29 @@ public:
         int partitionId = i;
         auto owner_cluster_worker = partition_owner_cluster_worker(partitionId);
         if (owner_cluster_worker == this_cluster_worker_id) {
-          if (owned_partition_locked_by[partitionId] == this_cluster_worker_id)
+          if (owned_partition_locked_by[partitionId] == this_cluster_worker_id) {
+            //LOG(INFO) << "Abort release lock partition " << partitionId << " by cluster worker" << this_cluster_worker_id;
             owned_partition_locked_by[partitionId] = -1; // unlock partitions
+          }
         } else {
           // send messages to other partitions to abort and unlock partitions
           // No need to wait for the response.
-            auto tableId = parts_touched_tables[i];
-            auto table = this->db.find_table(tableId, partitionId);
-            txn.network_size += MessageFactoryType::new_release_partition_lock_message(
-                *messages[owner_cluster_worker], *table, this_cluster_worker_id, false);
+          txn.pendingResponses++;
+          auto tableId = parts_touched_tables[i];
+          auto table = this->db.find_table(tableId, partitionId);
+          txn.network_size += MessageFactoryType::new_release_partition_lock_message(
+              *messages[owner_cluster_worker], *table, this_cluster_worker_id, true);
         }
       }
-      sync_messages(txn, false);
+      sync_messages(txn, true);
+    } else {
+      DCHECK(txn.pendingResponses == 0);
+      DCHECK(txn.get_partitions().size() == 1);
+      auto partitionId = txn.get_partitions()[0];
+      DCHECK(owned_partition_locked_by[partitionId] == this_cluster_worker_id);
+      //LOG(INFO) << "Abort release lock partition " << partitionId << " by cluster worker" << this_cluster_worker_id;
+      owned_partition_locked_by[partitionId] = -1;
     }
-    
   }
 
   bool commit(TransactionType &txn,
@@ -232,6 +241,7 @@ public:
         int partitionId = i;
         auto owner_cluster_worker = partition_owner_cluster_worker(partitionId);
         if (owner_cluster_worker == this_cluster_worker_id) {
+          //LOG(INFO) << "Commit release lock partition " << partitionId << " by cluster worker" << this_cluster_worker_id;
           owned_partition_locked_by[partitionId] = -1; // unlock partitions
         } else {
             txn.pendingResponses++;
@@ -243,8 +253,15 @@ public:
             //LOG(INFO) << "Partition worker " << this_cluster_worker_id << " issueed lock release request on partition " << partitionId;
         }
       }
+      sync_messages(txn);
+    } else {
+      DCHECK(txn.pendingResponses == 0);
+      DCHECK(txn.get_partitions().size() == 1);
+      auto partitionId = txn.get_partitions()[0];
+      DCHECK(owned_partition_locked_by[partitionId] == this_cluster_worker_id);
+      //LOG(INFO) << "Commit release lock partition " << partitionId << " by cluster worker" << this_cluster_worker_id;
+      owned_partition_locked_by[partitionId] = -1;
     }
-    sync_messages(txn);
   }
 
   void release_lock(TransactionType &txn, uint64_t commit_tid,
@@ -265,7 +282,9 @@ public:
     if (wait_response) {
       //LOG(INFO) << "Waiting for " << txn.pendingResponses << " responses";
       while (txn.pendingResponses > 0) {
-        txn.remote_request_handler();
+        if (txn.remote_request_handler() ){
+          txn.message_flusher();
+        }
       }
     }
   }
@@ -278,10 +297,8 @@ public:
                      uint32_t key_offset, const void *key, void *value,
                      bool local_index_read, bool write_lock, bool &success,
                      bool &remote) {
-      if (txn.is_single_partition() == false) {
-        this->parts_touched[partition_id] = true;
-        this->parts_touched_tables[partition_id] = table_id;
-      }
+      this->parts_touched[partition_id] = true;
+      this->parts_touched_tables[partition_id] = table_id;
       int owner_cluster_worker = partition_owner_cluster_worker(partition_id);
       if ((int)owner_cluster_worker == this_cluster_worker_id) {
         remote = false;
@@ -289,6 +306,8 @@ public:
           success = false;
           return;
         }
+        //if (owned_partition_locked_by[partition_id] == -1)
+          //LOG(INFO) << "Tranasction from worker " << this_cluster_worker_id << " locked partition " << partition_id;
         owned_partition_locked_by[partition_id] = this_cluster_worker_id;
 
         success = true;
@@ -308,7 +327,7 @@ public:
 
         remote = true;
 
-        //LOG(INFO) << "Locking partition " << partition_id << " by cluster worker" << this_cluster_worker_id; 
+        // LOG(INFO) << "Requesting locking partition " << partition_id << " by cluster worker" << this_cluster_worker_id << " on owner_cluster_worker " << owner_cluster_worker; 
         txn.network_size += MessageFactoryType::new_acquire_partition_lock_message(
               *(cluster_worker_messages[owner_cluster_worker]), *table, key, key_offset, this_cluster_worker_id);
         txn.distributed_transaction = true;
@@ -356,7 +375,7 @@ public:
     DCHECK(dec.size() == 0);
     bool success = false;
     if (owned_partition_locked_by[partition_id] == -1 || owned_partition_locked_by[partition_id] == (int)request_remote_worker_id) {
-      // lock it;
+      //lock it;
       // if (owned_partition_locked_by[partition_id] == -1)
       //   LOG(INFO) << "Partition " << partition_id << " locked by remote cluster worker " << request_remote_worker_id << " by this_cluster_worker_id " << this_cluster_worker_id;
       owned_partition_locked_by[partition_id] = request_remote_worker_id;
@@ -575,7 +594,7 @@ public:
       success = false;
     } else {
       // if (owned_partition_locked_by[partition_id] != -1)
-      //   LOG(INFO) << "Partition " << this_cluster_worker_id << " unlocked by cluster worker" << request_remote_worker;
+      //   LOG(INFO) << "Partition " << partition_id << " unlocked by cluster worker" << request_remote_worker << " by this_cluster_worker_id " << this_cluster_worker_id;
       owned_partition_locked_by[partition_id] = -1;
       success = true;
     }
@@ -617,7 +636,6 @@ public:
     Decoder dec(stringPiece);
     dec >> success;
     
-    DCHECK(success);
     if (success) {
       DCHECK(inputPiece.get_message_length() ==
              MessagePiece::get_header_size() + sizeof(success));
@@ -1117,92 +1135,98 @@ public:
     int cnt = 0;
     
     worker_commit = 0;
+    int try_times = 0;
     auto startTime = std::chrono::steady_clock::now();
+    bool retry_transaction = false;
+    int partition_id = managed_partitions[this->random.next() % managed_partitions.size()];
     do {
       process_request();
-      if (!this->partitioner->is_backup()) {
-        int partition_id = managed_partitions[this->random.next() % managed_partitions.size()];
-        if (owned_partition_locked_by[partition_id] == -1) {
-          // backup node stands by for replication
-          last_seed = this->random.get_seed();
-          bool retry_transaction = false;
-          int try_times = 0;
-          do {
-            ++try_times;
-            if (retry_transaction) {
-              this->transaction->reset();
-            } else {
-              DCHECK((int)partition_owner_cluster_worker(partition_id) == this_cluster_worker_id);
-              DCHECK(owned_partition_locked_by[partition_id] == -1);
-              this->transaction =
-                  this->workload.next_transaction(this->context, partition_id, storage, this->id);
-              setupHandlers(*this->transaction);
-              if (this->transaction->is_single_partition()) {
-                //LOG(INFO) << "Local txn";
-                // This executor owns this partition for now.
-                owned_partition_locked_by[partition_id] = this_cluster_worker_id;
-              } else {
-                //LOG(INFO) << "Dist txn";
-                std::fill(parts_touched.begin(), parts_touched.end(), false);
-                if (this->context.enable_hstore_master) {
-                  obtain_master_partitions_lock(*this->transaction);
-                }
-              }
+      partition_id = retry_transaction ? partition_id: managed_partitions[this->random.next() % managed_partitions.size()];
+      if (!this->partitioner->is_backup() && owned_partition_locked_by[partition_id] == -1) {
+        // backup node stands by for replication
+        last_seed = this->random.get_seed();
+        ++try_times;
+        if (retry_transaction) {
+          this->transaction->reset();
+        } else {
+          DCHECK((int)partition_owner_cluster_worker(partition_id) == this_cluster_worker_id);
+          DCHECK(owned_partition_locked_by[partition_id] == -1);
+          this->transaction =
+              this->workload.next_transaction(this->context, partition_id, storage, this->id);
+          setupHandlers(*this->transaction);
+          if (this->transaction->is_single_partition()) {
+            //LOG(INFO) << "Local txn";
+            // This executor owns this partition for now.
+            ////LOG(INFO) << "Local tranasction from worker " << this_cluster_worker_id << " locked partition " << partition_id;
+            owned_partition_locked_by[partition_id] = this_cluster_worker_id;
+          } else {
+            ////LOG(INFO) << "Dist txn";
+            std::fill(parts_touched.begin(), parts_touched.end(), false);
+            if (this->context.enable_hstore_master) {
+              obtain_master_partitions_lock(*this->transaction);
             }
+          }
+        }
 
-            auto result = this->transaction->execute(this->id);
+        auto result = this->transaction->execute(this->id);
 
-            if (result == TransactionResult::READY_TO_COMMIT) {
-              bool commit = this->commit(*this->transaction, cluster_worker_messages);
-              //LOG(INFO) << "Txn Execution result " << (int)result << " commit " << commit;
-              this->n_network_size.fetch_add(this->transaction->network_size);
-              if (commit) {
-                ++worker_commit;
-                this->txn_try_times.add(try_times);
-                this->n_commit.fetch_add(1);
-                if (this->transaction->si_in_serializable) {
-                  this->n_si_in_serializable.fetch_add(1);
-                }
-                retry_transaction = false;
-                auto latency =
-                    std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::steady_clock::now() - startTime)
-                        .count();
-                this->percentile.add(latency);
-                if (this->transaction->distributed_transaction) {
-                  this->dist_latency.add(latency);
-                } else {
-                  this->local_latency.add(latency);
-                }
-                startTime = std::chrono::steady_clock::now();
-              } else {
-                if (this->transaction->abort_lock) {
-                  this->n_abort_lock.fetch_add(1);
-                } else {
-                  DCHECK(this->transaction->abort_read_validation);
-                  this->n_abort_read_validation.fetch_add(1);
-                }
-                if (this->context.sleep_on_retry) {
-                  std::this_thread::sleep_for(std::chrono::microseconds(
-                      this->random.uniform_dist(0, this->context.sleep_time)));
-                }
-                this->random.set_seed(last_seed);
-                retry_transaction = true;
-              }
-            } else {
-              //LOG(INFO) << "Txn Execution result " << (int)result << " abort ";
-              this->abort(*this->transaction, cluster_worker_messages);
-              this->n_abort_no_retry.fetch_add(1);
-            }
-            if (this->transaction->is_single_partition()) {
-              // Unlock this partition
-              owned_partition_locked_by[partition_id] = -1;
-            } else {
+        if (result == TransactionResult::READY_TO_COMMIT) {
+          bool commit = this->commit(*this->transaction, cluster_worker_messages);
+          ////LOG(INFO) << "Txn Execution result " << (int)result << " commit " << commit;
+          this->n_network_size.fetch_add(this->transaction->network_size);
+          if (commit) {
+            if (!this->transaction->is_single_partition()) {
               if (this->context.enable_hstore_master) {
                 release_master_partitions_lock(*this->transaction);
               }
             }
-          } while (retry_transaction == true);
+            ++worker_commit;
+            this->txn_try_times.add(try_times);
+            try_times = 0;
+            this->n_commit.fetch_add(1);
+            if (this->transaction->si_in_serializable) {
+              this->n_si_in_serializable.fetch_add(1);
+            }
+            retry_transaction = false;
+            auto latency =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - startTime)
+                    .count();
+            this->percentile.add(latency);
+            if (this->transaction->distributed_transaction) {
+              this->dist_latency.add(latency);
+            } else {
+              this->local_latency.add(latency);
+            }
+            startTime = std::chrono::steady_clock::now();
+          } else {
+            if (this->transaction->abort_lock) {
+              this->n_abort_lock.fetch_add(1);
+            } else {
+              DCHECK(this->transaction->abort_read_validation);
+              this->n_abort_read_validation.fetch_add(1);
+            }
+            if (this->context.sleep_on_retry) {
+              //std::this_thread::sleep_for(std::chrono::microseconds(
+              //    this->random.uniform_dist(0, this->context.sleep_time)));
+            }
+            this->random.set_seed(last_seed);
+            retry_transaction = true;
+          }
+        } else {
+          ////LOG(INFO) << "Txn Execution result " << (int)result << " abort ";
+          this->abort(*this->transaction, cluster_worker_messages);
+          this->n_abort_no_retry.fetch_add(1);
+          if (!this->transaction->is_single_partition()) {
+            if (this->context.enable_hstore_master) {
+              release_master_partitions_lock(*this->transaction);
+            }
+          }
+          retry_transaction = false;
+        }
+        if (this->transaction->is_single_partition()) {
+          // Make sure it is unlocked.
+          DCHECK(owned_partition_locked_by[partition_id] == -1);
         }
       }
       
@@ -1222,7 +1246,7 @@ public:
     process_request();
     this->n_complete_workers.fetch_add(1);
 
-    LOG(INFO) << "Executor " << this->id << " exits.";
+    //LOG(INFO) << "Executor " << this->id << " exits.";
   }
 
   void onExit() override {
