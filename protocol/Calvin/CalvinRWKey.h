@@ -103,7 +103,7 @@ public:
   // partition id
 
   void set_partition_id(uint32_t partition_id) {
-    DCHECK(partition_id < (1 << 8));
+    DCHECK(partition_id < (1ULL << 32));
     clear_partition_id();
     bitvec |= partition_id << PARTITION_ID_OFFSET;
   }
