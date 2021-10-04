@@ -137,48 +137,113 @@ public:
 
     for (auto partitionID = 0u; partitionID < partitionNum; partitionID++) {
       auto warehouseTableID = warehouse::tableID;
-      tbl_warehouse_vec.push_back(
+      if (context.protocol != "HStore") {
+        tbl_warehouse_vec.push_back(
           std::make_unique<Table<997, warehouse::key, warehouse::value>>(
               warehouseTableID, partitionID));
+      } else {
+        tbl_warehouse_vec.push_back(
+          std::make_unique<HStoreTable<warehouse::key, warehouse::value>>(
+              warehouseTableID, partitionID));
+      }
+      
       auto districtTableID = district::tableID;
-      tbl_district_vec.push_back(
+      if (context.protocol != "HStore") {
+        tbl_district_vec.push_back(
           std::make_unique<Table<997, district::key, district::value>>(
               districtTableID, partitionID));
+      } else {
+        tbl_district_vec.push_back(
+          std::make_unique<HStoreTable<district::key, district::value>>(
+              districtTableID, partitionID));
+      }
+
       auto customerTableID = customer::tableID;
-      tbl_customer_vec.push_back(
-          std::make_unique<Table<997, customer::key, customer::value>>(
-              customerTableID, partitionID));
+      if (context.protocol != "HStore") {
+        tbl_customer_vec.push_back(
+            std::make_unique<Table<997, customer::key, customer::value>>(
+                customerTableID, partitionID));
+      } else {
+        tbl_customer_vec.push_back(
+            std::make_unique<HStoreTable<customer::key, customer::value>>(
+                customerTableID, partitionID));
+      }
+
       auto customerNameIdxTableID = customer_name_idx::tableID;
-      tbl_customer_name_idx_vec.push_back(
+      if (context.protocol != "HStore") {
+        tbl_customer_name_idx_vec.push_back(
           std::make_unique<
               Table<997, customer_name_idx::key, customer_name_idx::value>>(
               customerNameIdxTableID, partitionID));
+      } else {
+        tbl_customer_name_idx_vec.push_back(
+          std::make_unique<
+              HStoreTable<customer_name_idx::key, customer_name_idx::value>>(
+              customerNameIdxTableID, partitionID));
+      }
+
       auto historyTableID = history::tableID;
-      tbl_history_vec.push_back(
+      if (context.protocol != "HStore") {
+        tbl_history_vec.push_back(
           std::make_unique<Table<997, history::key, history::value>>(
               historyTableID, partitionID));
+      } else {
+        tbl_history_vec.push_back(
+          std::make_unique<HStoreTable<history::key, history::value>>(
+              historyTableID, partitionID));
+      }
+
       auto newOrderTableID = new_order::tableID;
-      tbl_new_order_vec.push_back(
+      if (context.protocol != "HStore") {
+        tbl_new_order_vec.push_back(
           std::make_unique<Table<997, new_order::key, new_order::value>>(
               newOrderTableID, partitionID));
-      auto orderTableID = order::tableID;
-      tbl_order_vec.push_back(
-          std::make_unique<Table<997, order::key, order::value>>(
+      } else {
+        tbl_new_order_vec.push_back(
+          std::make_unique<HStoreTable<new_order::key, new_order::value>>(
+              newOrderTableID, partitionID));
+      }
 
+      auto orderTableID = order::tableID;
+      if (context.protocol != "HStore") {
+        tbl_order_vec.push_back(
+          std::make_unique<Table<997, order::key, order::value>>(
               orderTableID, partitionID));
+      } else {
+        tbl_order_vec.push_back(
+          std::make_unique<HStoreTable<order::key, order::value>>(
+              orderTableID, partitionID));
+      }
       auto orderLineTableID = order_line::tableID;
-      tbl_order_line_vec.push_back(
+      if (context.protocol != "HStore") {
+        tbl_order_line_vec.push_back(
           std::make_unique<Table<997, order_line::key, order_line::value>>(
               orderLineTableID, partitionID));
-      auto stockTableID = stock::tableID;
-      tbl_stock_vec.push_back(
+      } else {
+        tbl_order_line_vec.push_back(
+          std::make_unique<HStoreTable<order_line::key, order_line::value>>(
+              orderLineTableID, partitionID));
+      }
 
+      auto stockTableID = stock::tableID;
+      if (context.protocol != "HStore") {
+        tbl_stock_vec.push_back(
           std::make_unique<Table<997, stock::key, stock::value>>(stockTableID,
                                                                  partitionID));
+      } else {
+        tbl_stock_vec.push_back(
+          std::make_unique<HStoreTable<stock::key, stock::value>>(stockTableID,
+                                                                 partitionID));
+      }
     }
     auto itemTableID = item::tableID;
-    tbl_item_vec.push_back(
+    if (context.protocol != "HStore") {
+      tbl_item_vec.push_back(
         std::make_unique<Table<997, item::key, item::value>>(itemTableID, 0));
+    } else {
+      tbl_item_vec.push_back(
+        std::make_unique<HStoreTable<item::key, item::value>>(itemTableID, 0));
+    }
 
     // there are 10 tables in tpcc
     tbl_vecs.resize(10);

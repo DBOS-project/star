@@ -47,14 +47,14 @@ class HStoreMessageFactory {
 
 public:
 
-  static std::size_t new_master_lock_partition_message(Message &message, ITable & table, uint32_t this_worker_id, const std::vector<int32_t> & parts) {
+  static std::size_t new_master_lock_partition_message(Message &message, ITable & table, uint32_t this_worker_id, int num_parts, std::function<int32_t(int)> get_part_func) {
 
     /*
      * The structure of a partition lock request: (remote_worker_id, # parts, part1, part2...)
      */
 
     auto message_size =
-        MessagePiece::get_header_size() + sizeof(uint32_t) + + sizeof(uint32_t) + sizeof(int32_t) * parts.size();
+        MessagePiece::get_header_size() + sizeof(uint32_t) + + sizeof(uint32_t) + sizeof(int32_t) * num_parts;
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(HStoreMessage::MASTER_LOCK_PARTITION_REQUEST), message_size,
         table.tableID(), table.partitionID());
@@ -62,15 +62,15 @@ public:
     Encoder encoder(message.data);
     encoder << message_piece_header;
     encoder << this_worker_id;
-    encoder << (uint32_t)parts.size();
+    encoder << (uint32_t)num_parts;
     // std::string dbg_str;
     // for (size_t i = 0; i < parts.size(); ++i) {
     //   dbg_str += std::to_string(parts[i]) + ",";
     // }
     // LOG(INFO) << "new_master_lock_partition_message cluster_worker " << this_worker_id
     //           << " need locks on partitions: " << dbg_str;
-    for (size_t i = 0; i < parts.size(); ++i) {
-      encoder << parts[i];
+    for (int i = 0; i < num_parts; ++i) {
+      encoder << get_part_func(i);
     }
     message.flush();
     return message_size;

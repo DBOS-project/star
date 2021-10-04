@@ -34,9 +34,11 @@ public:
         partition_id(partition_id),
         query(makeNewOrderQuery()(context, partition_id + 1, random)) {}
 
-  virtual const std::vector<int32_t> & get_partitions() override { return query.get_parts(); }
+  virtual int32_t get_partition_count() override { return query.number_of_parts(); }
+
+  virtual int32_t get_partition(int i) override { return query.get_part(i); }
   
-  bool is_single_partition() override { return query.isRemote() == false; }
+  virtual bool is_single_partition() override { return query.number_of_parts() == 1; }
 
   virtual ~NewOrder() override = default;
 
@@ -103,7 +105,7 @@ public:
       }
 
       this->search_local_index(itemTableID, 0, storage.item_keys[i],
-                               storage.item_values[i]);
+                               storage.item_values[i], true);
 
       // The row in the STOCK table with matching S_I_ID (equals OL_I_ID) and
       // S_W_ID (equals OL_SUPPLY_W_ID) is selected.
@@ -290,8 +292,13 @@ public:
         partition_id(partition_id),
         query(makePaymentQuery()(context, partition_id + 1, random)) {}
 
-  bool is_single_partition() override { return query.isRemote() == false; }
 
+  virtual int32_t get_partition_count() override { return query.number_of_parts(); }
+
+  virtual int32_t get_partition(int i) override { return query.get_part(i); }
+  
+  virtual bool is_single_partition() override { return query.number_of_parts() == 1; }
+  
   virtual ~Payment() override = default;
 
   TransactionResult execute(std::size_t worker_id) override {
@@ -336,7 +343,7 @@ public:
           customer_name_idx::key(C_W_ID, C_D_ID, query.C_LAST);
       this->search_local_index(customerNameIdxTableID, C_W_ID - 1,
                                storage.customer_name_idx_key,
-                               storage.customer_name_idx_value);
+                               storage.customer_name_idx_value, false);
 
       this->process_requests(worker_id);
       C_ID = storage.customer_name_idx_value.C_ID;

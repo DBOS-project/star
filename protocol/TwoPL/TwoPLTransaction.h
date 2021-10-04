@@ -29,9 +29,11 @@ public:
 
   virtual ~TwoPLTransaction() = default;
 
+  virtual int32_t get_partition_count() = 0;
+
+  virtual int32_t get_partition(int i) = 0;
+
   virtual bool is_single_partition() = 0;
-  
-  virtual const std::vector<int32_t> & get_partitions() { static std::vector<int32_t>  v; return v; }
 
   void reset() {
     pendingResponses = 0;
@@ -53,7 +55,7 @@ public:
 
   template <class KeyType, class ValueType>
   void search_local_index(std::size_t table_id, std::size_t partition_id,
-                          const KeyType &key, ValueType &value) {
+                          const KeyType &key, ValueType &value, bool readonly) {
     TwoPLRWKey readKey;
 
     readKey.set_table_id(table_id);

@@ -23,20 +23,6 @@ struct NewOrderQuery {
     return false;
   }
 
-  const std::vector<int32_t> & get_parts() {
-    if (parts.empty() == false)
-      return parts;
-    for (auto i = 0; i < O_OL_CNT; i++) {
-      if (INFO[i].OL_SUPPLY_W_ID != W_ID) {
-        parts.push_back(INFO[i].OL_SUPPLY_W_ID);
-        parts.push_back(W_ID);
-        return parts;
-      }
-    }
-    parts = {W_ID};
-    return parts;
-  }
-
   int32_t W_ID;
   int32_t D_ID;
   int32_t C_ID;
@@ -49,7 +35,18 @@ struct NewOrderQuery {
   };
 
   NewOrderQueryInfo INFO[15];
-  std::vector<int> parts;
+
+  int32_t parts[5];
+  int num_parts = 0;
+
+  int32_t get_part(int i) {
+    DCHECK(i < num_parts);
+    return parts[i];
+  }
+
+  int number_of_parts() {
+    return num_parts;
+  }
 };
 
 class makeNewOrderQuery {
@@ -59,6 +56,11 @@ public:
     NewOrderQuery query;
     // W_ID is constant over the whole measurement interval
     query.W_ID = W_ID;
+
+    query.num_parts = 1;
+
+    query.parts[0] = W_ID - 1;
+
     // The district number (D_ID) is randomly selected within [1 .. 10] from the
     // home warehouse (D_W_ID = W_ID).
     query.D_ID = random.uniform_dist(1, 10);
@@ -113,6 +115,9 @@ public:
             OL_SUPPLY_W_ID = random.uniform_dist(1, context.partition_num);
           }
           query.INFO[i].OL_SUPPLY_W_ID = OL_SUPPLY_W_ID;
+          query.num_parts = 2;
+          query.parts[0] = OL_SUPPLY_W_ID - 1;
+          query.parts[1] = W_ID - 1;
         } else {
           query.INFO[i].OL_SUPPLY_W_ID = W_ID;
         }
@@ -135,6 +140,17 @@ struct PaymentQuery {
   int32_t C_D_ID;
   int32_t C_W_ID;
   float H_AMOUNT;
+  int parts[5];
+  int num_parts = 0;
+
+  int32_t get_part(int i) {
+    DCHECK(i < num_parts);
+    return parts[i];
+  }
+
+  int number_of_parts() {
+    return num_parts;
+  }
 };
 
 class makePaymentQuery {
@@ -146,6 +162,9 @@ public:
     // W_ID is constant over the whole measurement interval
 
     query.W_ID = W_ID;
+
+    query.parts[0] = W_ID - 1;
+    query.num_parts = 1;
 
     // The district number (D_ID) is randomly selected within [1 ..10] from the
     // home warehouse (D_W_ID) = W_ID).
@@ -173,6 +192,8 @@ public:
         C_W_ID = random.uniform_dist(1, context.partition_num);
       }
 
+      query.parts[1] = C_W_ID - 1;
+      query.num_parts = 2;
       query.C_W_ID = C_W_ID;
       query.C_D_ID = random.uniform_dist(1, 10);
     } else {

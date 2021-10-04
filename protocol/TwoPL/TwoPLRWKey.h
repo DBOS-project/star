@@ -151,11 +151,10 @@ private:
    * read lock request bit is set when a read lock request is needed.
    *
    */
-
-  uint64_t bitvec = 0;
-  uint64_t tid = 0;
   const void *key = nullptr;
   void *value = nullptr;
+  uint64_t bitvec = 0;
+  uint64_t tid = 0;
 
 public:
   static constexpr uint64_t TABLE_ID_MASK = 0x1f;

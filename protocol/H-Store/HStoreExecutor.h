@@ -104,7 +104,7 @@ public:
 
   void search(std::size_t table_id, std::size_t partition_id,
                   const void *key, void *value) const {
-    DCHECK((int)partition_owner_cluster_worker(partition_id) == this_cluster_worker_id);
+//    DCHECK((int)partition_owner_cluster_worker(partition_id) == this_cluster_worker_id);
     ITable *table = this->db.find_table(table_id, partition_id);
     auto value_bytes = table->value_size();
     auto row = table->search(key);
@@ -144,8 +144,8 @@ public:
       sync_messages(txn, true);
     } else {
       DCHECK(txn.pendingResponses == 0);
-      DCHECK(txn.get_partitions().size() == 1);
-      auto partitionId = txn.get_partitions()[0];
+      DCHECK(txn.get_partition_count() == 1);
+      auto partitionId = txn.get_partition(0);
       DCHECK(owned_partition_locked_by[partitionId] == this_cluster_worker_id);
       //LOG(INFO) << "Abort release lock partition " << partitionId << " by cluster worker" << this_cluster_worker_id;
       owned_partition_locked_by[partitionId] = -1;
@@ -256,8 +256,8 @@ public:
       sync_messages(txn);
     } else {
       DCHECK(txn.pendingResponses == 0);
-      DCHECK(txn.get_partitions().size() == 1);
-      auto partitionId = txn.get_partitions()[0];
+      DCHECK(txn.get_partition_count() == 1);
+      auto partitionId = txn.get_partition(0);
       DCHECK(owned_partition_locked_by[partitionId] == this_cluster_worker_id);
       //LOG(INFO) << "Commit release lock partition " << partitionId << " by cluster worker" << this_cluster_worker_id;
       owned_partition_locked_by[partitionId] = -1;
@@ -297,6 +297,12 @@ public:
                      uint32_t key_offset, const void *key, void *value,
                      bool local_index_read, bool write_lock, bool &success,
                      bool &remote) {
+      if (local_index_read) {
+        success = true;
+        remote = false;
+        this->search(table_id, partition_id, key, value);
+        return ;
+      }
       this->parts_touched[partition_id] = true;
       this->parts_touched_tables[partition_id] = table_id;
       int owner_cluster_worker = partition_owner_cluster_worker(partition_id);
@@ -316,8 +322,8 @@ public:
 
       } else {
         bool in_parts = false;
-        for (auto i = 0u; i < txn.get_partitions().size(); ++i) {
-          if ((int)partition_id == txn.get_partitions()[i]) {
+        for (auto i = 0; i < txn.get_partition_count(); ++i) {
+          if ((int)partition_id == txn.get_partition(i)) {
             in_parts = true;
             break;
           }
@@ -1085,18 +1091,21 @@ public:
   }
 
   void obtain_master_partitions_lock(Transaction & txn) {
-    const auto & parts = txn.get_partitions();
-    std::string dbg_str;
-    for (size_t i = 0; i < parts.size(); ++i) {
-      dbg_str += std::to_string(parts[i]) + ",";
-    }
+    //const auto & parts = ;
+    //std::string dbg_str;
+    // for (size_t i = 0; i < parts.size(); ++i) {
+    //   dbg_str += std::to_string(parts[i]) + ",";
+    // }
+    auto get_part = [&txn](int i) {
+      return txn.get_partition(i);
+    };
     auto table = this->db.find_table(0, 0);
     DCHECK(cluster_worker_messages[0]->get_message_count() == 0);
     cluster_worker_messages[0] = std::make_unique<Message>();
     init_message(cluster_worker_messages[0].get(), 0);
     cluster_worker_messages[0]->set_worker_id(this->context.worker_num + 1);
     txn.network_size += MessageFactoryType::new_master_lock_partition_message(
-        *cluster_worker_messages[0], *table, this_cluster_worker_id, parts);
+        *cluster_worker_messages[0], *table, this_cluster_worker_id, txn.get_partition_count(), get_part);
     txn.pendingResponses++;
     //LOG(INFO) << "obtain_master_partitions_lock from cluster worker " << this_cluster_worker_id << " wait for " << dbg_str;
     sync_messages(txn, true);
@@ -1104,7 +1113,6 @@ public:
   }
 
   void release_master_partitions_lock(Transaction & txn) {
-    const auto & parts = txn.get_partitions();
     auto table = this->db.find_table(0, 0);
     cluster_worker_messages[0] = std::make_unique<Message>();
     init_message(cluster_worker_messages[0].get(), 0);

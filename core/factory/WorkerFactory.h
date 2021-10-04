@@ -16,7 +16,6 @@
 #include "protocol/TwoPL/TwoPL.h"
 #include "protocol/TwoPL/TwoPLExecutor.h"
 
-#include "protocol/H-Store/HStore.h"
 #include "protocol/H-Store/HStoreExecutor.h"
 
 #include "core/group_commit/Executor.h"

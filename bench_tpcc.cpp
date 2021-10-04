@@ -9,6 +9,7 @@ DEFINE_int32(payment_dist, 15, "payment distributed.");
 
 // ./main --logtostderr=1 --id=1 --servers="127.0.0.1:10010;127.0.0.1:10011"
 // cmake -DCMAKE_BUILD_TYPE=Release
+bool do_tid_check = false;
 
 int main(int argc, char *argv[]) {
 
@@ -37,6 +38,7 @@ int main(int argc, char *argv[]) {
   star::tpcc::Database db;
   db.initialize(context);
 
+  do_tid_check = false;
   star::Coordinator c(FLAGS_id, db, context);
   c.connectToPeers();
   c.start();

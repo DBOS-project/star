@@ -37,7 +37,11 @@ public:
         partition_id(partition_id),
         query(makeYCSBQuery<keys_num>()(context, partition_id, random)) {}
 
-  bool is_single_partition() override { return query.cross_partition == false; }
+  virtual int32_t get_partition_count() override { return query.number_of_parts(); }
+
+  virtual int32_t get_partition(int i) override { return query.get_part(i); }
+  
+  virtual bool is_single_partition() override { return query.number_of_parts() == 1; }
 
   virtual ~ReadModifyWrite() override = default;
 
@@ -108,7 +112,6 @@ public:
     return TransactionResult::READY_TO_COMMIT;
   }
 
-  virtual const std::vector<int32_t> & get_partitions() { return query.parts; }
   void reset_query() override {
     query = makeYCSBQuery<keys_num>()(context, partition_id, random);
   }

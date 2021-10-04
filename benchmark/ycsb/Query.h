@@ -16,16 +16,27 @@ template <std::size_t N> struct YCSBQuery {
   int32_t Y_KEY[N];
   bool UPDATE[N];
   bool cross_partition;
-  std::vector<int32_t> parts;
+  int parts[5];
+  int num_parts = 0;
+
+  int32_t get_part(int i) {
+    DCHECK(i < num_parts);
+    return parts[i];
+  }
+
+  int number_of_parts() {
+    return num_parts;
+  }
 };
 
 template <std::size_t N> class makeYCSBQuery {
 public:
   YCSBQuery<N> operator()(const Context &context, uint32_t partitionID,
                           Random &random) const {
-    std::vector<int32_t> crossParts;
     YCSBQuery<N> query;
     query.cross_partition = false;
+    query.num_parts = 1;
+    query.parts[0] = partitionID;
     int readOnly = random.uniform_dist(1, 100);
     int crossPartition = random.uniform_dist(1, 100);
     for (auto i = 0u; i < N; i++) {
@@ -58,15 +69,16 @@ public:
 
         if (crossPartition <= context.crossPartitionProbability &&
             context.partition_num > 1) {
-          if (crossParts.empty()) {
+          if (query.num_parts == 1) {
+            query.num_parts = 0;
             for (int j = 0; j < context.crossPartitionPartNum; ++j) {
-              if (crossParts.size() >= context.partition_num)
+              if (query.num_parts >= (int)context.partition_num)
                 break;
               int32_t pid = random.uniform_dist(0, context.partition_num - 1);
               do {
                 bool good = true;
                 for (int k = 0; k < j; ++k) {
-                  if (crossParts[k] == pid) {
+                  if (query.parts[k] == pid) {
                     good = false;
                   }
                 }
@@ -74,12 +86,12 @@ public:
                   break;
                 pid =  random.uniform_dist(0, context.partition_num - 1);
               } while(true);
-              crossParts.push_back(pid);
+              query.parts[query.num_parts++] = pid;
             }
           }
-          auto newPartitionID = crossParts[i % crossParts.size()];
+          auto newPartitionID = query.parts[i % query.num_parts];
           while (newPartitionID == (int32_t)partitionID) {
-            newPartitionID = crossParts[random.uniform_dist(0, crossParts.size() - 1)];
+            newPartitionID = query.parts[random.uniform_dist(0, query.num_parts - 1)];
           }
           query.Y_KEY[i] = context.getGlobalKeyID(key, newPartitionID);
           query.cross_partition = true;
@@ -95,16 +107,6 @@ public:
         }
       } while (retry);
     }
-    if (query.cross_partition == false) {
-      query.parts.push_back(partitionID);
-    } else {
-      if ((int)N > context.crossPartitionPartNum) {
-       query.parts = crossParts;
-      } else {
-        query.parts = std::vector<int32_t>(crossParts.begin(), crossParts.begin() + N);
-      }
-    }
-    
     return query;
   }
 };

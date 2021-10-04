@@ -27,8 +27,6 @@ public:
     reset();
   }
   
-  virtual const std::vector<int32_t> & get_partitions() { static std::vector<int32_t>  v; return v; }
-
   virtual ~HStoreTransaction() = default;
 
   void reset() {
@@ -45,7 +43,10 @@ public:
     writeSet.clear();
   }
 
-  
+  virtual int32_t get_partition_count() = 0;
+
+  virtual int32_t get_partition(int i) = 0;
+
   virtual bool is_single_partition() = 0;
 
   virtual TransactionResult execute(std::size_t worker_id) = 0;
@@ -54,7 +55,7 @@ public:
 
   template <class KeyType, class ValueType>
   void search_local_index(std::size_t table_id, std::size_t partition_id,
-                          const KeyType &key, ValueType &value) {
+                          const KeyType &key, ValueType &value, bool readonly) {
     TwoPLRWKey readKey;
 
     readKey.set_table_id(table_id);
@@ -62,8 +63,9 @@ public:
 
     readKey.set_key(&key);
     readKey.set_value(&value);
-
-    //readKey.set_local_index_read_bit();
+    if (readonly) {
+      readKey.set_local_index_read_bit();
+    }
     //readKey.set_read_lock_request_bit();
 
     add_to_read_set(readKey);
