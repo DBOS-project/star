@@ -46,7 +46,9 @@ public:
   virtual ~ReadModifyWrite() override = default;
 
   TransactionResult execute(std::size_t worker_id) override {
-
+    ScopedTimer t_local_work([&, this](uint64_t us) {
+      this->record_local_work_time(us);
+    });
     DCHECK(context.keysPerTransaction == keys_num);
 
     int ycsbTableID = ycsb::tableID;
@@ -63,10 +65,11 @@ public:
       }
     }
 
+    t_local_work.end();
     if (this->process_requests(worker_id)) {
       return TransactionResult::ABORT;
     }
-
+    t_local_work.reset();
     for (auto i = 0u; i < keys_num; i++) {
       auto key = query.Y_KEY[i];
       if (query.UPDATE[i]) {

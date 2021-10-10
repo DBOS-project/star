@@ -167,7 +167,9 @@ public:
 
     // write and replicate
     // Release partition locks
-
+    ScopedTimer t([&, this](uint64_t us) {
+      txn.record_commit_write_back_time(us);
+    });
     write_and_replicate(txn, commit_tid, messages);
 
     // release locks
@@ -179,6 +181,7 @@ public:
   void write_and_replicate(TransactionType &txn, uint64_t commit_tid,
                            std::vector<std::unique_ptr<Message>> &messages) {
     //auto &readSet = txn.readSet;
+    
     auto &writeSet = txn.writeSet;
     for (auto i = 0u; i < writeSet.size(); i++) {
       auto &writeKey = writeSet[i];
@@ -751,14 +754,14 @@ public:
 
     Message *message = queue.front();
 
-    if (this->delay->delay_enabled()) {
-      auto now = std::chrono::steady_clock::now();
-      if (std::chrono::duration_cast<std::chrono::microseconds>(now -
-                                                                message->time)
-              .count() < this->delay->message_delay()) {
-        return nullptr;
-      }
-    }
+    // if (this->delay->delay_enabled()) {
+    //   auto now = std::chrono::steady_clock::now();
+    //   if (std::chrono::duration_cast<std::chrono::microseconds>(now -
+    //                                                             message->time)
+    //           .count() < this->delay->message_delay()) {
+    //     return nullptr;
+    //   }
+    // }
 
     bool ok = queue.pop();
     CHECK(ok);
@@ -1144,7 +1147,7 @@ public:
     
     worker_commit = 0;
     int try_times = 0;
-    auto startTime = std::chrono::steady_clock::now();
+    //auto startTime = std::chrono::steady_clock::now();
     bool retry_transaction = false;
     int partition_id = managed_partitions[this->random.next() % managed_partitions.size()];
     do {
@@ -1161,6 +1164,7 @@ public:
           DCHECK(owned_partition_locked_by[partition_id] == -1);
           this->transaction =
               this->workload.next_transaction(this->context, partition_id, storage, this->id);
+          //startTime = std::chrono::steady_clock::now();
           setupHandlers(*this->transaction);
           if (this->transaction->is_single_partition()) {
             //LOG(INFO) << "Local txn";
@@ -1176,10 +1180,31 @@ public:
           }
         }
 
+        if (retry_transaction) {
+          auto ltc =
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - this->transaction->startTime)
+              .count();
+          this->transaction->set_stall_time(ltc);
+        }
         auto result = this->transaction->execute(this->id);
 
         if (result == TransactionResult::READY_TO_COMMIT) {
-          bool commit = this->commit(*this->transaction, cluster_worker_messages);
+          bool commit;
+          {
+            ScopedTimer t([&, this](uint64_t us) {
+              if (commit) {
+                this->transaction->record_commit_work_time(us);
+              } else {
+                auto ltc =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - this->transaction->startTime)
+                    .count();
+                this->transaction->set_stall_time(ltc);
+              }
+            });
+            commit = this->commit(*this->transaction, cluster_worker_messages);
+          }
           ////LOG(INFO) << "Txn Execution result " << (int)result << " commit " << commit;
           this->n_network_size.fetch_add(this->transaction->network_size);
           if (commit) {
@@ -1198,7 +1223,7 @@ public:
             retry_transaction = false;
             auto latency =
                 std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - startTime)
+                    std::chrono::steady_clock::now() - this->transaction->startTime)
                     .count();
             this->percentile.add(latency);
             if (this->transaction->distributed_transaction) {
@@ -1206,7 +1231,7 @@ public:
             } else {
               this->local_latency.add(latency);
             }
-            startTime = std::chrono::steady_clock::now();
+            this->record_txn_breakdown_stats(*this->transaction.get());
           } else {
             if (this->transaction->abort_lock) {
               this->n_abort_lock.fetch_add(1);
@@ -1271,7 +1296,19 @@ public:
               << " us (99%). txn try times : " << this->txn_try_times.nth(50)
               << " (50%) " << this->txn_try_times.nth(75) << " (75%) "
               << this->txn_try_times.nth(95) << " (95%) " << this->txn_try_times.nth(99)
-              << " (99%). ";
+              << " (99%). \n"
+              << " LOCAL txn stall " << this->local_txn_stall_time_pct.nth(50) << " us, "
+              << " local_work " << this->local_txn_local_work_time_pct.nth(50) << " us, "
+              << " remote_work " << this->local_txn_remote_work_time_pct.nth(50) << " us, "
+              << " commit_work " << this->local_txn_commit_work_time_pct.nth(50) << " us, "
+              << " commit_write_back " << this->local_txn_commit_write_back_time_pct.nth(50) << " us, "
+              << " commit_release_lock " << this->local_txn_commit_unlock_time_pct.nth(50) << " us \n"
+              << " DIST txn stall " << this->dist_txn_stall_time_pct.nth(50) << " us, "
+              << " local_work " << this->dist_txn_local_work_time_pct.nth(50) << " us, "
+              << " remote_work " << this->dist_txn_remote_work_time_pct.nth(50) << " us, "
+              << " commit_work " << this->dist_txn_commit_work_time_pct.nth(50) << " us, "
+              << " commit_write_back " << this->dist_txn_commit_write_back_time_pct.nth(50) << " us, "
+              << " commit_release_lock " << this->dist_txn_commit_unlock_time_pct.nth(50) << " us \n";
 
     if (this->id == 0) {
       for (auto i = 0u; i < this->message_stats.size(); i++) {

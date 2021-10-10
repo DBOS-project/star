@@ -75,6 +75,7 @@ public:
     n_started_workers.fetch_add(1);
     bool retry_transaction = false;
 
+    //auto startTime = std::chrono::steady_clock::now();
     do {
       process_request();
 
@@ -90,15 +91,29 @@ public:
 
           transaction =
               workload.next_transaction(context, partition_id, storage, this->id);
+          //startTime = std::chrono::steady_clock::now();
           setupHandlers(*transaction);
         }
 
         auto result = transaction->execute(id);
         if (result == TransactionResult::READY_TO_COMMIT) {
-          auto commit_start = std::chrono::steady_clock::now();
-          bool commit = protocol.commit(*transaction, messages);
+          bool commit;
+          {
+            ScopedTimer t([&, this](uint64_t us) {
+              if (commit) {
+                this->transaction->record_commit_work_time(us);
+              } else {
+                auto ltc =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - transaction->startTime)
+                    .count();
+                this->transaction->set_stall_time(ltc);
+              }
+            });
+            commit = protocol.commit(*transaction, messages);
+          }
           auto ltc = std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - commit_start)
+                    std::chrono::steady_clock::now() - transaction->startTime)
                     .count();
           commit_latency.add(ltc);
           n_network_size.fetch_add(transaction->network_size);
@@ -116,11 +131,12 @@ public:
                     std::chrono::steady_clock::now() - transaction->startTime)
                     .count();
             percentile.add(latency);
-            if (transaction->distributed_transaction) {
+            if (transaction->is_single_partition() == false) {
               dist_latency.add(latency);
             } else {
               local_latency.add(latency);
             }
+            record_txn_breakdown_stats(*transaction.get());
           } else {
             if (transaction->abort_lock) {
               n_abort_lock.fetch_add(1);
@@ -174,7 +190,19 @@ public:
               << " us (99%). txn commit latency: " << commit_latency.nth(50)
               << " us (50%) " << commit_latency.nth(75) << " us (75%) "
               << commit_latency.nth(95) << " us (95%) " << commit_latency.nth(99)
-              << " us (99%).";
+              << " us (99%).\n"
+              << " LOCAL txn stall " << this->local_txn_stall_time_pct.nth(50) << " us, "
+              << " local_work " << this->local_txn_local_work_time_pct.nth(50) << " us, "
+              << " remote_work " << this->local_txn_remote_work_time_pct.nth(50) << " us, "
+              << " commit_work " << this->local_txn_commit_work_time_pct.nth(50) << " us, "
+              << " commit_write_back " << this->local_txn_commit_write_back_time_pct.nth(50) << " us, "
+              << " commit_release_lock " << this->local_txn_commit_unlock_time_pct.nth(50) << " us \n"
+              << " DIST txn stall " << this->dist_txn_stall_time_pct.nth(50) << " us, "
+              << " local_work " << this->dist_txn_local_work_time_pct.nth(50) << " us, "
+              << " remote_work " << this->dist_txn_remote_work_time_pct.nth(50) << " us, "
+              << " commit_work " << this->dist_txn_commit_work_time_pct.nth(50) << " us, "
+              << " commit_write_back " << this->dist_txn_commit_write_back_time_pct.nth(50) << " us, "
+              << " commit_release_lock " << this->dist_txn_commit_unlock_time_pct.nth(50) << " us \n";
 
     if (id == 0) {
       for (auto i = 0u; i < message_stats.size(); i++) {
@@ -296,7 +324,9 @@ public:
   ProtocolType protocol;
   WorkloadType workload;
   std::unique_ptr<Delay> delay;
-  Percentile<int64_t> percentile, dist_latency, local_latency, commit_latency;
+  Percentile<int64_t> percentile, dist_latency, local_latency, commit_latency; 
+  Percentile<uint64_t> local_txn_stall_time_pct, local_txn_commit_work_time_pct, local_txn_commit_write_back_time_pct, local_txn_commit_unlock_time_pct, local_txn_local_work_time_pct, local_txn_remote_work_time_pct;
+  Percentile<uint64_t> dist_txn_stall_time_pct, dist_txn_commit_work_time_pct, dist_txn_commit_write_back_time_pct, dist_txn_commit_unlock_time_pct, dist_txn_local_work_time_pct, dist_txn_remote_work_time_pct;
   std::unique_ptr<TransactionType> transaction;
   std::vector<std::unique_ptr<Message>> messages;
   std::vector<
@@ -304,5 +334,23 @@ public:
       messageHandlers;
   std::vector<std::size_t> message_stats, message_sizes;
   LockfreeQueue<Message *> in_queue, out_queue, master_unlock_in_queue;
+
+  void record_txn_breakdown_stats(TransactionType & txn) {
+    if (txn.is_single_partition()) {
+      local_txn_stall_time_pct.add(txn.get_stall_time());
+      local_txn_commit_work_time_pct.add(txn.get_commit_work_time());
+      local_txn_commit_write_back_time_pct.add(txn.get_commit_write_back_time());
+      local_txn_commit_unlock_time_pct.add(txn.get_commit_unlock_time());
+      local_txn_local_work_time_pct.add(txn.get_local_work_time());
+      local_txn_remote_work_time_pct.add(txn.get_remote_work_time());
+    } else {
+      dist_txn_stall_time_pct.add(txn.get_stall_time());
+      dist_txn_commit_work_time_pct.add(txn.get_commit_work_time());
+      dist_txn_commit_write_back_time_pct.add(txn.get_commit_write_back_time());
+      dist_txn_commit_unlock_time_pct.add(txn.get_commit_unlock_time());
+      dist_txn_local_work_time_pct.add(txn.get_local_work_time());
+      dist_txn_remote_work_time_pct.add(txn.get_remote_work_time());
+    }
+  }
 };
 } // namespace star

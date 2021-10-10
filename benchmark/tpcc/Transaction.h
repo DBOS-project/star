@@ -44,6 +44,9 @@ public:
 
   TransactionResult execute(std::size_t worker_id) override {
 
+    ScopedTimer t_local_work([&, this](uint64_t us) {
+      this->record_local_work_time(us);
+    });
     int32_t W_ID = this->partition_id + 1;
 
     // The input data (see Clause 2.4.3.2) are communicated to the SUT.
@@ -116,10 +119,12 @@ public:
                               storage.stock_keys[i], storage.stock_values[i]);
     }
 
+    t_local_work.end();
     if (this->process_requests(worker_id)) {
       return TransactionResult::ABORT;
     }
 
+    t_local_work.reset();
     float W_TAX = storage.warehouse_value.W_YTD;
 
     float D_TAX = storage.district_value.D_TAX;
@@ -302,7 +307,9 @@ public:
   virtual ~Payment() override = default;
 
   TransactionResult execute(std::size_t worker_id) override {
-
+    ScopedTimer t_local_work([&, this](uint64_t us) {
+      this->record_local_work_time(us);
+    });
     int32_t W_ID = this->partition_id + 1;
 
     // The input data (see Clause 2.5.3.2) are communicated to the SUT.
@@ -344,8 +351,9 @@ public:
       this->search_local_index(customerNameIdxTableID, C_W_ID - 1,
                                storage.customer_name_idx_key,
                                storage.customer_name_idx_value, false);
-
+      t_local_work.end();
       this->process_requests(worker_id);
+      t_local_work.reset();
       C_ID = storage.customer_name_idx_value.C_ID;
     }
 
@@ -353,10 +361,13 @@ public:
     storage.customer_key = customer::key(C_W_ID, C_D_ID, C_ID);
     this->search_for_update(customerTableID, C_W_ID - 1, storage.customer_key,
                             storage.customer_value);
-
+    t_local_work.end();
     if (this->process_requests(worker_id)) {
       return TransactionResult::ABORT;
     }
+    ScopedTimer t_local_work2([&, this](uint64_t us) {
+      this->record_local_work_time(us);
+    });
 
     // the warehouse's year-to-date balance, is increased by H_ AMOUNT.
     storage.warehouse_value.W_YTD += H_AMOUNT;

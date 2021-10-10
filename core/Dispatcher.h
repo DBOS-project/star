@@ -190,15 +190,15 @@ public:
         LOG(INFO) << "Handling coordinator message took " << spent / 1000;
       }
 
-      auto start = Time::now();
+      //auto start = Time::now();
       for (auto i = group_id; i < numWorkers; i += io_thread_num) {
         dispatchMessage(workers[i]);
       }
-      auto spent = (Time::now() - start) / 1000;
+      //auto spent = (Time::now() - start) / 1000;
       // if (spent > 100) {
       //   /LOG(INFO) << "Dispatching messsaegs took " << spent;
       // }
-      msg_disp_ltc.add(spent);
+      //msg_disp_ltc.add(spent);
       //std::this_thread::yield();
     }
 
@@ -241,11 +241,11 @@ public:
     if (raw_message == nullptr) {
       return;
     }
-    ltc = (Time::now() - message_get_start) / 1000;
-    message_send_latency.add(ltc);
+    //ltc = (Time::now() - message_get_start) / 1000;
+    //message_send_latency.add(ltc);
 
-    ltc = (Time::now() - raw_message->get_gen_time()) / 1000;
-    gen_to_sent_latency.add(ltc);
+    //ltc = (Time::now() - raw_message->get_gen_time()) / 1000;
+    //gen_to_sent_latency.add(ltc);
     // wrap the message with a unique pointer.
     std::unique_ptr<Message> message(raw_message);
     // send the message
@@ -261,8 +261,8 @@ public:
       out_to_in_queue.push(message.release());
     }
 
-    ltc = (raw_message->get_put_to_out_queue_time() - raw_message->get_gen_time()) / 1000;
-    gen_to_queue_latency.add(ltc);
+    //ltc = (raw_message->get_put_to_out_queue_time() - raw_message->get_gen_time()) / 1000;
+    //gen_to_queue_latency.add(ltc);
   }
 
 private:

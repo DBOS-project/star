@@ -28,6 +28,61 @@ public:
 
   virtual ~CalvinTransaction() = default;
 
+std::size_t commit_unlock_time_us = 0;
+  std::size_t commit_work_time_us = 0;
+  std::size_t commit_write_back_time_us = 0;
+  std::size_t remote_work_time_us = 0;
+  std::size_t local_work_time_us = 0;
+  std::size_t stall_time_us = 0; // Waiting for locks (partition-level or row-level) due to conflicts
+ 
+  virtual void record_remote_work_time(uint64_t us) {
+    remote_work_time_us += us;
+  }
+
+  virtual size_t get_remote_work_time() {
+    return remote_work_time_us;
+  }
+  
+  virtual void record_local_work_time(uint64_t us) {
+    local_work_time_us += us;
+  }
+
+  virtual size_t get_local_work_time() {
+    return local_work_time_us;
+  }
+
+  virtual void record_commit_work_time(uint64_t us) {
+    commit_work_time_us += us;
+  }
+
+  virtual size_t get_commit_work_time() {
+    return commit_work_time_us;
+  }
+
+  virtual void record_commit_write_back_time(uint64_t us) {
+    commit_write_back_time_us += us;
+  }
+
+  virtual size_t get_commit_write_back_time() {
+    return commit_write_back_time_us;
+  }
+
+  virtual void record_commit_unlock_time(uint64_t us) {
+    commit_unlock_time_us += us;
+  }
+
+  virtual size_t get_commit_unlock_time() {
+    return commit_unlock_time_us;
+  }
+
+  virtual void set_stall_time(uint64_t us) {
+    stall_time_us = us;
+  }
+
+  virtual size_t get_stall_time() {
+    return stall_time_us;
+  }
+
   virtual int32_t get_partition_count() = 0;
 
   virtual int32_t get_partition(int i) = 0;

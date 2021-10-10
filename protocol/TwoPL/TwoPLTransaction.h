@@ -29,6 +29,61 @@ public:
 
   virtual ~TwoPLTransaction() = default;
 
+std::size_t commit_unlock_time_us = 0;
+  std::size_t commit_work_time_us = 0;
+  std::size_t commit_write_back_time_us = 0;
+  std::size_t remote_work_time_us = 0;
+  std::size_t local_work_time_us = 0;
+  std::size_t stall_time_us = 0; // Waiting for locks (partition-level or row-level) due to conflicts
+ 
+  virtual void record_remote_work_time(uint64_t us) {
+    remote_work_time_us += us;
+  }
+
+  virtual size_t get_remote_work_time() {
+    return remote_work_time_us;
+  }
+  
+  virtual void record_local_work_time(uint64_t us) {
+    local_work_time_us += us;
+  }
+
+  virtual size_t get_local_work_time() {
+    return local_work_time_us;
+  }
+
+  virtual void record_commit_work_time(uint64_t us) {
+    commit_work_time_us += us;
+  }
+
+  virtual size_t get_commit_work_time() {
+    return commit_work_time_us;
+  }
+
+  virtual void record_commit_write_back_time(uint64_t us) {
+    commit_write_back_time_us += us;
+  }
+
+  virtual size_t get_commit_write_back_time() {
+    return commit_write_back_time_us;
+  }
+
+  virtual void record_commit_unlock_time(uint64_t us) {
+    commit_unlock_time_us += us;
+  }
+
+  virtual size_t get_commit_unlock_time() {
+    return commit_unlock_time_us;
+  }
+
+  virtual void set_stall_time(uint64_t us) {
+    stall_time_us = us;
+  }
+
+  virtual size_t get_stall_time() {
+    return stall_time_us;
+  }
+
   virtual int32_t get_partition_count() = 0;
 
   virtual int32_t get_partition(int i) = 0;
@@ -129,7 +184,9 @@ public:
   }
 
   bool process_requests(std::size_t worker_id) {
-
+    ScopedTimer t_local_work([&, this](uint64_t us) {
+      this->record_local_work_time(us);
+    });
     // cannot use unsigned type in reverse iteration
     for (int i = int(readSet.size()) - 1; i >= 0; i--) {
       // early return
@@ -165,8 +222,11 @@ public:
       readSet[i].clear_read_lock_request_bit();
       readSet[i].clear_write_lock_request_bit();
     }
-
+    t_local_work.end();
     if (pendingResponses > 0) {
+      ScopedTimer t_remote_work([&, this](uint64_t us) {
+        this->record_remote_work_time(us);
+      });
       message_flusher();
       while (pendingResponses > 0) {
         remote_request_handler();

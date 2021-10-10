@@ -119,14 +119,31 @@ public:
 
     // all locks are acquired
 
-    // generate tid
-    uint64_t commit_tid = generate_tid(txn);
-
-    // write and replicate
-    write_and_replicate(txn, commit_tid, messages);
+    uint64_t commit_tid;
+    {
+      ScopedTimer t([&, this](uint64_t us) {
+        txn.record_local_work_time(us);
+      });
+      // generate tid
+      commit_tid = generate_tid(txn);
+    }
+    {
+      ScopedTimer t([&, this](uint64_t us) {
+        txn.record_commit_write_back_time(us);
+      });
+      // write and replicate
+      write_and_replicate(txn, commit_tid, messages);
+    }
 
     // release locks
-    release_lock(txn, commit_tid, messages);
+    {
+      ScopedTimer t([&, this](uint64_t us) {
+        txn.record_commit_unlock_time(us);
+      });
+      // write and replicate
+      release_lock(txn, commit_tid, messages);
+    }
+
 
     return true;
   }
