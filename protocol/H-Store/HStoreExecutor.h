@@ -22,8 +22,8 @@ private:
   std::vector<int32_t> master_partition_owned_by;
 
   std::vector<std::unique_ptr<Message>> cluster_worker_messages;
-  std::vector<bool> parts_touched;
-  std::vector<int> parts_touched_tables;
+  //std::vector<bool> parts_touched;
+  //std::vector<int> parts_touched_tables;
   int cluster_worker_num;
   Percentile<uint64_t> txn_try_times;
   Percentile<uint64_t> hstore_master_queuing_time;
@@ -86,8 +86,8 @@ public:
       owned_partition_locked_by.resize(this->context.partition_num, -1);
       cluster_worker_messages.resize(cluster_worker_num);
       hstore_master_cluster_worker_messages.resize(cluster_worker_num);
-      parts_touched.resize(this->context.partition_num, false);
-      parts_touched_tables.resize(this->context.partition_num, -1);
+      //parts_touched.resize(this->context.partition_num, false);
+      //parts_touched_tables.resize(this->context.partition_num, -1);
       for (int i = 0; i < (int)cluster_worker_num; ++i) {
         cluster_worker_messages[i] = std::make_unique<Message>();
         init_message(cluster_worker_messages[i].get(), i);
@@ -121,10 +121,9 @@ public:
 
     // assume all writes are updates
     if (!txn.is_single_partition()) {
-      for (int i = 0; i < (int)this->context.partition_num; ++i) {
-        if (parts_touched[i] == false)
-          continue;
-        int partitionId = i;
+      for (auto i = 0; i < txn.get_partition_count(); ++i) {
+        int partitionId = txn.get_partition(i);
+        int tableId = 0;
         auto owner_cluster_worker = partition_owner_cluster_worker(partitionId);
         if (owner_cluster_worker == this_cluster_worker_id) {
           if (owned_partition_locked_by[partitionId] == this_cluster_worker_id) {
@@ -135,7 +134,6 @@ public:
           // send messages to other partitions to abort and unlock partitions
           // No need to wait for the response.
           txn.pendingResponses++;
-          auto tableId = parts_touched_tables[i];
           auto table = this->db.find_table(tableId, partitionId);
           txn.network_size += MessageFactoryType::new_release_partition_lock_message(
               *messages[owner_cluster_worker], *table, this_cluster_worker_id, true);
@@ -238,17 +236,15 @@ public:
       //DCHECK(replicate_count == partitioner.replica_num() - 1);
     }
     if (txn.is_single_partition() == false) {
-      for (int i = 0; i < (int)this->context.partition_num; ++i) {
-        if (parts_touched[i] == false)
-          continue;
-        int partitionId = i;
+      for (auto i = 0; i < txn.get_partition_count(); ++i) {
+        int partitionId = txn.get_partition(i);
+        int tableId = 0;
         auto owner_cluster_worker = partition_owner_cluster_worker(partitionId);
         if (owner_cluster_worker == this_cluster_worker_id) {
           //LOG(INFO) << "Commit release lock partition " << partitionId << " by cluster worker" << this_cluster_worker_id;
           owned_partition_locked_by[partitionId] = -1; // unlock partitions
         } else {
             txn.pendingResponses++;
-            auto tableId = parts_touched_tables[i];
             auto table = this->db.find_table(tableId, partitionId);
             // send messages to other partitions to unlock partitions;
             txn.network_size += MessageFactoryType::new_release_partition_lock_message(
@@ -306,8 +302,8 @@ public:
         this->search(table_id, partition_id, key, value);
         return ;
       }
-      this->parts_touched[partition_id] = true;
-      this->parts_touched_tables[partition_id] = table_id;
+      //this->parts_touched[partition_id] = true;
+      //this->parts_touched_tables[partition_id] = table_id;
       int owner_cluster_worker = partition_owner_cluster_worker(partition_id);
       if ((int)owner_cluster_worker == this_cluster_worker_id) {
         remote = false;
@@ -324,14 +320,14 @@ public:
         this->search(table_id, partition_id, key, value);
 
       } else {
-        bool in_parts = false;
-        for (auto i = 0; i < txn.get_partition_count(); ++i) {
-          if ((int)partition_id == txn.get_partition(i)) {
-            in_parts = true;
-            break;
-          }
-        }
-        DCHECK(in_parts);
+        // bool in_parts = false;
+        // for (auto i = 0; i < txn.get_partition_count(); ++i) {
+        //   if ((int)partition_id == txn.get_partition(i)) {
+        //     in_parts = true;
+        //     break;
+        //   }
+        // }
+        // DCHECK(in_parts);
         ITable *table = this->db.find_table(table_id, partition_id);
 
         remote = true;
@@ -1173,7 +1169,7 @@ public:
             owned_partition_locked_by[partition_id] = this_cluster_worker_id;
           } else {
             ////LOG(INFO) << "Dist txn";
-            std::fill(parts_touched.begin(), parts_touched.end(), false);
+            //std::fill(//parts_touched.begin(), //parts_touched.end(), false);
             if (this->context.enable_hstore_master) {
               obtain_master_partitions_lock(*this->transaction);
             }
