@@ -229,7 +229,7 @@ public:
           std::atomic<uint64_t> &tid = table->search_metadata(key);
           TwoPLHelper::read_lock_release(tid);
         } else {
-          txn.pendingResponses++;
+          //txn.pendingResponses++;
           auto coordinatorID = partitioner.master_coordinator(partitionId);
           txn.network_size += MessageFactoryType::new_release_read_lock_message(
               *messages[coordinatorID], *table, readKey.get_key());
@@ -252,14 +252,14 @@ public:
         table->update(key, value);
         TwoPLHelper::write_lock_release(tid, commit_tid);
       } else {
-        txn.pendingResponses++;
+        //txn.pendingResponses++;
         auto coordinatorID = partitioner.master_coordinator(partitionId);
         txn.network_size += MessageFactoryType::new_release_write_lock_message(
             *messages[coordinatorID], *table, writeKey.get_key(), commit_tid);
       }
     }
 
-    sync_messages(txn);
+    sync_messages(txn, false);
   }
 
   void sync_messages(TransactionType &txn, bool wait_response = true) {

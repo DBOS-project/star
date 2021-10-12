@@ -683,7 +683,7 @@ public:
      * The structure of a release read lock response: ()
      */
 
-    txn->pendingResponses--;
+    //txn->pendingResponses--;
     txn->network_size += inputPiece.get_message_length();
   }
 
@@ -747,7 +747,7 @@ public:
      * The structure of a release write lock response: ()
      */
 
-    txn->pendingResponses--;
+    //txn->pendingResponses--;
     txn->network_size += inputPiece.get_message_length();
   }
 

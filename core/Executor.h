@@ -145,8 +145,8 @@ public:
               n_abort_read_validation.fetch_add(1);
             }
             if (context.sleep_on_retry) {
-              // std::this_thread::sleep_for(std::chrono::microseconds(
-              //     random.uniform_dist(0, context.sleep_time)));
+              std::this_thread::sleep_for(std::chrono::microseconds(
+                  random.uniform_dist(0, context.sleep_time)));
             }
             random.set_seed(last_seed);
             retry_transaction = true;
