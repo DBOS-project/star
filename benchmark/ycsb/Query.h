@@ -32,7 +32,7 @@ template <std::size_t N> struct YCSBQuery {
 template <std::size_t N> class makeYCSBQuery {
 public:
   YCSBQuery<N> operator()(const Context &context, uint32_t partitionID,
-                          Random &random) const {
+                          Random &random, const Partitioner & partitioner) const {
     YCSBQuery<N> query;
     query.cross_partition = false;
     query.num_parts = 1;
@@ -82,6 +82,8 @@ public:
                     good = false;
                   }
                 }
+                if (partitioner.has_master_partition(pid)) // We want a partition that is not on this node.
+                  good = false;
                 if (good == true)
                   break;
                 pid =  random.uniform_dist(0, context.partition_num - 1);

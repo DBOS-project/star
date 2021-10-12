@@ -35,7 +35,7 @@ public:
       : Transaction(coordinator_id, partition_id, partitioner), db(db),
         context(context), random(random), storage(storage),
         partition_id(partition_id),
-        query(makeYCSBQuery<keys_num>()(context, partition_id, random)) {}
+        query(makeYCSBQuery<keys_num>()(context, partition_id, random, partitioner)) {}
 
   virtual int32_t get_partition_count() override { return query.number_of_parts(); }
 
@@ -116,7 +116,7 @@ public:
   }
 
   void reset_query() override {
-    query = makeYCSBQuery<keys_num>()(context, partition_id, random);
+    query = makeYCSBQuery<keys_num>()(context, partition_id, random, this->partitioner);
   }
 
 private:
