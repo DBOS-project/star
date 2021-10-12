@@ -259,7 +259,7 @@ public:
       }
     }
 
-    sync_messages(txn);
+    sync_messages(txn, false);
   }
 
   void sync_messages(TransactionType &txn, bool wait_response = true) {
