@@ -40,6 +40,8 @@ enum class HStoreMessage {
   WRITE_BACK_RESPONSE,
   RELEASE_PARTITION_LOCK_REQUEST,
   RELEASE_PARTITION_LOCK_RESPONSE,
+  PREPARE_REQUEST,
+  PREPARE_RESPONSE,
   NFIELDS
 };
 
@@ -111,6 +113,25 @@ public:
     encoder << message_piece_header;
     encoder << this_worker_id;
     encoder << sync;
+    message.flush();
+    return message_size;
+  }
+
+  static std::size_t new_prepare_message(Message &message, ITable & table, uint32_t this_worker_id) {
+
+    /*
+     * The structure of a partition lock request: (remote_worker_id)
+     */
+
+    auto message_size =
+        MessagePiece::get_header_size() + sizeof(uint32_t);
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(HStoreMessage::PREPARE_REQUEST), message_size,
+        table.tableID(), table.partitionID());
+
+    Encoder encoder(message.data);
+    encoder << message_piece_header;
+    encoder << this_worker_id;
     message.flush();
     return message_size;
   }

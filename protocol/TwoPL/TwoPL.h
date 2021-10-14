@@ -117,6 +117,8 @@ public:
       return false;
     }
 
+    prepare_for_commit(txn, messages);
+
     // all locks are acquired
 
     uint64_t commit_tid;
@@ -207,6 +209,45 @@ public:
       }
 
       DCHECK(replicate_count == partitioner.replica_num() - 1);
+    }
+    sync_messages(txn);
+  }
+
+  void prepare_for_commit(TransactionType &txn,
+                           std::vector<std::unique_ptr<Message>> &messages) {
+
+    auto &readSet = txn.readSet;
+    auto &writeSet = txn.writeSet;
+    std::unordered_set<int> partitions;
+    for (auto i = 0u; i < writeSet.size(); i++) {
+      auto &writeKey = writeSet[i];
+      auto tableId = writeKey.get_table_id();
+      auto partitionId = writeKey.get_partition_id();
+      auto table = db.find_table(tableId, partitionId);
+
+      if (!partitioner.has_master_partition(partitionId)) {
+        partitions.insert(partitionId);
+      }
+    }
+
+    for (auto i = 0u; i < readSet.size(); i++) {
+      auto &readKey = readSet[i];
+      auto tableId = readKey.get_table_id();
+      auto partitionId = readKey.get_partition_id();
+      auto table = db.find_table(tableId, partitionId);
+
+      if (!partitioner.has_master_partition(partitionId)) {
+        partitions.insert(partitionId);
+      }
+    }
+
+    for (auto it : partitions) {
+      auto partitionId = it;
+      txn.pendingResponses++;
+      auto coordinatorID = partitioner.master_coordinator(partitionId);
+      auto table = db.find_table(0, partitionId);
+      txn.network_size += MessageFactoryType::new_prepare_message(
+          *messages[coordinatorID], *table);
     }
     sync_messages(txn);
   }

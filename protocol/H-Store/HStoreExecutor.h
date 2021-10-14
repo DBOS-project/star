@@ -161,7 +161,7 @@ public:
     }
 
     // all locks are acquired
-
+    prepare_for_commit(txn, messages);
     // generate tid
     uint64_t commit_tid = generate_tid(txn);
 
@@ -176,6 +176,27 @@ public:
     //release_lock(txn, commit_tid, messages);
 
     return true;
+  }
+
+
+  void prepare_for_commit(TransactionType &txn,
+                           std::vector<std::unique_ptr<Message>> &messages) {
+    int partitionCount = txn.get_partition_count();
+    for (int i = 0; i < partitionCount; ++i) {
+      int partitionId = txn.get_partition(i);
+      auto owner_cluster_worker = partition_owner_cluster_worker(partitionId);
+      if (owner_cluster_worker == this_cluster_worker_id) {
+      } else {
+          txn.pendingResponses++;
+          auto tableId = 0;
+          auto table = this->db.find_table(tableId, partitionId);
+          // send messages to other partitions to unlock partitions;
+          txn.network_size += MessageFactoryType::new_prepare_message(
+              *messages[owner_cluster_worker], *table, this_cluster_worker_id);
+          //LOG(INFO) << "Partition worker " << this_cluster_worker_id << " issueed lock release request on partition " << partitionId;
+      }
+    }
+    sync_messages(txn);
   }
 
   void write_and_replicate(TransactionType &txn, uint64_t commit_tid,
@@ -349,6 +370,65 @@ public:
   };
 
   using Transaction = TransactionType;
+
+
+  static void prepare_request_handler(MessagePiece inputPiece,
+                                    Message &responseMessage, ITable &table,
+                                    Transaction *txn) {
+
+    DCHECK(inputPiece.get_message_type() ==
+           static_cast<uint32_t>(HStoreMessage::PREPARE_REQUEST));
+    auto table_id = inputPiece.get_table_id();
+    auto partition_id = inputPiece.get_partition_id();
+    DCHECK(table_id == table.tableID());
+    DCHECK(partition_id == table.partitionID());
+    auto key_size = table.key_size();
+    auto field_size = table.field_size();
+
+    /*
+     * The structure of a write request: (primary key, field value)
+     * The structure of a write response: ()
+     */
+
+    DCHECK(inputPiece.get_message_length() ==
+           MessagePiece::get_header_size() + sizeof(uint32_t));
+
+    // prepare response message header
+    auto message_size = MessagePiece::get_header_size();
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(HStoreMessage::PREPARE_RESPONSE), message_size,
+        table_id, partition_id);
+
+    star::Encoder encoder(responseMessage.data);
+    encoder << message_piece_header;
+    responseMessage.flush();
+    responseMessage.set_gen_time(Time::now());
+  }
+
+  static void prepare_response_handler(MessagePiece inputPiece,
+                                    Message &responseMessage, ITable &table,
+                                    Transaction *txn) {
+
+    DCHECK(inputPiece.get_message_type() ==
+           static_cast<uint32_t>(HStoreMessage::PREPARE_RESPONSE));
+    auto table_id = inputPiece.get_table_id();
+    auto partition_id = inputPiece.get_partition_id();
+    DCHECK(table_id == table.tableID());
+    DCHECK(partition_id == table.partitionID());
+    auto key_size = table.key_size();
+    auto field_size = table.field_size();
+
+    /*
+     * The structure of a write request: (primary key, field value)
+     * The structure of a write response: ()
+     */
+
+    DCHECK(inputPiece.get_message_length() ==
+           MessagePiece::get_header_size());
+    DCHECK(txn->pendingResponses > 0);
+    txn->pendingResponses--;
+  }
+
   void acquire_partition_lock_request_handler(MessagePiece inputPiece,
                                           Message &responseMessage,
                                           ITable &table, Transaction *txn) {
@@ -682,7 +762,7 @@ public:
         
         if (type != (int)HStoreMessage::MASTER_UNLOCK_PARTITION_RESPONSE && type != (int)HStoreMessage::MASTER_LOCK_PARTITION_RESPONSE
             && type != (int)HStoreMessage::ACQUIRE_PARTITION_LOCK_RESPONSE && type != (int) HStoreMessage::WRITE_BACK_RESPONSE && type != (int)HStoreMessage::RELEASE_READ_LOCK_RESPONSE
-            && type != (int)HStoreMessage::RELEASE_PARTITION_LOCK_RESPONSE) {
+            && type != (int)HStoreMessage::RELEASE_PARTITION_LOCK_RESPONSE && type != (int)HStoreMessage::PREPARE_REQUEST && type != (int)HStoreMessage::PREPARE_RESPONSE) {
           CHECK(message_partition_owner_cluster_worker_id == this_cluster_worker_id);
         }
         ITable *table = this->db.find_table(messagePiece.get_table_id(),
@@ -720,6 +800,14 @@ public:
                                                 this->transaction.get());
         } else if (type == (int)HStoreMessage::MASTER_UNLOCK_PARTITION_RESPONSE) {
           master_unlock_partitions_response_handler(messagePiece,
+                                                *table,
+                                                this->transaction.get());
+        } else if (type == (int)HStoreMessage::PREPARE_REQUEST) {
+          prepare_request_handler(messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()],
+                                                *table,
+                                                this->transaction.get());
+        } else if (type == (int)HStoreMessage::PREPARE_RESPONSE) {
+          prepare_response_handler(messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()],
                                                 *table,
                                                 this->transaction.get());
         } else {

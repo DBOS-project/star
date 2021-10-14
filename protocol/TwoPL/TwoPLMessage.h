@@ -3,7 +3,7 @@
 //
 
 #pragma once
-
+#include <unordered_set>
 #include "common/Encoder.h"
 #include "common/Message.h"
 #include "common/MessagePiece.h"
@@ -30,6 +30,8 @@ enum class TwoPLMessage {
   RELEASE_READ_LOCK_RESPONSE,
   RELEASE_WRITE_LOCK_REQUEST,
   RELEASE_WRITE_LOCK_RESPONSE,
+  PREPARE_REQUEST,
+  PREPARE_RESPONSE,
   NFIELDS
 };
 
@@ -104,6 +106,23 @@ public:
     encoder << message_piece_header;
     encoder.write_n_bytes(key, key_size);
     encoder << write_lock;
+    message.flush();
+    message.set_gen_time(Time::now());
+    return message_size;
+  }
+
+  static std::size_t new_prepare_message(Message &message, ITable &table) {
+
+    /*
+     * The structure of a write request: (primary key, field value)
+     */
+    auto message_size = MessagePiece::get_header_size();
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(TwoPLMessage::PREPARE_REQUEST), message_size,
+        table.tableID(), table.partitionID());
+
+    Encoder encoder(message.data);
+    encoder << message_piece_header;
     message.flush();
     message.set_gen_time(Time::now());
     return message_size;
@@ -542,6 +561,65 @@ public:
     txn->network_size += inputPiece.get_message_length();
   }
 
+
+  static void prepare_request_handler(MessagePiece inputPiece,
+                                    Message &responseMessage, ITable &table,
+                                    Transaction *txn) {
+
+    DCHECK(inputPiece.get_message_type() ==
+           static_cast<uint32_t>(TwoPLMessage::PREPARE_REQUEST));
+    auto table_id = inputPiece.get_table_id();
+    auto partition_id = inputPiece.get_partition_id();
+    DCHECK(table_id == table.tableID());
+    DCHECK(partition_id == table.partitionID());
+    auto key_size = table.key_size();
+    auto field_size = table.field_size();
+
+    /*
+     * The structure of a write request: (primary key, field value)
+     * The structure of a write response: ()
+     */
+
+    DCHECK(inputPiece.get_message_length() ==
+           MessagePiece::get_header_size());
+
+    // prepare response message header
+    auto message_size = MessagePiece::get_header_size();
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(TwoPLMessage::PREPARE_RESPONSE), message_size,
+        table_id, partition_id);
+
+    star::Encoder encoder(responseMessage.data);
+    encoder << message_piece_header;
+    responseMessage.flush();
+    responseMessage.set_gen_time(Time::now());
+  }
+
+  static void prepare_response_handler(MessagePiece inputPiece,
+                                    Message &responseMessage, ITable &table,
+                                    Transaction *txn) {
+
+    DCHECK(inputPiece.get_message_type() ==
+           static_cast<uint32_t>(TwoPLMessage::PREPARE_RESPONSE));
+    auto table_id = inputPiece.get_table_id();
+    auto partition_id = inputPiece.get_partition_id();
+    DCHECK(table_id == table.tableID());
+    DCHECK(partition_id == table.partitionID());
+    auto key_size = table.key_size();
+    auto field_size = table.field_size();
+
+    /*
+     * The structure of a write request: (primary key, field value)
+     * The structure of a write response: ()
+     */
+
+    DCHECK(inputPiece.get_message_length() ==
+           MessagePiece::get_header_size());
+    DCHECK(txn->pendingResponses > 0);
+    txn->pendingResponses--;
+  }
+
+
   static void replication_request_handler(MessagePiece inputPiece,
                                           Message &responseMessage,
                                           ITable &table, Transaction *txn) {
@@ -772,6 +850,8 @@ public:
     v.push_back(release_read_lock_response_handler);
     v.push_back(release_write_lock_request_handler);
     v.push_back(release_write_lock_response_handler);
+    v.push_back(prepare_request_handler);
+    v.push_back(prepare_response_handler);
     return v;
   }
 };
