@@ -20,7 +20,7 @@ namespace star {
  *
  */
 
-template <class T, std::size_t N = 1024>
+template <class T, std::size_t N = 4096>
 class LockfreeQueue
     : public boost::lockfree::spsc_queue<T, boost::lockfree::capacity<N>> {
 public:

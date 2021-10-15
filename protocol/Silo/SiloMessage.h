@@ -55,6 +55,7 @@ public:
     encoder.write_n_bytes(key, key_size);
     encoder << key_offset;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -78,6 +79,7 @@ public:
     encoder.write_n_bytes(key, key_size);
     encoder << key_offset;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -104,6 +106,7 @@ public:
     encoder.write_n_bytes(key, key_size);
     encoder << key_offset << tid;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -125,6 +128,7 @@ public:
     encoder << message_piece_header;
     encoder.write_n_bytes(key, key_size);
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -148,6 +152,7 @@ public:
     encoder.write_n_bytes(key, key_size);
     table.serialize_value(encoder, value);
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -175,6 +180,7 @@ public:
     table.serialize_value(encoder, value);
     encoder << commit_tid;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -198,6 +204,7 @@ public:
     encoder.write_n_bytes(key, key_size);
     encoder << commit_tid;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 };
@@ -342,6 +349,7 @@ public:
     encoder << message_piece_header;
     encoder << success << latest_tid << key_offset;
     responseMessage.flush();
+    responseMessage.set_gen_time(Time::now());
   }
 
   static void lock_response_handler(MessagePiece inputPiece,
@@ -454,6 +462,7 @@ public:
     encoder << success << key_offset;
 
     responseMessage.flush();
+    responseMessage.set_gen_time(Time::now());
   }
 
   static void read_validation_response_handler(MessagePiece inputPiece,
@@ -553,6 +562,7 @@ public:
     star::Encoder encoder(responseMessage.data);
     encoder << message_piece_header;
     responseMessage.flush();
+    responseMessage.set_gen_time(Time::now());
   }
 
   static void write_response_handler(MessagePiece inputPiece,
@@ -626,6 +636,7 @@ public:
     star::Encoder encoder(responseMessage.data);
     encoder << message_piece_header;
     responseMessage.flush();
+    responseMessage.set_gen_time(Time::now());
   }
 
   static void replication_response_handler(MessagePiece inputPiece,

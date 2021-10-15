@@ -75,6 +75,7 @@ public:
       encoder << get_part_func(i);
     }
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -94,6 +95,7 @@ public:
     encoder << message_piece_header;
     encoder << this_worker_id;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -114,6 +116,7 @@ public:
     encoder << this_worker_id;
     encoder << sync;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -133,6 +136,7 @@ public:
     encoder << message_piece_header;
     encoder << this_worker_id;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -159,6 +163,7 @@ public:
     encoder << key_offset;
     encoder << this_worker_id;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -183,6 +188,7 @@ public:
     encoder.write_n_bytes(key, key_size);
     table.serialize_value(encoder, value);
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -207,6 +213,7 @@ public:
     encoder.write_n_bytes(key, key_size);
     encoder << key_offset;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -231,6 +238,7 @@ public:
     encoder.write_n_bytes(key, key_size);
     encoder << key_offset;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -253,6 +261,7 @@ public:
     encoder.write_n_bytes(key, key_size);
     encoder << write_lock;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -276,6 +285,7 @@ public:
     encoder.write_n_bytes(key, key_size);
     table.serialize_value(encoder, value);
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -303,6 +313,7 @@ public:
     table.serialize_value(encoder, value);
     encoder << commit_tid;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -324,6 +335,7 @@ public:
     encoder << message_piece_header;
     encoder.write_n_bytes(key, key_size);
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -349,6 +361,7 @@ public:
     encoder.write_n_bytes(key, key_size);
     encoder << commit_tid;
     message.flush();
+    message.set_gen_time(Time::now());
     return message_size;
   }
 };

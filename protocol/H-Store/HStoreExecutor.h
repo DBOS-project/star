@@ -121,10 +121,9 @@ public:
 
     // assume all writes are updates
     if (!txn.is_single_partition()) {
-      for (int i = 0; i < (int)this->context.partition_num; ++i) {
-        if (parts_touched[i] == false)
-          continue;
-        int partitionId = i;
+      int partition_count = txn.get_partition_count();
+      for (int i = 0; i < partition_count; ++i) {
+        int partitionId = txn.get_partition(i);
         auto owner_cluster_worker = partition_owner_cluster_worker(partitionId);
         if (owner_cluster_worker == this_cluster_worker_id) {
           if (owned_partition_locked_by[partitionId] == this_cluster_worker_id) {
@@ -135,7 +134,7 @@ public:
           // send messages to other partitions to abort and unlock partitions
           // No need to wait for the response.
           txn.pendingResponses++;
-          auto tableId = parts_touched_tables[i];
+          auto tableId = 0;
           auto table = this->db.find_table(tableId, partitionId);
           txn.network_size += MessageFactoryType::new_release_partition_lock_message(
               *messages[owner_cluster_worker], *table, this_cluster_worker_id, true);
@@ -167,9 +166,6 @@ public:
 
     // write and replicate
     // Release partition locks
-    ScopedTimer t([&, this](uint64_t us) {
-      txn.record_commit_write_back_time(us);
-    });
     write_and_replicate(txn, commit_tid, messages);
 
     // release locks
@@ -202,7 +198,9 @@ public:
   void write_and_replicate(TransactionType &txn, uint64_t commit_tid,
                            std::vector<std::unique_ptr<Message>> &messages) {
     //auto &readSet = txn.readSet;
-    
+    ScopedTimer t([&, this](uint64_t us) {
+      txn.record_commit_write_back_time(us);
+    });
     auto &writeSet = txn.writeSet;
     for (auto i = 0u; i < writeSet.size(); i++) {
       auto &writeKey = writeSet[i];
@@ -259,17 +257,16 @@ public:
       //DCHECK(replicate_count == partitioner.replica_num() - 1);
     }
     if (txn.is_single_partition() == false) {
-      for (int i = 0; i < (int)this->context.partition_num; ++i) {
-        if (parts_touched[i] == false)
-          continue;
-        int partitionId = i;
+      int partition_count = txn.get_partition_count();
+      for (int i = 0; i < partition_count; ++i) {
+        int partitionId = txn.get_partition(i);
         auto owner_cluster_worker = partition_owner_cluster_worker(partitionId);
         if (owner_cluster_worker == this_cluster_worker_id) {
           //LOG(INFO) << "Commit release lock partition " << partitionId << " by cluster worker" << this_cluster_worker_id;
           owned_partition_locked_by[partitionId] = -1; // unlock partitions
         } else {
             txn.pendingResponses++;
-            auto tableId = parts_touched_tables[i];
+            auto tableId = 0;
             auto table = this->db.find_table(tableId, partitionId);
             // send messages to other partitions to unlock partitions;
             txn.network_size += MessageFactoryType::new_release_partition_lock_message(
@@ -277,6 +274,7 @@ public:
             //LOG(INFO) << "Partition worker " << this_cluster_worker_id << " issueed lock release request on partition " << partitionId;
         }
       }
+      t.end();
       sync_messages(txn);
     } else {
       DCHECK(txn.pendingResponses == 0);
@@ -306,9 +304,7 @@ public:
     if (wait_response) {
       //LOG(INFO) << "Waiting for " << txn.pendingResponses << " responses";
       while (txn.pendingResponses > 0) {
-        if (txn.remote_request_handler() ){
-          txn.message_flusher();
-        }
+        txn.remote_request_handler();
       }
     }
   }
@@ -506,6 +502,7 @@ public:
     }
 
     responseMessage.flush();
+    responseMessage.set_gen_time(Time::now());
   }
 
 
@@ -609,6 +606,7 @@ public:
     star::Encoder encoder(responseMessage.data);
     encoder << message_piece_header << success;
     responseMessage.flush();
+    responseMessage.set_gen_time(Time::now());
   }
 
 
@@ -701,6 +699,7 @@ public:
     star::Encoder encoder(responseMessage.data);
     encoder << message_piece_header << success;
     responseMessage.flush();
+    responseMessage.set_gen_time(Time::now());
   }
 
   void release_partition_lock_response_handler(MessagePiece inputPiece,
@@ -1418,8 +1417,8 @@ protected:
       }
 
       auto message = cluster_worker_messages[i].release();
-      this->out_queue.push(message);
       message->set_put_to_out_queue_time(Time::now());
+      this->out_queue.push(message);
 
       cluster_worker_messages[i] = std::make_unique<Message>();
       init_message(cluster_worker_messages[i].get(), i);

@@ -239,14 +239,14 @@ public:
 
     Message *message = out_queue.front();
 
-    if (delay->delay_enabled()) {
-      auto now = std::chrono::steady_clock::now();
-      if (std::chrono::duration_cast<std::chrono::microseconds>(now -
-                                                                message->time)
-              .count() < delay->message_delay()) {
-        return nullptr;
-      }
-    }
+    // if (delay->delay_enabled()) {
+    //   auto now = std::chrono::steady_clock::now();
+    //   if (std::chrono::duration_cast<std::chrono::microseconds>(now -
+    //                                                             message->time)
+    //           .count() < delay->message_delay()) {
+    //     return nullptr;
+    //   }
+    // }
 
     bool ok = out_queue.pop();
     CHECK(ok);

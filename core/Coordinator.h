@@ -261,7 +261,7 @@ public:
       oDispatcherThreads[i].join();
     }
 
-    //measure_round_trip();
+    measure_round_trip();
     close_sockets();
 
     LOG(INFO) << "Coordinator exits.";

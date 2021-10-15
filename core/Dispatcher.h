@@ -47,10 +47,9 @@ public:
               << numCoordinators << ", numWorkers = " << numWorkers
               << ", group id = " << group_id << ", coordinator = " << coord_id;
 
-    while (!stopFlag.load()) {
-      //LOG(INFO) << "Dispatcher coordinator = " << coord_id;
-
+    auto process_internal_message_tranfer = [&, this]() {
       while (out_to_in_queue.empty() == false) {
+        auto message_get_start = std::chrono::steady_clock::now();
         std::unique_ptr<Message> message(out_to_in_queue.front());
         bool ok = out_to_in_queue.pop();
         CHECK(ok);
@@ -71,7 +70,16 @@ public:
           DCHECK(workerId % io_thread_num == group_id);
           workers[workerId]->push_message(message.release());
         }
+        auto ltc = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - message_get_start)
+                    .count();
+        internal_message_recv_latency.add(ltc);
       };
+    };
+    while (!stopFlag.load()) {
+      //LOG(INFO) << "Dispatcher coordinator = " << coord_id;
+
+      process_internal_message_tranfer();
       for (auto i = 0u; i < numCoordinators; i++) {
         if (i == coord_id) {
           continue;
@@ -80,6 +88,7 @@ public:
         auto message = buffered_readers[i].next_message();
 
         if (message == nullptr) {
+          //process_internal_message_tranfer();
           std::this_thread::yield();
           continue;
         }
@@ -116,15 +125,16 @@ public:
         auto ltc = std::chrono::duration_cast<std::chrono::microseconds>(
                     std::chrono::steady_clock::now() - message_get_start)
                     .count();
-        message_recv_latency.add(ltc);
+        socket_message_recv_latency.add(ltc);
         DCHECK(message == nullptr);
       }
     }
 
-    LOG(INFO) << "Incoming Dispatcher exits, network size: " << network_size << ". msg_recv_latency(50th) " 
-              << message_recv_latency.nth(50) << " msg_recv_latency(75th) " << message_recv_latency.nth(75)
-              << " msg_recv_latency(95th) " << message_recv_latency.nth(95)
-              << " msg_recv_latency(99th) " << message_recv_latency.nth(99);
+    LOG(INFO) << "Incoming Dispatcher exits, network size: " << network_size << ". socket_message_recv_latency(50th) " 
+              << socket_message_recv_latency.nth(50) << " socket_message_recv_latency(75th) " << socket_message_recv_latency.nth(75)
+              << " socket_message_recv_latency(95th) " << socket_message_recv_latency.nth(95)
+              << " socket_message_recv_latency(99th) " << socket_message_recv_latency.nth(99)
+              << " internal_message_recv_latency(50th) " << internal_message_recv_latency.nth(50) / 1000.0;
   }
 
   bool is_coordinator_message(Message *message) {
@@ -143,7 +153,8 @@ private:
   std::vector<std::shared_ptr<Worker>> workers;
   LockfreeQueue<Message *> &coordinator_queue;
   LockfreeQueue<Message *> &out_to_in_queue;
-  Percentile<uint64_t> message_recv_latency;
+  Percentile<uint64_t> socket_message_recv_latency;
+  Percentile<uint64_t> internal_message_recv_latency;
   std::atomic<bool> &stopFlag;
   Context context;
 };
@@ -190,36 +201,36 @@ public:
         LOG(INFO) << "Handling coordinator message took " << spent / 1000;
       }
 
-      //auto start = Time::now();
+      auto start = Time::now();
       for (auto i = group_id; i < numWorkers; i += io_thread_num) {
         dispatchMessage(workers[i]);
       }
-      //auto spent = (Time::now() - start) / 1000;
+      auto spent = (Time::now() - start) / 1000;
       // if (spent > 100) {
-      //   /LOG(INFO) << "Dispatching messsaegs took " << spent;
+      //   LOG(INFO) << "Dispatching messsaegs took " << spent;
       // }
-      //msg_disp_ltc.add(spent);
+      msg_disp_ltc.add(spent);
       //std::this_thread::yield();
     }
 
-    LOG(INFO) << "Outgoing Dispatcher exits, network size: " << network_size;
+    LOG(INFO) << "Outgoing Dispatcher exits, network size: " << network_size
               // << ". msg_send_latency(50th) " << message_send_latency.nth(50) 
               // << " msg_send_latency(75th) " << message_send_latency.nth(75)
               // << " msg_send_latency(95th) " << message_send_latency.nth(95)
               // << " msg_send_latency(99th) " << message_send_latency.nth(99)
-              // << " msg_gen_to_sent_latency(50th) " << gen_to_sent_latency.nth(50) 
-              // << " msg_gen_to_sent_latency(75th) " << gen_to_sent_latency.nth(75)
-              // << " msg_gen_to_sent_latency(95th) " << gen_to_sent_latency.nth(95)
-              // << " msg_gen_to_sent_latency(99th) " << gen_to_sent_latency.nth(99)
-              // << " msg_gen_to_queue_latency(50th) " << gen_to_queue_latency.nth(50) 
-              // << " msg_gen_to_queue_latency(75th) " << gen_to_queue_latency.nth(75)
-              // << " msg_gen_to_queue_latency(95th) " << gen_to_queue_latency.nth(95)
-              // << " msg_gen_to_queue_latency(99th) " << gen_to_queue_latency.nth(99)
-              // << " msg_disp_ltc(50th) " << msg_disp_ltc.nth(50) 
-              // << " msg_disp_ltc(75th) " << msg_disp_ltc.nth(75)
-              // << " msg_disp_ltc(95th) " << msg_disp_ltc.nth(95)
-              // << " msg_disp_ltc(99th) " << msg_disp_ltc.nth(99)
-              // << " msg_disp_ltc(100th) " << msg_disp_ltc.nth(100);
+              << " msg_gen_to_sent_latency(50th) " << gen_to_sent_latency.nth(50) 
+              << " msg_gen_to_sent_latency(75th) " << gen_to_sent_latency.nth(75)
+              << " msg_gen_to_sent_latency(95th) " << gen_to_sent_latency.nth(95)
+              << " msg_gen_to_sent_latency(99th) " << gen_to_sent_latency.nth(99)
+              << " msg_gen_to_queue_latency(50th) " << gen_to_queue_latency.nth(50) 
+              << " msg_gen_to_queue_latency(75th) " << gen_to_queue_latency.nth(75)
+              << " msg_gen_to_queue_latency(95th) " << gen_to_queue_latency.nth(95)
+              << " msg_gen_to_queue_latency(99th) " << gen_to_queue_latency.nth(99)
+              << " msg_disp_ltc(50th) " << msg_disp_ltc.nth(50) 
+              << " msg_disp_ltc(75th) " << msg_disp_ltc.nth(75)
+              << " msg_disp_ltc(95th) " << msg_disp_ltc.nth(95)
+              << " msg_disp_ltc(99th) " << msg_disp_ltc.nth(99)
+              << " msg_disp_ltc(100th) " << msg_disp_ltc.nth(100);
   }
 
   void sendMessage(Message *message) {
@@ -242,10 +253,8 @@ public:
       return;
     }
     //ltc = (Time::now() - message_get_start) / 1000;
-    //message_send_latency.add(ltc);
+    message_send_latency.add(ltc);
 
-    //ltc = (Time::now() - raw_message->get_gen_time()) / 1000;
-    //gen_to_sent_latency.add(ltc);
     // wrap the message with a unique pointer.
     std::unique_ptr<Message> message(raw_message);
     // send the message
@@ -260,9 +269,10 @@ public:
       DCHECK(message->get_dest_node_id() == this->coordinator_id);
       out_to_in_queue.push(message.release());
     }
-
-    //ltc = (raw_message->get_put_to_out_queue_time() - raw_message->get_gen_time()) / 1000;
-    //gen_to_queue_latency.add(ltc);
+    ltc = (Time::now() - raw_message->get_gen_time()) / 1000;
+    gen_to_sent_latency.add(ltc);
+    ltc = (raw_message->get_put_to_out_queue_time() - raw_message->get_gen_time()) / 1000;
+    gen_to_queue_latency.add(ltc);
   }
 
 private:
