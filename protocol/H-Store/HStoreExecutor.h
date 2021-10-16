@@ -341,14 +341,14 @@ public:
         this->search(table_id, partition_id, key, value);
 
       } else {
-        bool in_parts = false;
-        for (auto i = 0; i < txn.get_partition_count(); ++i) {
-          if ((int)partition_id == txn.get_partition(i)) {
-            in_parts = true;
-            break;
-          }
-        }
-        DCHECK(in_parts);
+        // bool in_parts = false;
+        // for (auto i = 0; i < txn.get_partition_count(); ++i) {
+        //   if ((int)partition_id == txn.get_partition(i)) {
+        //     in_parts = true;
+        //     break;
+        //   }
+        // }
+        // DCHECK(in_parts);
         ITable *table = this->db.find_table(table_id, partition_id);
 
         remote = true;
@@ -1260,7 +1260,7 @@ public:
             owned_partition_locked_by[partition_id] = this_cluster_worker_id;
           } else {
             ////LOG(INFO) << "Dist txn";
-            std::fill(parts_touched.begin(), parts_touched.end(), false);
+            //std::fill(parts_touched.begin(), parts_touched.end(), false);
             if (this->context.enable_hstore_master) {
               obtain_master_partitions_lock(*this->transaction);
             }
@@ -1417,9 +1417,10 @@ protected:
       }
 
       auto message = cluster_worker_messages[i].release();
-      message->set_put_to_out_queue_time(Time::now());
+      
       this->out_queue.push(message);
-
+      message->set_put_to_out_queue_time(Time::now());
+      
       cluster_worker_messages[i] = std::make_unique<Message>();
       init_message(cluster_worker_messages[i].get(), i);
     }

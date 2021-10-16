@@ -201,15 +201,15 @@ public:
         LOG(INFO) << "Handling coordinator message took " << spent / 1000;
       }
 
-      auto start = Time::now();
+      //auto start = Time::now();
       for (auto i = group_id; i < numWorkers; i += io_thread_num) {
         dispatchMessage(workers[i]);
       }
-      auto spent = (Time::now() - start) / 1000;
+      //auto spent = (Time::now() - start) / 1000;
       // if (spent > 100) {
       //   LOG(INFO) << "Dispatching messsaegs took " << spent;
       // }
-      msg_disp_ltc.add(spent);
+      //msg_disp_ltc.add(spent);
       //std::this_thread::yield();
     }
 
@@ -230,7 +230,11 @@ public:
               << " msg_disp_ltc(75th) " << msg_disp_ltc.nth(75)
               << " msg_disp_ltc(95th) " << msg_disp_ltc.nth(95)
               << " msg_disp_ltc(99th) " << msg_disp_ltc.nth(99)
-              << " msg_disp_ltc(100th) " << msg_disp_ltc.nth(100);
+              << " msg_disp_ltc(100th) " << msg_disp_ltc.nth(100)
+              << " network_size " << network_size
+              << " network_msg_cnt " << network_msg_cnt
+              << " internal_network_size " << internal_network_size
+              << " internal_network_msg_cnt " << internal_network_msg_cnt;
   }
 
   void sendMessage(Message *message) {
@@ -252,14 +256,18 @@ public:
     if (raw_message == nullptr) {
       return;
     }
+    auto gen_time = raw_message->get_gen_time();
+    auto put_to_out_queue_time = raw_message->get_put_to_out_queue_time();
     //ltc = (Time::now() - message_get_start) / 1000;
-    message_send_latency.add(ltc);
-
+    //message_send_latency.add(ltc);
     // wrap the message with a unique pointer.
     std::unique_ptr<Message> message(raw_message);
     // send the message
+    ltc = (Time::now() - gen_time) / 1000;
+    gen_to_sent_latency.add(ltc);
     if (message->get_dest_node_id() != this->coordinator_id) {
       sendMessage(message.get());
+      network_msg_cnt++;
     } else {
       // if (message->get_worker_id() >= context.worker_num) {
       //   LOG(INFO) << "message with worker id " << message->get_worker_id() 
@@ -268,10 +276,12 @@ public:
       DCHECK(message->get_message_length() == message->data.length());
       DCHECK(message->get_dest_node_id() == this->coordinator_id);
       out_to_in_queue.push(message.release());
+      internal_network_size += message->get_message_length();
+      internal_network_msg_cnt++;
     }
-    ltc = (Time::now() - raw_message->get_gen_time()) / 1000;
-    gen_to_sent_latency.add(ltc);
-    ltc = (raw_message->get_put_to_out_queue_time() - raw_message->get_gen_time()) / 1000;
+    
+    
+    ltc = (put_to_out_queue_time - gen_time) / 1000;
     gen_to_queue_latency.add(ltc);
   }
 
@@ -280,6 +290,9 @@ private:
   std::size_t group_id;
   std::size_t io_thread_num;
   std::size_t network_size;
+  std::size_t internal_network_size = 0;
+  std::size_t network_msg_cnt = 0;
+  std::size_t internal_network_msg_cnt = 0;
   std::vector<Socket> &sockets;
   std::vector<std::shared_ptr<Worker>> workers;
   LockfreeQueue<Message *> &coordinator_queue;
