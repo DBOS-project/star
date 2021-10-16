@@ -97,7 +97,11 @@ public:
     set_message_length(data.size());
     get_deadbeef_ref() = DEADBEEF;
     gen_time = Time::now();
+    set_put_to_in_queue_time(gen_time);
+    set_put_to_out_queue_time(gen_time);
   }
+
+  virtual ~Message() {}
 
   void set_put_to_in_queue_time(uint64_t ts) { put_to_in_queue_time = ts; }
   uint64_t get_put_to_in_queue_time() { return put_to_in_queue_time; }
@@ -114,7 +118,7 @@ public:
     get_deadbeef_ref() = DEADBEEF;
   }
 
-  char *get_raw_ptr() { return &data[0]; }
+  virtual char *get_raw_ptr() { return &data[0]; }
 
   void clear() {
     data = std::string(get_prefix_size(), 0);
@@ -157,13 +161,13 @@ public:
     return (get_header_ref() >> SOURCE_NODE_ID_OFFSET) & SOURCE_NODE_ID_MASK;
   }
 
-  void set_dest_node_id(uint64_t dest_node_id) {
+  virtual void set_dest_node_id(uint64_t dest_node_id) {
     DCHECK(dest_node_id < (1 << 7));
     clear_dest_node_id();
     get_header_ref() |= (dest_node_id << DEST_NODE_ID_OFFSET);
   }
 
-  uint64_t get_dest_node_id() {
+  virtual uint64_t get_dest_node_id() {
     return (get_header_ref() >> DEST_NODE_ID_OFFSET) & DEST_NODE_ID_MASK;
   }
 
@@ -181,7 +185,7 @@ public:
     return (get_header_ref() >> MESSAGE_COUNT_OFFSET) & MESSAGE_COUNT_MASK;
   }
 
-  uint64_t get_message_length() {
+  virtual uint64_t get_message_length() {
     return (get_header_ref() >> MESSAGE_LENGTH_OFFSET) & MESSAGE_LENGTH_MASK;
   }
 
@@ -264,5 +268,26 @@ public:
   static constexpr uint64_t MESSAGE_LENGTH_OFFSET = 0;
 
   static constexpr uint32_t DEADBEEF = 0xDEADBEEF;
+};
+
+class GrouppedMessage: public Message {
+public:
+  GrouppedMessage() { clear(); }
+  GrouppedMessage(const std::string & group_data, uint64_t dest_node): group_data(group_data), dest_node(dest_node) {}
+  void addMessage(Message * message) {
+    group_data.append(message->get_raw_ptr(), message->get_message_length());
+  }
+  virtual char *get_raw_ptr() override { return &group_data[0]; }
+  virtual size_t get_message_length() override { return group_data.size(); }
+  virtual uint64_t get_dest_node_id() override {
+    return dest_node;
+  }
+  virtual void set_dest_node_id(uint64_t dest_node) override {
+    this->dest_node = dest_node;
+  }
+  void clear() { group_data.clear(); dest_node = std::numeric_limits<uint64_t>::max(); }
+private:
+  std::string group_data;
+  uint64_t dest_node;
 };
 } // namespace star

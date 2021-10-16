@@ -49,7 +49,9 @@ public:
   int this_cluster_worker_id;
   std::vector<int> owned_partition_locked_by;
   std::vector<int> managed_partitions;
-  //int ;
+  std::vector<std::vector<std::unique_ptr<Message>>> messages_group_by_coordinator;
+  std::vector<std::string> message_data_group_by_coordinator;
+  std::vector<size_t> message_cnt_group_by_coordinator;
   bool hstore_master = false;
 
   HStoreExecutor(std::size_t coordinator_id, std::size_t worker_id, DatabaseType &db,
@@ -62,6 +64,8 @@ public:
       cluster_worker_num = this->context.worker_num * this->context.coordinator_num;
       DCHECK(this->context.partition_num % this->context.coordinator_num == 0);
       DCHECK(this->context.partition_num % this->context.worker_num == 0);
+      message_data_group_by_coordinator.resize(this->context.coordinator_num);
+      message_cnt_group_by_coordinator.resize(this->context.coordinator_num);
       if (worker_id > context.worker_num) {
         //LOG(INFO) << "HStore Master Executor " << worker_id;
         this_cluster_worker_id = 0;
@@ -1425,9 +1429,70 @@ protected:
       init_message(cluster_worker_messages[i].get(), i);
     }
   }
+  // virtual void flush_messages() override {
+
+  //   DCHECK(cluster_worker_messages.size() == (size_t)cluster_worker_num);
+  //   for (int i = 0; i < (int)this->context.coordinator_num; ++i) {
+  //     message_data_group_by_coordinator[i].clear();
+  //     message_cnt_group_by_coordinator[i] = 0;
+  //   }
+
+  //   for (int i = 0; i < (int)cluster_worker_messages.size(); i++) {
+  //     if (cluster_worker_messages[i]->get_message_count() == 0) {
+  //       continue;
+  //     }
+
+  //     auto message = cluster_worker_messages[i].get();
+  //     auto dest_node_id = message->get_dest_node_id();
+  //     if (dest_node_id == this->coordinator_id) {
+  //       cluster_worker_messages[i].release();
+  //       // Do not batch message if messages are destined for other workers in this coordinator
+  //       this->out_queue.push(message);
+  //     } else {
+  //       message_cnt_group_by_coordinator[dest_node_id]++;
+  //       continue;
+  //     }
+
+  //     message->set_put_to_out_queue_time(Time::now());
+      
+  //     cluster_worker_messages[i] = std::make_unique<Message>();
+  //     init_message(cluster_worker_messages[i].get(), i);
+  //   }
+
+  //   for (int i = 0; i < (int)cluster_worker_messages.size(); i++) {
+  //     if (cluster_worker_messages[i]->get_message_count() == 0) {
+  //       continue;
+  //     }
+
+  //     auto message = cluster_worker_messages[i].release();
+  //     auto dest_node_id = message->get_dest_node_id();
+  //     DCHECK(dest_node_id != this->coordinator_id);
+
+  //     if (message_cnt_group_by_coordinator[dest_node_id] == 1) {
+  //       // Do not batch message if there is only one message for one coordiantor to avoid copying
+  //       this->out_queue.push(message);
+  //     } else {
+  //       auto message_len = message->get_message_length();
+  //       auto message_data = message->get_raw_ptr();
+  //       message_data_group_by_coordinator[dest_node_id].append(message_data, message_len);
+  //     }
+
+  //     message->set_put_to_out_queue_time(Time::now());
+      
+  //     cluster_worker_messages[i] = std::make_unique<Message>();
+  //     init_message(cluster_worker_messages[i].get(), i);
+  //   }
+
+  //   for (int i = 0; i < (int)this->context.coordinator_num; ++i) {
+  //     if (message_data_group_by_coordinator[i].size()) {
+  //       uint64_t dest_node = i;
+  //       GrouppedMessage * message = new GrouppedMessage(message_data_group_by_coordinator[i], dest_node);
+  //       this->out_queue.push(message);
+  //     }
+  //   }
+  // }
 
   void flush_hstore_master_messages() {
-
     DCHECK(hstore_master_cluster_worker_messages.size() == (size_t)cluster_worker_num);
     for (int i = 0; i < (int)hstore_master_cluster_worker_messages.size(); i++) {
       if (hstore_master_cluster_worker_messages[i]->get_message_count() == 0) {

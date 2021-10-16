@@ -134,7 +134,9 @@ public:
               << socket_message_recv_latency.nth(50) << " socket_message_recv_latency(75th) " << socket_message_recv_latency.nth(75)
               << " socket_message_recv_latency(95th) " << socket_message_recv_latency.nth(95)
               << " socket_message_recv_latency(99th) " << socket_message_recv_latency.nth(99)
-              << " internal_message_recv_latency(50th) " << internal_message_recv_latency.nth(50) / 1000.0;
+              << " internal_message_recv_latency(50th) " << internal_message_recv_latency.nth(50) / 1000.0
+              << " socket_message_recv_cnt " << socket_message_recv_latency.size()
+              << " internal_message_recv_cnt " << internal_message_recv_latency.size();
   }
 
   bool is_coordinator_message(Message *message) {
@@ -188,6 +190,8 @@ public:
               << ", group id = " << group_id;
     Percentile<uint64_t> msg_disp_ltc;
     bool is_hstore = context.protocol == "HStore";
+    std::vector<std::vector<Message*>> messages_by_cooridnator;
+    messages_by_cooridnator.resize(context.coordinator_num);
     while (!stopFlag.load()) {
 
       // check coordinator
@@ -201,10 +205,23 @@ public:
         LOG(INFO) << "Handling coordinator message took " << spent / 1000;
       }
 
-      //auto start = Time::now();
-      for (auto i = group_id; i < numWorkers; i += io_thread_num) {
-        dispatchMessage(workers[i]);
+      for (size_t i = 0; i < messages_by_cooridnator.size(); ++i) {
+        for (size_t j = 0; j < messages_by_cooridnator[i].size(); ++j) {
+          // Release old messages
+          std::unique_ptr<Message> rel(messages_by_cooridnator[i][j]);
+        }
+        messages_by_cooridnator[i].clear();
       }
+      for (auto i = group_id; i < numWorkers; i += io_thread_num) {
+        groupOrDispatchMessages(workers[i], messages_by_cooridnator);
+      }
+
+      dispatchGroupMessages(messages_by_cooridnator);
+      
+      //auto start = Time::now();
+      // for (auto i = group_id; i < numWorkers; i += io_thread_num) {
+      //   dispatchMessage(workers[i]);
+      // }
       //auto spent = (Time::now() - start) / 1000;
       // if (spent > 100) {
       //   LOG(INFO) << "Dispatching messsaegs took " << spent;
@@ -231,6 +248,11 @@ public:
               << " msg_disp_ltc(95th) " << msg_disp_ltc.nth(95)
               << " msg_disp_ltc(99th) " << msg_disp_ltc.nth(99)
               << " msg_disp_ltc(100th) " << msg_disp_ltc.nth(100)
+              << " send_ltc(50th) " << sent_latency.nth(50) 
+              << " send_ltc(75th) " << sent_latency.nth(75)
+              << " send_ltc(95th) " << sent_latency.nth(95)
+              << " send_ltc(99th) " << sent_latency.nth(99)
+              << " send_ltc(100th) " << sent_latency.nth(100)
               << " network_size " << network_size
               << " network_msg_cnt " << network_msg_cnt
               << " internal_network_size " << internal_network_size
@@ -241,12 +263,54 @@ public:
     auto dest_node_id = message->get_dest_node_id();
     DCHECK(dest_node_id >= 0 && dest_node_id < sockets.size() &&
            dest_node_id != coordinator_id);
-    DCHECK(message->get_message_length() == message->data.length());
+    //DCHECK(message->get_message_length() == message->data.length());
 
     sockets[dest_node_id].write_n_bytes(message->get_raw_ptr(),
                                         message->get_message_length());
 
     network_size += message->get_message_length();
+  }
+
+  void groupOrDispatchMessages(const std::shared_ptr<Worker> &worker, std::vector<std::vector<Message*>> & messages_by_coordinator) {
+    while (true) {
+      Message *raw_message = worker->pop_message();
+      if (raw_message == nullptr) {
+        return;
+      }
+      auto dest_node = raw_message->get_dest_node_id();
+      if (dest_node != this->coordinator_id) {
+        messages_by_coordinator[dest_node].push_back(raw_message);
+      } else {
+        DCHECK(raw_message->get_message_length() == raw_message->data.length());
+        DCHECK(raw_message->get_dest_node_id() == this->coordinator_id);
+        internal_network_size += raw_message->get_message_length();
+        out_to_in_queue.push(raw_message);
+        internal_network_msg_cnt++;
+      }
+    }
+  }
+
+  void dispatchGroupMessages(const std::vector<std::vector<Message*>> & messages_by_coordinator) {
+    for (size_t i = 0; i < messages_by_coordinator.size(); ++i) {
+      if (messages_by_coordinator[i].size() == 0)
+        continue;
+      if (messages_by_coordinator[i].size() == 1) {
+        auto t = Time::now();
+        sendMessage(messages_by_coordinator[i][0]);
+        sent_latency.add((Time::now() - t) / 1000);
+        network_msg_cnt++;
+        continue;
+      }
+      std::unique_ptr<GrouppedMessage> gmsg(new GrouppedMessage);
+      gmsg->set_dest_node_id(i);
+      for (size_t j = 0; j < messages_by_coordinator[i].size(); ++j) {
+        gmsg->addMessage(messages_by_coordinator[i][j]);
+      }
+      auto t = Time::now();
+      sendMessage(gmsg.get());
+      sent_latency.add((Time::now() - t) / 1000);
+      network_msg_cnt++;
+    }
   }
 
   void dispatchMessage(const std::shared_ptr<Worker> &worker) {
@@ -266,7 +330,9 @@ public:
     ltc = (Time::now() - gen_time) / 1000;
     gen_to_sent_latency.add(ltc);
     if (message->get_dest_node_id() != this->coordinator_id) {
+      auto t = Time::now();
       sendMessage(message.get());
+      sent_latency.add((Time::now() - t) / 1000);
       network_msg_cnt++;
     } else {
       // if (message->get_worker_id() >= context.worker_num) {
@@ -299,6 +365,7 @@ private:
   LockfreeQueue<Message *> &out_to_in_queue;
   Percentile<uint64_t> message_send_latency;
   Percentile<uint64_t> gen_to_sent_latency;
+  Percentile<uint64_t> sent_latency;
   Percentile<uint64_t> gen_to_queue_latency;
   std::atomic<bool> &stopFlag;
   Context context;
