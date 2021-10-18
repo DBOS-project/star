@@ -71,6 +71,7 @@ public:
 
     txn.remote_request_handler = [this]() { return this->process_request(); };
     txn.message_flusher = [this]() { this->flush_messages(); };
+    txn.set_logger(this->logger.get());
   };
 };
 } // namespace star

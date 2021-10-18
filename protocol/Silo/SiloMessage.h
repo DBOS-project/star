@@ -86,7 +86,8 @@ public:
   static std::size_t new_read_validation_message(Message &message,
                                                  ITable &table, const void *key,
                                                  uint32_t key_offset,
-                                                 uint64_t tid) {
+                                                 uint64_t tid,
+                                                 bool last_validation) {
 
     /*
      * The structure of a read validation request: (primary key, read key
@@ -96,7 +97,7 @@ public:
     auto key_size = table.key_size();
 
     auto message_size = MessagePiece::get_header_size() + key_size +
-                        sizeof(key_offset) + sizeof(tid);
+                        sizeof(key_offset) + sizeof(tid) + sizeof(last_validation);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(SiloMessage::READ_VALIDATION_REQUEST),
         message_size, table.tableID(), table.partitionID());
@@ -104,11 +105,11 @@ public:
     Encoder encoder(message.data);
     encoder << message_piece_header;
     encoder.write_n_bytes(key, key_size);
-    encoder << key_offset << tid;
+    encoder << key_offset << tid << last_validation;
     message.flush();
-    message.set_gen_time(Time::now());
     return message_size;
   }
+
 
   static std::size_t new_abort_message(Message &message, ITable &table,
                                        const void *key) {
@@ -133,22 +134,24 @@ public:
   }
 
   static std::size_t new_write_message(Message &message, ITable &table,
-                                       const void *key, const void *value) {
+                                       const void *key, const void *value,
+                                       uint64_t commit_tid,
+                                       bool persist_commit_record = false) {
 
     /*
-     * The structure of a write request: (primary key, field value)
+     * The structure of a write request: (commit_tid, persist_commit_record?, primary key, field value)
      */
 
     auto key_size = table.key_size();
     auto field_size = table.field_size();
 
-    auto message_size = MessagePiece::get_header_size() + key_size + field_size;
+    auto message_size = MessagePiece::get_header_size() + sizeof(uint64_t) + sizeof(bool) + key_size + field_size;
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(SiloMessage::WRITE_REQUEST), message_size,
         table.tableID(), table.partitionID());
 
     Encoder encoder(message.data);
-    encoder << message_piece_header;
+    encoder << message_piece_header << commit_tid << persist_commit_record;
     encoder.write_n_bytes(key, key_size);
     table.serialize_value(encoder, value);
     message.flush();
@@ -422,13 +425,13 @@ public:
 
     /*
      * The structure of a read validation request: (primary key, read key
-     * offset, tid) The structure of a read validation response: (success?, read
+     * offset, tid, last_validation) The structure of a read validation response: (success?, read
      * key offset)
      */
 
     DCHECK(inputPiece.get_message_length() == MessagePiece::get_header_size() +
                                                   key_size + sizeof(uint32_t) +
-                                                  sizeof(uint64_t));
+                                                  sizeof(uint64_t) + sizeof(bool));
 
     auto stringPiece = inputPiece.toStringPiece();
     const void *key = stringPiece.data();
@@ -437,11 +440,12 @@ public:
 
     uint32_t key_offset;
     uint64_t tid;
+    bool last_validation;
     Decoder dec(stringPiece);
-    dec >> key_offset >> tid;
+    dec >> key_offset >> tid >> last_validation;
 
     bool success = true;
-
+    
     if (SiloHelper::remove_lock_bit(latest_tid) != tid) {
       success = false;
     }
@@ -462,7 +466,20 @@ public:
     encoder << success << key_offset;
 
     responseMessage.flush();
-    responseMessage.set_gen_time(Time::now());
+
+    if (txn->get_logger()) {
+      // write a vote for a key
+      std::ostringstream ss;
+      ss << success;
+      auto output = ss.str();
+      txn->get_logger()->write(output.c_str(), output.size());
+    }
+
+    if (txn->get_logger() && last_validation) {
+      // sync the votes
+      // On recovery, the txn is considered prepared only if all votes are true // passed all validation
+      txn->get_logger()->sync();
+    }
   }
 
   static void read_validation_response_handler(MessagePiece inputPiece,
@@ -539,18 +556,22 @@ public:
     auto field_size = table.field_size();
 
     /*
-     * The structure of a write request: (primary key, field value)
+     * The structure of a write request: (commit_tid, persist_commit_record, primary key, field value)
      * The structure of a write response: ()
      */
 
     DCHECK(inputPiece.get_message_length() ==
-           MessagePiece::get_header_size() + key_size + field_size);
+           MessagePiece::get_header_size() + sizeof(uint64_t) + sizeof(bool) + key_size + field_size);
 
-    auto stringPiece = inputPiece.toStringPiece();
+    Decoder dec(inputPiece.toStringPiece());
+    uint64_t commit_tid;
+    bool persist_commit_record;
+    dec >> commit_tid >> persist_commit_record;
+    auto stringPiece = dec.bytes;
 
     const void *key = stringPiece.data();
     stringPiece.remove_prefix(key_size);
-
+    const void *value = stringPiece.data();
     table.deserialize_value(key, stringPiece);
 
     // prepare response message header
@@ -563,6 +584,21 @@ public:
     encoder << message_piece_header;
     responseMessage.flush();
     responseMessage.set_gen_time(Time::now());
+
+    if (txn->get_logger()) { // Persist redo record
+      std::ostringstream ss;
+      ss << table_id << partition_id << key_size << std::string((char*)key, key_size) << field_size << std::string((char*)value, field_size);
+      auto output = ss.str();
+      txn->get_logger()->write(output.c_str(), output.size());
+    }
+    if (persist_commit_record) {
+      DCHECK(txn->get_logger());
+      std::ostringstream ss;
+      ss << commit_tid << true;
+      auto output = ss.str();
+      txn->get_logger()->write(output.c_str(), output.size());
+      txn->get_logger()->sync();
+    }
   }
 
   static void write_response_handler(MessagePiece inputPiece,

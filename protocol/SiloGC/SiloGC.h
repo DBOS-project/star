@@ -192,7 +192,7 @@ private:
         auto coordinatorID = partitioner.master_coordinator(partitionId);
         txn.network_size += MessageFactoryType::new_read_validation_message(
             *messages[coordinatorID], *table, readKey.get_key(), i,
-            readKey.get_tid());
+            readKey.get_tid(), false);
       }
     }
 

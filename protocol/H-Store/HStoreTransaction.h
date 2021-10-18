@@ -29,6 +29,14 @@ public:
   
   virtual ~HStoreTransaction() = default;
 
+  void set_logger(BufferedFileWriter * logger) {
+    this->logger = logger;
+  }
+
+  BufferedFileWriter * get_logger() {
+    return this->logger;
+  }
+
   std::size_t commit_unlock_time_us = 0;
   std::size_t commit_work_time_us = 0;
   std::size_t commit_write_back_time_us = 0;
@@ -268,5 +276,6 @@ public:
   Partitioner &partitioner;
   Operation operation;
   std::vector<TwoPLRWKey> readSet, writeSet;
+  BufferedFileWriter * logger = nullptr;
 };
 } // namespace star

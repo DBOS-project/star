@@ -14,7 +14,7 @@ class BufferedFileWriter {
 
 public:
   BufferedFileWriter(const char *filename) {
-    fd = open(filename, O_WRONLY | O_CREAT,
+    fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC,
               S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
     CHECK(fd >= 0);
     bytes_total = 0;
@@ -54,6 +54,13 @@ public:
       CHECK(err >= 0);
     }
     bytes_total = 0;
+  }
+
+  void sync() {
+    flush();
+    DCHECK(fd >= 0);
+    int err = ::fdatasync(fd);
+    CHECK(err == 0);
   }
 
   void close() {

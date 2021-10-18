@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <thread>
+#include <sstream>
 
 #include "core/Partitioner.h"
 #include "core/Table.h"
@@ -93,6 +94,15 @@ public:
       commit_tid = generate_tid(txn);
     }
 
+    // Passed validation, persist commit record
+    if (txn.get_logger()) {
+      std::ostringstream ss;
+      ss << commit_tid << true;
+      auto output = ss.str();
+      txn.get_logger()->write(output.c_str(), output.size());
+      txn.get_logger()->sync();
+    }
+
     // write and replicate
     {
       ScopedTimer t([&, this](uint64_t us) {
@@ -177,6 +187,36 @@ private:
       return false;
     };
 
+    std::vector<bool> last_validation_step(writeSet.size(), false);
+    std::vector<bool> coordinator_covered(this->context.coordinator_num, false);
+    
+    if (txn.get_logger()) {
+      // We set last_validation_step[i] to true if it is the last write to the coordinator
+      // We traverse backwards and set the sync flag for the first write whose coordinator_covered is not true
+      for (auto i = (int)readSet.size() - 1; i >= 0; i--) {
+        auto &readKey = readSet[i];
+        if (readKey.get_local_index_read_bit()) {
+          continue; // read only index does not need to validate
+        }
+        bool in_write_set = isKeyInWriteSet(readKey.get_key());
+        if (in_write_set) {
+          continue; // already validated in lock write set
+        }
+        auto tableId = readKey.get_table_id();
+        auto partitionId = readKey.get_partition_id();
+        auto table = db.find_table(tableId, partitionId);
+        auto key_size = table->key_size();
+        auto field_size = table->field_size();
+        if (partitioner.has_master_partition(partitionId))
+          continue;
+        auto coordinatorId = partitioner.master_coordinator(partitionId);
+        if (coordinator_covered[coordinatorId] == false) {
+          coordinator_covered[coordinatorId] = true;
+          last_validation_step[i] = true;
+        }
+      }
+    }
+
     for (auto i = 0u; i < readSet.size(); i++) {
       auto &readKey = readSet[i];
 
@@ -211,7 +251,7 @@ private:
         txn.pendingResponses++;
         auto coordinatorID = partitioner.master_coordinator(partitionId);
         txn.network_size += MessageFactoryType::new_read_validation_message(
-            *messages[coordinatorID], *table, key, i, tid);
+            *messages[coordinatorID], *table, key, i, tid, last_validation_step[i]);
       }
     }
 
@@ -268,24 +308,57 @@ private:
 
     auto &readSet = txn.readSet;
     auto &writeSet = txn.writeSet;
+    auto logger = txn.get_logger();
+    bool wrote_local_log = false;
+    std::vector<bool> persist_commit_record(writeSet.size(), false);
+    std::vector<bool> coordinator_covered(this->context.coordinator_num, false);
+    
+    if (txn.get_logger()) {
+      // We set persist_commit_record[i] to true if it is the last write to the coordinator
+      // We traverse backwards and set the sync flag for the first write whose coordinator_covered is not true
+      for (auto i = (int)writeSet.size() - 1; i >= 0; i--) {
+        auto &writeKey = writeSet[i];
+        auto tableId = writeKey.get_table_id();
+        auto partitionId = writeKey.get_partition_id();
+        auto table = db.find_table(tableId, partitionId);
+        auto key_size = table->key_size();
+        auto field_size = table->field_size();
+        if (partitioner.has_master_partition(partitionId))
+          continue;
+        auto coordinatorId = partitioner.master_coordinator(partitionId);
+        if (coordinator_covered[coordinatorId] == false) {
+          coordinator_covered[coordinatorId] = true;
+          persist_commit_record[i] = true;
+        }
+      }
+    }
 
     for (auto i = 0u; i < writeSet.size(); i++) {
       auto &writeKey = writeSet[i];
       auto tableId = writeKey.get_table_id();
       auto partitionId = writeKey.get_partition_id();
       auto table = db.find_table(tableId, partitionId);
+      auto key_size = table->key_size();
+      auto field_size = table->field_size();
 
       // write
       if (partitioner.has_master_partition(partitionId)) {
         auto key = writeKey.get_key();
         auto value = writeKey.get_value();
         table->update(key, value);
+        if (logger) { // write redo records
+          std::ostringstream ss;
+          ss << tableId << partitionId << key_size << std::string((char*)key,key_size) << field_size << std::string((char*)value, field_size);
+          auto output = ss.str();
+          logger->write(output.c_str(), output.size());
+          wrote_local_log = true;
+        }
       } else {
         txn.pendingResponses++;
         auto coordinatorID = partitioner.master_coordinator(partitionId);
         txn.network_size += MessageFactoryType::new_write_message(
             *messages[coordinatorID], *table, writeKey.get_key(),
-            writeKey.get_value());
+            writeKey.get_value(), commit_tid, persist_commit_record[i]);
       }
 
       // value replicate
@@ -328,7 +401,10 @@ private:
 
       DCHECK(replicate_count == partitioner.replica_num() - 1);
     }
-
+    if (wrote_local_log) {
+      txn.message_flusher();
+      logger->sync();
+    }
     sync_messages(txn);
   }
 

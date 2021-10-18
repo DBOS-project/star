@@ -27,8 +27,16 @@ public:
   }
 
   virtual ~CalvinTransaction() = default;
+  
+  void set_logger(BufferedFileWriter * logger) {
+    this->logger = logger;
+  }
 
-std::size_t commit_unlock_time_us = 0;
+  BufferedFileWriter * get_logger() {
+    return this->logger;
+  }
+
+  std::size_t commit_unlock_time_us = 0;
   std::size_t commit_work_time_us = 0;
   std::size_t commit_write_back_time_us = 0;
   std::size_t remote_work_time_us = 0;
@@ -344,5 +352,6 @@ public:
   std::vector<bool> active_coordinators;
   Operation operation; // never used
   std::vector<CalvinRWKey> readSet, writeSet;
+  BufferedFileWriter * logger = nullptr;
 };
 } // namespace star
