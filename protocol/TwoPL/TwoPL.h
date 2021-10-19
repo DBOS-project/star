@@ -301,6 +301,8 @@ public:
 
       for (size_t i = 0; i < context.coordinator_num; ++i) {
         auto & writeSet = writeSetGroupByCoordinator[i];
+        if (writeSet.empty())
+          continue;
         if (i == partitioner.get_coordinator_id()) {
           // Redo logging
           for (size_t j = 0; j < writeSet.size(); ++j) {
