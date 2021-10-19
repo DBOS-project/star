@@ -42,6 +42,10 @@ public:
   std::string cdf_path;
   std::size_t cpu_core_id = 0;
   std::size_t cross_txn_workers = 0;
+  // https://www.storagereview.com/review/intel-ssd-dc-p4510-review
+  // We emulate 110us write latency of Intel DC P4510 SSD.
+  std::size_t emulated_persist_latency = 110;
+     
   bool enable_hstore_master = false;
   
   bool tcp_no_delay = true;

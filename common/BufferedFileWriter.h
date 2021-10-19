@@ -5,7 +5,8 @@
 #pragma once
 
 #include <glog/logging.h>
-
+#include <chrono>
+#include <thread>
 #include <cstring>
 #include <fcntl.h>
 #include <stdio.h>
@@ -13,7 +14,8 @@
 class BufferedFileWriter {
 
 public:
-  BufferedFileWriter(const char *filename) {
+  BufferedFileWriter(const char *filename, std::size_t emulated_persist_latency = 0) 
+    : emulated_persist_latency(emulated_persist_latency) {
     fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC,
               S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
     CHECK(fd >= 0);
@@ -60,7 +62,8 @@ public:
     flush();
     DCHECK(fd >= 0);
     int err = 0;
-    //int err = ::fdatasync(fd);
+    if (emulated_persist_latency)
+      std::this_thread::sleep_for(std::chrono::microseconds(emulated_persist_latency));
     CHECK(err == 0);
   }
 
@@ -77,4 +80,5 @@ private:
   int fd;
   char buffer[BUFFER_SIZE];
   std::size_t bytes_total;
+  std::size_t emulated_persist_latency;
 };

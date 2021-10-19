@@ -65,7 +65,7 @@ public:
     if (context.log_path != "") {
       std::string filename =
           context.log_path + "_" + std::to_string(id) + ".txt";
-      logger = std::make_unique<BufferedFileWriter>(filename.c_str());
+      logger = std::make_unique<BufferedFileWriter>(filename.c_str(), context.emulated_persist_latency);
     }
   }
 

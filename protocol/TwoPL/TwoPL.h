@@ -117,10 +117,15 @@ public:
       return false;
     }
 
-    if (txn.get_logger()) {
-      prepare_and_redo_for_commit(txn, messages);
-    } else {
-      prepare_for_commit(txn, messages);
+    {
+      ScopedTimer t([&, this](uint64_t us) {
+        txn.record_commit_prepare_time(us);
+      });
+      if (txn.get_logger()) {
+        prepare_and_redo_for_commit(txn, messages);
+      } else {
+        prepare_for_commit(txn, messages);
+      }
     }
 
 
@@ -135,13 +140,19 @@ public:
       commit_tid = generate_tid(txn);
     }
 
-    // Persist commit record
-    if (txn.get_logger()) {
-      std::ostringstream ss;
-      ss << commit_tid << true;
-      auto output = ss.str();
-      txn.get_logger()->write(output.c_str(), output.size());
-      txn.get_logger()->sync();
+
+    {
+      ScopedTimer t([&, this](uint64_t us) {
+        txn.record_commit_persistence_time(us);
+      });
+      // Persist commit record
+      if (txn.get_logger()) {
+        std::ostringstream ss;
+        ss << commit_tid << true;
+        auto output = ss.str();
+        txn.get_logger()->write(output.c_str(), output.size());
+        txn.get_logger()->sync();
+      }
     }
 
     {
@@ -258,45 +269,65 @@ public:
 
     auto &readSet = txn.readSet;
     auto &writeSet = txn.writeSet;
-    std::vector<std::vector<TwoPLRWKey>> writeSetGroupByCoordinator(context.coordinator_num);
-
-    for (auto i = 0u; i < writeSet.size(); i++) {
-      auto &writeKey = writeSet[i];
-      auto tableId = writeKey.get_table_id();
-      auto partitionId = writeKey.get_partition_id();
-      auto table = db.find_table(tableId, partitionId);
-      auto coordinatorId = partitioner.master_coordinator(partitionId);
-      writeSetGroupByCoordinator[coordinatorId].push_back(writeKey);
-    }
-
-    for (size_t i = 0; i < context.coordinator_num; ++i) {
-      auto & writeSet = writeSetGroupByCoordinator[i];
-      if (i == partitioner.get_coordinator_id()) {
-        // Redo logging
-        for (size_t j = 0; j < writeSet.size(); ++j) {
-          auto &writeKey = writeSet[j];
-          auto tableId = writeKey.get_table_id();
-          auto partitionId = writeKey.get_partition_id();
-          auto table = db.find_table(tableId, partitionId);
-          auto key_size = table->key_size();
-          auto value_size = table->value_size();
-          auto key = writeKey.get_key();
-          auto value = writeKey.get_value();
-          DCHECK(key);
-          DCHECK(value);
-          std::ostringstream ss;
-          ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
-          auto output = ss.str();
-          txn.get_logger()->write(output.c_str(), output.size());
-        }
-      } else {
-        txn.pendingResponses++;
-        auto coordinatorID = i;
-        txn.network_size += MessageFactoryType::new_prepare_and_redo_message(
-            *messages[coordinatorID], writeSet, db);
+    if (txn.is_single_partition()) {
+      // Redo logging
+      for (size_t j = 0; j < writeSet.size(); ++j) {
+        auto &writeKey = writeSet[j];
+        auto tableId = writeKey.get_table_id();
+        auto partitionId = writeKey.get_partition_id();
+        auto table = db.find_table(tableId, partitionId);
+        auto key_size = table->key_size();
+        auto value_size = table->value_size();
+        auto key = writeKey.get_key();
+        auto value = writeKey.get_value();
+        DCHECK(key);
+        DCHECK(value);
+        std::ostringstream ss;
+        ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
+        auto output = ss.str();
+        txn.get_logger()->write(output.c_str(), output.size());
       }
+    } else {
+      std::vector<std::vector<TwoPLRWKey>> writeSetGroupByCoordinator(context.coordinator_num);
+
+      for (auto i = 0u; i < writeSet.size(); i++) {
+        auto &writeKey = writeSet[i];
+        auto tableId = writeKey.get_table_id();
+        auto partitionId = writeKey.get_partition_id();
+        auto table = db.find_table(tableId, partitionId);
+        auto coordinatorId = partitioner.master_coordinator(partitionId);
+        writeSetGroupByCoordinator[coordinatorId].push_back(writeKey);
+      }
+
+      for (size_t i = 0; i < context.coordinator_num; ++i) {
+        auto & writeSet = writeSetGroupByCoordinator[i];
+        if (i == partitioner.get_coordinator_id()) {
+          // Redo logging
+          for (size_t j = 0; j < writeSet.size(); ++j) {
+            auto &writeKey = writeSet[j];
+            auto tableId = writeKey.get_table_id();
+            auto partitionId = writeKey.get_partition_id();
+            auto table = db.find_table(tableId, partitionId);
+            auto key_size = table->key_size();
+            auto value_size = table->value_size();
+            auto key = writeKey.get_key();
+            auto value = writeKey.get_value();
+            DCHECK(key);
+            DCHECK(value);
+            std::ostringstream ss;
+            ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
+            auto output = ss.str();
+            txn.get_logger()->write(output.c_str(), output.size());
+          }
+        } else {
+          txn.pendingResponses++;
+          auto coordinatorID = i;
+          txn.network_size += MessageFactoryType::new_prepare_and_redo_message(
+              *messages[coordinatorID], writeSet, db);
+        }
+      }
+      sync_messages(txn);
     }
-    sync_messages(txn);
   }
 
   void prepare_for_commit(TransactionType &txn,

@@ -79,18 +79,22 @@ public:
       return false;
     }
 
-
-    if (txn.get_logger()) {
-      // commit phase 2, read validation and redo
-      if (!validate_read_set_and_redo(txn, messages)) {
-        abort(txn, messages);
-        return false;
-      }
-    } else {
-      // commit phase 2, read validation
-      if (!validate_read_set(txn, messages)) {
-        abort(txn, messages);
-        return false;
+    {
+      ScopedTimer t([&, this](uint64_t us) {
+        txn.record_commit_prepare_time(us);
+      });
+      if (txn.get_logger()) {
+        // commit phase 2, read validation and redo
+        if (!validate_read_set_and_redo(txn, messages)) {
+          abort(txn, messages);
+          return false;
+        }
+      } else {
+        // commit phase 2, read validation
+        if (!validate_read_set(txn, messages)) {
+          abort(txn, messages);
+          return false;
+        }
       }
     }
     
@@ -104,13 +108,18 @@ public:
       commit_tid = generate_tid(txn);
     }
 
-    // Passed validation, persist commit record
-    if (txn.get_logger()) {
-      std::ostringstream ss;
-      ss << commit_tid << true;
-      auto output = ss.str();
-      txn.get_logger()->write(output.c_str(), output.size());
-      txn.get_logger()->sync();
+    {
+      ScopedTimer t([&, this](uint64_t us) {
+        txn.record_commit_persistence_time(us);
+      });
+      // Passed validation, persist commit record
+      if (txn.get_logger()) {
+        std::ostringstream ss;
+        ss << commit_tid << true;
+        auto output = ss.str();
+        txn.get_logger()->write(output.c_str(), output.size());
+        txn.get_logger()->sync();
+      }
     }
 
     // write and replicate
@@ -196,91 +205,145 @@ private:
       }
       return false;
     };
-    std::vector<std::vector<SiloRWKey>> readSetGroupByCoordinator(context.coordinator_num);
-    std::vector<std::vector<SiloRWKey>> writeSetGroupByCoordinator(context.coordinator_num);
 
-    for (auto i = 0u; i < readSet.size(); ++i) {
-      auto &readKey = readSet[i];
-      if (readKey.get_local_index_read_bit()) {
-        continue; // read only index does not need to validate
-      }
-      bool in_write_set = isKeyInWriteSet(readKey.get_key());
-      if (in_write_set) {
-        continue; // already validated in lock write set
-      }
-      auto partitionId = readKey.get_partition_id();
-      auto coordinatorId = partitioner.master_coordinator(partitionId);
-      readSetGroupByCoordinator[coordinatorId].push_back(readKey);
-    }
+    if (txn.is_single_partition()) {
+      for (auto i = 0u; i < readSet.size(); i++) {
+        auto &readKey = readSet[i];
 
-    for (auto i = 0u; i < writeSet.size(); ++i) {
-      auto &writeKey = readSet[i];
-      auto partitionId = writeKey.get_partition_id();
-      auto coordinatorId = partitioner.master_coordinator(partitionId);
-      writeSetGroupByCoordinator[coordinatorId].push_back(writeKey);
+        if (readKey.get_local_index_read_bit()) {
+          continue; // read only index does not need to validate
+        }
+
+        bool in_write_set = isKeyInWriteSet(readKey.get_key());
+        if (in_write_set) {
+          continue; // already validated in lock write set
+        }
+
+        auto tableId = readKey.get_table_id();
+        auto partitionId = readKey.get_partition_id();
+        auto table = db.find_table(tableId, partitionId);
+        auto key = readKey.get_key();
+        auto tid = readKey.get_tid();
+
+        DCHECK(partitioner.has_master_partition(partitionId));
+
+        uint64_t latest_tid = table->search_metadata(key).load();
+        if (SiloHelper::remove_lock_bit(latest_tid) != tid) {
+          txn.abort_read_validation = true;
+          break;
+        }
+        if (SiloHelper::is_locked(latest_tid)) { // must be locked by others
+          txn.abort_read_validation = true;
+          break;
+        }
+      }
+
+      DCHECK(txn.pendingResponses == 0);
+
+      // Redo logging
+      for (size_t j = 0; j < writeSet.size(); ++j) {
+        auto &writeKey = writeSet[j];
+        auto tableId = writeKey.get_table_id();
+        auto partitionId = writeKey.get_partition_id();
+        auto table = db.find_table(tableId, partitionId);
+        auto key_size = table->key_size();
+        auto value_size = table->value_size();
+        auto key = writeKey.get_key();
+        auto value = writeKey.get_value();
+
+        std::ostringstream ss;
+        ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
+        auto output = ss.str();
+        txn.get_logger()->write(output.c_str(), output.size());
+      }
+    } else {
+      std::vector<std::vector<SiloRWKey>> readSetGroupByCoordinator(context.coordinator_num);
+      std::vector<std::vector<SiloRWKey>> writeSetGroupByCoordinator(context.coordinator_num);
+
+      for (auto i = 0u; i < readSet.size(); ++i) {
+        auto &readKey = readSet[i];
+        if (readKey.get_local_index_read_bit()) {
+          continue; // read only index does not need to validate
+        }
+        bool in_write_set = isKeyInWriteSet(readKey.get_key());
+        if (in_write_set) {
+          continue; // already validated in lock write set
+        }
+        auto partitionId = readKey.get_partition_id();
+        auto coordinatorId = partitioner.master_coordinator(partitionId);
+        readSetGroupByCoordinator[coordinatorId].push_back(readKey);
+      }
+
+      for (auto i = 0u; i < writeSet.size(); ++i) {
+        auto &writeKey = readSet[i];
+        auto partitionId = writeKey.get_partition_id();
+        auto coordinatorId = partitioner.master_coordinator(partitionId);
+        writeSetGroupByCoordinator[coordinatorId].push_back(writeKey);
+      }
+      
+      for (size_t i = 0; i < context.coordinator_num && txn.abort_read_validation == false; ++i) {
+        auto & readSet = readSetGroupByCoordinator[i];
+        auto & writeSet = writeSetGroupByCoordinator[i];
+        if (i == partitioner.get_coordinator_id()) {
+          for (size_t j = 0; j < readSet.size(); ++j) {
+            auto &readKey = readSet[j];
+            if (readKey.get_local_index_read_bit()) {
+              continue; // read only index does not need to validate
+            }
+            bool in_write_set = isKeyInWriteSet(readKey.get_key());
+            if (in_write_set) {
+              continue; // already validated in lock write set
+            }
+
+            auto tableId = readKey.get_table_id();
+            auto partitionId = readKey.get_partition_id();
+            auto table = db.find_table(tableId, partitionId);
+            auto key = readKey.get_key();
+            auto tid = readKey.get_tid();
+            
+            uint64_t latest_tid = table->search_metadata(key).load();
+            if (SiloHelper::remove_lock_bit(latest_tid) != tid) {
+              txn.abort_read_validation = true;
+              break;
+            }
+            if (SiloHelper::is_locked(latest_tid)) { // must be locked by others
+              txn.abort_read_validation = true;
+              break;
+            }
+          }
+
+          // Redo logging
+          for (size_t j = 0; j < writeSet.size(); ++j) {
+            auto &writeKey = writeSet[j];
+            auto tableId = writeKey.get_table_id();
+            auto partitionId = writeKey.get_partition_id();
+            auto table = db.find_table(tableId, partitionId);
+            auto key_size = table->key_size();
+            auto value_size = table->value_size();
+            auto key = writeKey.get_key();
+            auto value = writeKey.get_value();
+
+            std::ostringstream ss;
+            ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
+            auto output = ss.str();
+            txn.get_logger()->write(output.c_str(), output.size());
+          }
+
+        } else {
+          txn.pendingResponses++;
+          auto coordinatorID = i;
+          txn.network_size += MessageFactoryType::new_read_validation_and_redo_message(
+              *messages[coordinatorID], readSet, writeSet, db);
+        }
+      }
+
+      if (txn.pendingResponses == 0) {
+        txn.local_validated = true;
+      }
+
+      sync_messages(txn);
     }
     
-    for (size_t i = 0; i < context.coordinator_num && txn.abort_read_validation == false; ++i) {
-      auto & readSet = readSetGroupByCoordinator[i];
-      auto & writeSet = writeSetGroupByCoordinator[i];
-      if (i == partitioner.get_coordinator_id()) {
-        for (size_t j = 0; j < readSet.size(); ++j) {
-          auto &readKey = readSet[j];
-          if (readKey.get_local_index_read_bit()) {
-            continue; // read only index does not need to validate
-          }
-          bool in_write_set = isKeyInWriteSet(readKey.get_key());
-          if (in_write_set) {
-            continue; // already validated in lock write set
-          }
-
-          auto tableId = readKey.get_table_id();
-          auto partitionId = readKey.get_partition_id();
-          auto table = db.find_table(tableId, partitionId);
-          auto key = readKey.get_key();
-          auto tid = readKey.get_tid();
-          
-          uint64_t latest_tid = table->search_metadata(key).load();
-          if (SiloHelper::remove_lock_bit(latest_tid) != tid) {
-            txn.abort_read_validation = true;
-            break;
-          }
-          if (SiloHelper::is_locked(latest_tid)) { // must be locked by others
-            txn.abort_read_validation = true;
-            break;
-          }
-        }
-
-        // Redo logging
-        for (size_t j = 0; j < writeSet.size(); ++j) {
-          auto &writeKey = writeSet[j];
-          auto tableId = writeKey.get_table_id();
-          auto partitionId = writeKey.get_partition_id();
-          auto table = db.find_table(tableId, partitionId);
-          auto key_size = table->key_size();
-          auto value_size = table->value_size();
-          auto key = writeKey.get_key();
-          auto value = writeKey.get_value();
-
-          std::ostringstream ss;
-          ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
-          auto output = ss.str();
-          txn.get_logger()->write(output.c_str(), output.size());
-        }
-
-      } else {
-        txn.pendingResponses++;
-        auto coordinatorID = i;
-        txn.network_size += MessageFactoryType::new_read_validation_and_redo_message(
-            *messages[coordinatorID], readSet, writeSet, db);
-      }
-    }
-
-    if (txn.pendingResponses == 0) {
-      txn.local_validated = true;
-    }
-
-    sync_messages(txn);
 
     return !txn.abort_read_validation;
   }
@@ -392,7 +455,6 @@ private:
     auto &readSet = txn.readSet;
     auto &writeSet = txn.writeSet;
     auto logger = txn.get_logger();
-    bool wrote_local_log = false;
     std::vector<bool> persist_commit_record(writeSet.size(), false);
     std::vector<bool> coordinator_covered(this->context.coordinator_num, false);
     
@@ -429,13 +491,6 @@ private:
         auto key = writeKey.get_key();
         auto value = writeKey.get_value();
         table->update(key, value);
-        if (logger) { // write redo records
-          std::ostringstream ss;
-          ss << tableId << partitionId << key_size << std::string((char*)key,key_size) << field_size << std::string((char*)value, field_size);
-          auto output = ss.str();
-          logger->write(output.c_str(), output.size());
-          wrote_local_log = true;
-        }
       } else {
         txn.pendingResponses++;
         auto coordinatorID = partitioner.master_coordinator(partitionId);
@@ -483,10 +538,6 @@ private:
       }
 
       DCHECK(replicate_count == partitioner.replica_num() - 1);
-    }
-    if (wrote_local_log) {
-      txn.message_flusher();
-      logger->sync();
     }
     sync_messages(txn);
   }

@@ -41,6 +41,7 @@ DEFINE_bool(enable_hstore_master, true, "enable hstore master for lock schedulin
 DEFINE_bool(cpu_affinity, false, "pinning each thread to a separate core");
 DEFINE_int32(cross_txn_workers, 0, "number of workers generating cross-partition transactions");
 DEFINE_int32(cpu_core_id, 0, "cpu core id");
+DEFINE_int32(persist_latency, 110, "emulated persist latency");
 
 #define SETUP_CONTEXT(context)                                                 \
   boost::algorithm::split(context.peers, FLAGS_servers,                        \
@@ -78,4 +79,5 @@ DEFINE_int32(cpu_core_id, 0, "cpu core id");
   context.enable_hstore_master = FLAGS_enable_hstore_master;                   \
   context.cpu_core_id = FLAGS_cpu_core_id;                                     \
   context.cross_txn_workers = FLAGS_cross_txn_workers;                         \
+  context.emulated_persist_latency = FLAGS_persist_latency;                    \
   context.set_star_partitioner();

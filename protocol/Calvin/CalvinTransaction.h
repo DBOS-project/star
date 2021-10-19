@@ -43,6 +43,25 @@ public:
   std::size_t local_work_time_us = 0;
   std::size_t stall_time_us = 0; // Waiting for locks (partition-level or row-level) due to conflicts
  
+  std::size_t commit_prepare_time_us = 0;
+  std::size_t commit_persistence_time_us = 0;
+
+  virtual void record_commit_persistence_time(uint64_t us) {
+    commit_persistence_time_us += us;
+  }
+
+  virtual size_t get_commit_persistence_time() {
+    return commit_persistence_time_us;
+  }
+  
+  virtual void record_commit_prepare_time(uint64_t us) {
+    commit_prepare_time_us += us;
+  }
+
+  virtual size_t get_commit_prepare_time() {
+    return commit_prepare_time_us;
+  }
+
   virtual void record_remote_work_time(uint64_t us) {
     remote_work_time_us += us;
   }
