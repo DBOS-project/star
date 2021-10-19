@@ -164,7 +164,12 @@ public:
     }
 
     // all locks are acquired
-    prepare_for_commit(txn, messages);
+    if (txn.get_logger()) {
+      prepare_and_redo_for_commit(txn, messages);
+    } else {
+      prepare_for_commit(txn, messages);
+    }
+
     // generate tid
     uint64_t commit_tid = generate_tid(txn);
 
@@ -187,6 +192,59 @@ public:
     return true;
   }
 
+  void prepare_and_redo_for_commit(TransactionType &txn,
+                           std::vector<std::unique_ptr<Message>> &messages) {
+
+    auto &readSet = txn.readSet;
+    auto &writeSet = txn.writeSet;
+    std::vector<std::vector<TwoPLRWKey>> writeSetGroupByClusterWorkers(this->context.worker_num * this->context.coordinator_num);
+    std::vector<bool> workerShouldPersistLog(this->context.worker_num * this->context.coordinator_num, false);
+    std::vector<bool> coordinatorCovered(this->context.coordinator_num, false);
+    for (auto i = (int)writeSet.size() - 1; i >= 0; --i) {
+      auto &writeKey = writeSet[i];
+      auto tableId = writeKey.get_table_id();
+      auto partitionId = writeKey.get_partition_id();
+      auto table = this->db.find_table(tableId, partitionId);
+      auto coordinatorId = this->partitioner->master_coordinator(partitionId);
+      auto owner_cluster_worker = partition_owner_cluster_worker(partitionId);
+      writeSetGroupByClusterWorkers[coordinatorId].push_back(writeKey);
+      if (coordinatorCovered[coordinatorId] == false) {
+        workerShouldPersistLog[i] = true;
+        coordinatorCovered[coordinatorId] = true;
+      }
+    }
+
+    for (int i = 0; i < (int)writeSetGroupByClusterWorkers.size(); ++i) {
+      auto & writeSet = writeSetGroupByClusterWorkers[i];
+      if (writeSet.empty())
+        continue;
+      auto owner_cluster_worker = i;
+      if (owner_cluster_worker == this_cluster_worker_id) {
+        // Redo logging
+        for (size_t j = 0; j < writeSet.size(); ++j) {
+          auto &writeKey = writeSet[j];
+          auto tableId = writeKey.get_table_id();
+          auto partitionId = writeKey.get_partition_id();
+          auto table = this->db.find_table(tableId, partitionId);
+          auto key_size = table->key_size();
+          auto value_size = table->value_size();
+          auto key = writeKey.get_key();
+          auto value = writeKey.get_value();
+          DCHECK(key);
+          DCHECK(value);
+          std::ostringstream ss;
+          ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
+          auto output = ss.str();
+          txn.get_logger()->write(output.c_str(), output.size());
+        }
+      } else {
+        txn.pendingResponses++;
+        txn.network_size += MessageFactoryType::new_prepare_and_redo_message(
+            *messages[owner_cluster_worker], writeSet, this->db, workerShouldPersistLog[i]);
+      }
+    }
+    sync_messages(txn);
+  }
 
   void prepare_for_commit(TransactionType &txn,
                            std::vector<std::unique_ptr<Message>> &messages) {
@@ -215,6 +273,31 @@ public:
       txn.record_commit_write_back_time(us);
     });
     auto &writeSet = txn.writeSet;
+
+    std::vector<bool> persist_commit_record(writeSet.size(), false);
+    std::vector<bool> coordinator_covered(this->context.coordinator_num, false);
+    
+    if (txn.get_logger()) {
+      // We set persist_commit_record[i] to true if it is the last write to the coordinator
+      // We traverse backwards and set the sync flag for the first write whose coordinator_covered is not true
+      for (auto i = (int)writeSet.size() - 1; i >= 0; i--) {
+        auto &writeKey = writeSet[i];
+        auto tableId = writeKey.get_table_id();
+        auto partitionId = writeKey.get_partition_id();
+        auto table = this->db.find_table(tableId, partitionId);
+        auto key_size = table->key_size();
+        auto field_size = table->field_size();
+        auto owner_cluster_worker = partition_owner_cluster_worker(partitionId);
+        if (owner_cluster_worker == this_cluster_worker_id)
+          continue;
+        auto coordinatorId = this->partitioner->master_coordinator(partitionId);
+        if (coordinator_covered[coordinatorId] == false) {
+          coordinator_covered[coordinatorId] = true;
+          persist_commit_record[i] = true;
+        }
+      }
+    }
+
     for (auto i = 0u; i < writeSet.size(); i++) {
       auto &writeKey = writeSet[i];
       auto tableId = writeKey.get_table_id();
@@ -231,7 +314,7 @@ public:
         txn.pendingResponses++;
         txn.network_size += MessageFactoryType::new_write_back_message(
             *messages[owner_cluster_worker], *table, writeKey.get_key(),
-            writeKey.get_value(), this_cluster_worker_id);
+            writeKey.get_value(), this_cluster_worker_id, commit_tid, persist_commit_record[i]);
         //LOG(INFO) << "Partition worker " << this_cluster_worker_id << " issueed write request on partition " << partitionId;
       }
       // value replicate
@@ -382,6 +465,93 @@ public:
 
   using Transaction = TransactionType;
 
+
+  static void prepare_and_redo_request_handler(MessagePiece inputPiece,
+                                    Message &responseMessage, ITable &table,
+                                    Transaction *txn) {
+
+    DCHECK(inputPiece.get_message_type() ==
+           static_cast<uint32_t>(HStoreMessage::PREPARE_REDO_REQUEST));
+
+    auto stringPiece = inputPiece.toStringPiece();
+    Decoder dec(stringPiece);
+    std::size_t redoWriteSetSize;
+
+    bool success = true;
+
+    bool persist_log = false;
+    dec >> persist_log >> redoWriteSetSize;
+
+    DCHECK(txn->get_logger());
+
+    for (size_t i = 0; i < redoWriteSetSize; ++i) {
+      uint64_t tableId;
+      uint64_t partitionId;
+      dec >> tableId >> partitionId;
+      auto table = txn->getTable(tableId, partitionId);
+      std::size_t key_size, value_size;
+      uint64_t tid;
+      dec >> key_size;
+      DCHECK(key_size == table->key_size());
+      const void * key = dec.get_raw_ptr();
+      dec.remove_prefix(key_size);
+      dec >> value_size;
+      DCHECK(value_size == table->value_size());
+      const void * value = dec.get_raw_ptr();
+      dec.remove_prefix(value_size);
+
+      std::ostringstream ss;
+      ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
+      auto output = ss.str();
+      txn->get_logger()->write(output.c_str(), output.size());
+    }
+
+    // prepare response message header
+    auto message_size =
+        MessagePiece::get_header_size() + sizeof(bool);
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(HStoreMessage::PREPARE_REDO_RESPONSE),
+        message_size, 0, 0);
+
+    star::Encoder encoder(responseMessage.data);
+    encoder << message_piece_header;
+    encoder << success;
+
+    responseMessage.flush();
+
+    if (txn->get_logger()) {
+      // write the vote
+      std::ostringstream ss;
+      ss << success;
+      auto output = ss.str();
+      txn->get_logger()->write(output.c_str(), output.size());
+    }
+
+    if (persist_log && txn->get_logger()) {
+      // sync the vote and redo
+      // On recovery, the txn is considered prepared only if all votes are true // passed all validation
+      txn->get_logger()->sync();
+    }
+  }
+
+  static void prepare_and_redo_response_handler(MessagePiece inputPiece,
+                                               Message &responseMessage,
+                                               ITable &table,
+                                               Transaction *txn) {
+    DCHECK(inputPiece.get_message_type() ==
+           static_cast<uint32_t>(HStoreMessage::PREPARE_REDO_RESPONSE));
+
+    bool success;
+
+    Decoder dec(inputPiece.toStringPiece());
+
+    dec >> success;
+
+    txn->pendingResponses--;
+    txn->network_size += inputPiece.get_message_length();
+
+    DCHECK(success);
+  }
 
   static void prepare_request_handler(MessagePiece inputPiece,
                                     Message &responseMessage, ITable &table,
@@ -588,9 +758,11 @@ public:
     uint32_t request_remote_worker;
 
     auto stringPiece = inputPiece.toStringPiece();
+    uint64_t commit_tid;
+    bool persist_commit_record;
 
     Decoder dec(stringPiece);
-    dec >> request_remote_worker;
+    dec >> commit_tid >> persist_commit_record >> request_remote_worker;
     bool success = false;
     // Make sure the partition is currently owned by request_remote_worker
     if (owned_partition_locked_by[partition_id] == (int)request_remote_worker) {
@@ -606,7 +778,7 @@ public:
     if (success) {
       stringPiece = dec.bytes;
       DCHECK(inputPiece.get_message_length() ==
-      MessagePiece::get_header_size() + key_size + field_size + sizeof(uint32_t));
+      MessagePiece::get_header_size() + sizeof(commit_tid) + sizeof(persist_commit_record) + key_size + field_size + sizeof(uint32_t));
       const void *key = stringPiece.data();
       stringPiece.remove_prefix(key_size);
       table.deserialize_value(key, stringPiece);
@@ -622,6 +794,15 @@ public:
     encoder << message_piece_header << success;
     responseMessage.flush();
     responseMessage.set_gen_time(Time::now());
+
+    if (persist_commit_record) {
+      DCHECK(txn->get_logger());
+      std::ostringstream ss;
+      ss << commit_tid << true;
+      auto output = ss.str();
+      txn->get_logger()->write(output.c_str(), output.size());
+      txn->get_logger()->sync();
+    }
   }
 
 
@@ -822,6 +1003,14 @@ public:
                                                 this->transaction.get());
         } else if (type == (int)HStoreMessage::PREPARE_RESPONSE) {
           prepare_response_handler(messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()],
+                                                *table,
+                                                this->transaction.get());
+        } else if (type == (int)HStoreMessage::PREPARE_REDO_REQUEST) {
+          prepare_and_redo_request_handler(messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()],
+                                                *table,
+                                                this->transaction.get());
+        } else if (type == (int)HStoreMessage::PREPARE_REDO_RESPONSE) {
+          prepare_and_redo_response_handler(messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()],
                                                 *table,
                                                 this->transaction.get());
         } else {

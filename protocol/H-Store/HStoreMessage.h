@@ -42,6 +42,8 @@ enum class HStoreMessage {
   RELEASE_PARTITION_LOCK_RESPONSE,
   PREPARE_REQUEST,
   PREPARE_RESPONSE,
+  PREPARE_REDO_REQUEST,
+  PREPARE_REDO_RESPONSE,
   NFIELDS
 };
 
@@ -120,6 +122,41 @@ public:
     return message_size;
   }
 
+  template<class DatabaseType>
+  static std::size_t new_prepare_and_redo_message(Message &message, const std::vector<TwoPLRWKey> & redoWriteSet, DatabaseType & db, bool persist_log) {
+    auto message_size = MessagePiece::get_header_size();
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(HStoreMessage::PREPARE_REDO_REQUEST), message_size,
+        0, 0);
+    
+    Encoder encoder(message.data);
+    size_t start_off = encoder.size();
+    encoder << message_piece_header << persist_log;
+    encoder << redoWriteSet.size();
+    for (size_t i = 0; i < redoWriteSet.size(); ++i) {
+      auto writeKey = redoWriteSet[i];
+      auto tableId = writeKey.get_table_id();
+      auto partitionId = writeKey.get_partition_id();
+      auto table = db.find_table(tableId, partitionId);
+      auto key_size = table->key_size();
+      auto value_size = table->value_size();
+      auto key = writeKey.get_key();
+      auto value = writeKey.get_value();
+      encoder << tableId << partitionId << key_size;
+      encoder.write_n_bytes(key, key_size);
+      encoder << value_size;
+      encoder.write_n_bytes(value, value_size);
+    }
+
+    message_size = encoder.size() - start_off;
+    message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(HStoreMessage::PREPARE_REDO_REQUEST),
+        message_size, 0, 0);
+    encoder.replace_bytes_range(start_off, (void *)&message_piece_header, sizeof(message_piece_header));
+    message.flush();
+    return message_size;
+  }
+
   static std::size_t new_prepare_message(Message &message, ITable & table, uint32_t this_worker_id) {
 
     /*
@@ -168,7 +205,9 @@ public:
   }
 
   static std::size_t new_write_back_message(Message &message, ITable &table,
-                                       const void *key, const void *value, uint32_t this_worker_id) {
+                                       const void *key, const void *value, uint32_t this_worker_id, 
+                                       uint64_t commit_tid,
+                                       bool persist_commit_record = false) {
 
     /*
      * The structure of a write request: (request_remote_worker, nowrite, primary key, field value)
@@ -177,13 +216,13 @@ public:
     auto key_size = table.key_size();
     auto field_size = table.field_size();
 
-    auto message_size = MessagePiece::get_header_size() + sizeof(uint32_t) + key_size + field_size;;
+    auto message_size = MessagePiece::get_header_size() + sizeof(uint32_t) + key_size + field_size  + sizeof(commit_tid) + sizeof(persist_commit_record);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(HStoreMessage::WRITE_BACK_REQUEST), message_size,
         table.tableID(), table.partitionID());
 
     Encoder encoder(message.data);
-    encoder << message_piece_header;
+    encoder << message_piece_header << commit_tid << persist_commit_record;
     encoder << this_worker_id;
     encoder.write_n_bytes(key, key_size);
     table.serialize_value(encoder, value);
