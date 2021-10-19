@@ -193,7 +193,12 @@ public:
     }
 
     // write and release partition locks
-    write_and_replicate(txn, commit_tid, messages);
+    {
+      ScopedTimer t([&, this](uint64_t us) {
+        txn.record_commit_write_back_time(us);
+      });
+      write_and_replicate(txn, commit_tid, messages);
+    }
     return true;
   }
 
@@ -297,9 +302,6 @@ public:
   void write_and_replicate(TransactionType &txn, uint64_t commit_tid,
                            std::vector<std::unique_ptr<Message>> &messages) {
     //auto &readSet = txn.readSet;
-    ScopedTimer t([&, this](uint64_t us) {
-      txn.record_commit_write_back_time(us);
-    });
     auto &writeSet = txn.writeSet;
 
     std::vector<bool> persist_commit_record(writeSet.size(), false);
@@ -398,7 +400,6 @@ public:
             //LOG(INFO) << "Partition worker " << this_cluster_worker_id << " issueed lock release request on partition " << partitionId;
         }
       }
-      t.end();
       sync_messages(txn);
     } else {
       DCHECK(txn.pendingResponses == 0);
