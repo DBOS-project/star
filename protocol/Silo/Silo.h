@@ -72,17 +72,16 @@ public:
 
   bool commit(TransactionType &txn,
               std::vector<std::unique_ptr<Message>> &messages) {
-
-    // lock write set
-    if (lock_write_set(txn, messages)) {
-      abort(txn, messages);
-      return false;
-    }
-
     {
       ScopedTimer t([&, this](uint64_t us) {
         txn.record_commit_prepare_time(us);
       });
+      // lock write set
+      if (lock_write_set(txn, messages)) {
+        abort(txn, messages);
+        return false;
+      }
+
       if (txn.get_logger()) {
         // commit phase 2, read validation and redo
         if (!validate_read_set_and_redo(txn, messages)) {
