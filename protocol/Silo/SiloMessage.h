@@ -23,6 +23,8 @@ enum class SiloMessage {
   LOCK_RESPONSE,
   READ_VALIDATION_REQUEST,
   READ_VALIDATION_RESPONSE,
+  READ_VALIDATION_AND_REDO_REQUEST,
+  READ_VALIDATION_AND_REDO_RESPONSE,
   ABORT_REQUEST,
   WRITE_REQUEST,
   WRITE_RESPONSE,
@@ -83,11 +85,65 @@ public:
     return message_size;
   }
 
+  template<class DatabaseType>
+  static std::size_t new_read_validation_and_redo_message(Message &message, const std::vector<SiloRWKey> & validationReadSet, 
+                                                          const std::vector<SiloRWKey> & redoWriteSet, DatabaseType & db) {
+
+    /*
+     * The structure of a read validation request: (read_pk1_table_id, read_pk1_partition_id, read_pk1_size, read_pk1, read_pk2_table_id)
+     */
+    auto message_size = MessagePiece::get_header_size();
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(SiloMessage::READ_VALIDATION_AND_REDO_REQUEST),
+        message_size, 0, 0);
+
+    Encoder encoder(message.data);
+    size_t start_off = encoder.size();
+    encoder << message_piece_header;
+    encoder << validationReadSet.size();
+    for (size_t i = 0; i < validationReadSet.size(); ++i) {
+      auto readKey = validationReadSet[i];
+      auto tableId = readKey.get_table_id();
+      auto partitionId = readKey.get_partition_id();
+      auto table = db.find_table(tableId, partitionId);
+      auto key_size = table->key_size();
+      auto value_size = table->value_size();
+      auto key = readKey.get_key();
+      auto tid = readKey.get_tid();
+      encoder << tableId << partitionId << key_size;
+      encoder.write_n_bytes(key, key_size);
+      encoder << tid;
+    }
+    
+    encoder << redoWriteSet.size();
+    for (size_t i = 0; i < redoWriteSet.size(); ++i) {
+      auto writeKey = redoWriteSet[i];
+      auto tableId = writeKey.get_table_id();
+      auto partitionId = writeKey.get_partition_id();
+      auto table = db.find_table(tableId, partitionId);
+      auto key_size = table->key_size();
+      auto value_size = table->value_size();
+      auto key = writeKey.get_key();
+      auto value = writeKey.get_value();
+      encoder << tableId << partitionId << key_size;
+      encoder.write_n_bytes(key, key_size);
+      encoder << value_size;
+      encoder.write_n_bytes(value, value_size);
+    }
+
+    message_size = encoder.size() - start_off;
+    message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(SiloMessage::READ_VALIDATION_AND_REDO_REQUEST),
+        message_size, 0, 0);
+    encoder.replace_bytes_range(start_off, (void *)&message_piece_header, sizeof(message_piece_header));
+    message.flush();
+    return message_size;
+  }
+
   static std::size_t new_read_validation_message(Message &message,
                                                  ITable &table, const void *key,
                                                  uint32_t key_offset,
-                                                 uint64_t tid,
-                                                 bool last_validation) {
+                                                 uint64_t tid) {
 
     /*
      * The structure of a read validation request: (primary key, read key
@@ -97,7 +153,7 @@ public:
     auto key_size = table.key_size();
 
     auto message_size = MessagePiece::get_header_size() + key_size +
-                        sizeof(key_offset) + sizeof(tid) + sizeof(last_validation);
+                        sizeof(key_offset) + sizeof(tid);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(SiloMessage::READ_VALIDATION_REQUEST),
         message_size, table.tableID(), table.partitionID());
@@ -105,7 +161,7 @@ public:
     Encoder encoder(message.data);
     encoder << message_piece_header;
     encoder.write_n_bytes(key, key_size);
-    encoder << key_offset << tid << last_validation;
+    encoder << key_offset << tid;
     message.flush();
     return message_size;
   }
@@ -412,6 +468,104 @@ public:
     }
   }
 
+  static void read_validation_and_redo_request_handler(MessagePiece inputPiece,
+                                              Message &responseMessage,
+                                              ITable &table, Transaction *txn) {
+    DCHECK(inputPiece.get_message_type() ==
+           static_cast<uint32_t>(SiloMessage::READ_VALIDATION_AND_REDO_REQUEST));
+
+    /*
+     * The structure of a read validation request: (primary key, read key
+     * offset, tid, last_validation) The structure of a read validation response: (success?, read
+     * key offset)
+     */
+
+    auto stringPiece = inputPiece.toStringPiece();
+    Decoder dec(stringPiece);
+    std::size_t validationReadSetSize;
+    std::size_t redoWriteSetSize;
+    dec >> validationReadSetSize;
+
+    bool success = true;
+    
+    for (size_t i = 0; i < validationReadSetSize; ++i) {
+      uint64_t tableId;
+      uint64_t partitionId;
+      dec >> tableId >> partitionId;
+      auto table = txn->getTable(tableId, partitionId);
+      std::size_t key_size;
+      uint64_t tid;
+      dec >> key_size;
+      DCHECK(key_size == table->key_size());
+      const void * key = dec.get_raw_ptr();
+      dec.remove_prefix(key_size);
+      dec >> tid;
+
+      auto latest_tid = table->search_metadata(key).load();
+        
+      if (SiloHelper::remove_lock_bit(latest_tid) != tid) {
+        success = false;
+      }
+
+      if (SiloHelper::is_locked(latest_tid)) { // must be locked by others
+        success = false;
+      }
+    }
+
+    dec >> redoWriteSetSize;
+
+    DCHECK(txn->get_logger());
+
+    for (size_t i = 0; i < redoWriteSetSize; ++i) {
+      uint64_t tableId;
+      uint64_t partitionId;
+      dec >> tableId >> partitionId;
+      auto table = txn->getTable(tableId, partitionId);
+      std::size_t key_size, value_size;
+      uint64_t tid;
+      dec >> key_size;
+      DCHECK(key_size == table->key_size());
+      const void * key = dec.get_raw_ptr();
+      dec.remove_prefix(key_size);
+      dec >> value_size;
+      DCHECK(value_size == table->value_size());
+      const void * value = dec.get_raw_ptr();
+      dec.remove_prefix(value_size);
+
+      std::ostringstream ss;
+      ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
+      auto output = ss.str();
+      txn->get_logger()->write(output.c_str(), output.size());
+    }
+
+    // prepare response message header
+    auto message_size =
+        MessagePiece::get_header_size() + sizeof(bool);
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(SiloMessage::READ_VALIDATION_AND_REDO_RESPONSE),
+        message_size, 0, 0);
+
+    star::Encoder encoder(responseMessage.data);
+    encoder << message_piece_header;
+    encoder << success;
+
+    responseMessage.flush();
+
+    if (txn->get_logger()) {
+      // write the vote
+      std::ostringstream ss;
+      ss << success;
+      auto output = ss.str();
+      txn->get_logger()->write(output.c_str(), output.size());
+    }
+
+    if (txn->get_logger()) {
+      // sync the vote and redo
+      // On recovery, the txn is considered prepared only if all votes are true // passed all validation
+      txn->get_logger()->sync();
+    }
+  }
+
   static void read_validation_request_handler(MessagePiece inputPiece,
                                               Message &responseMessage,
                                               ITable &table, Transaction *txn) {
@@ -431,7 +585,7 @@ public:
 
     DCHECK(inputPiece.get_message_length() == MessagePiece::get_header_size() +
                                                   key_size + sizeof(uint32_t) +
-                                                  sizeof(uint64_t) + sizeof(bool));
+                                                  sizeof(uint64_t));
 
     auto stringPiece = inputPiece.toStringPiece();
     const void *key = stringPiece.data();
@@ -442,7 +596,7 @@ public:
     uint64_t tid;
     bool last_validation;
     Decoder dec(stringPiece);
-    dec >> key_offset >> tid >> last_validation;
+    dec >> key_offset >> tid;
 
     bool success = true;
     
@@ -466,20 +620,6 @@ public:
     encoder << success << key_offset;
 
     responseMessage.flush();
-
-    if (txn->get_logger()) {
-      // write a vote for a key
-      std::ostringstream ss;
-      ss << success;
-      auto output = ss.str();
-      txn->get_logger()->write(output.c_str(), output.size());
-    }
-
-    if (txn->get_logger() && last_validation) {
-      // sync the votes
-      // On recovery, the txn is considered prepared only if all votes are true // passed all validation
-      txn->get_logger()->sync();
-    }
   }
 
   static void read_validation_response_handler(MessagePiece inputPiece,
@@ -506,6 +646,31 @@ public:
     dec >> success >> key_offset;
 
     SiloRWKey &readKey = txn->readSet[key_offset];
+
+    txn->pendingResponses--;
+    txn->network_size += inputPiece.get_message_length();
+
+    if (!success) {
+      txn->abort_read_validation = true;
+    }
+  }
+
+  static void read_validation_and_redo_response_handler(MessagePiece inputPiece,
+                                               Message &responseMessage,
+                                               ITable &table,
+                                               Transaction *txn) {
+    DCHECK(inputPiece.get_message_type() ==
+           static_cast<uint32_t>(SiloMessage::READ_VALIDATION_AND_REDO_RESPONSE));
+
+    /*
+     * The structure of a read validation response: (success?, read key offset)
+     */
+
+    bool success;
+
+    Decoder dec(inputPiece.toStringPiece());
+
+    dec >> success;
 
     txn->pendingResponses--;
     txn->network_size += inputPiece.get_message_length();
@@ -585,12 +750,6 @@ public:
     responseMessage.flush();
     responseMessage.set_gen_time(Time::now());
 
-    if (txn->get_logger()) { // Persist redo record
-      std::ostringstream ss;
-      ss << table_id << partition_id << key_size << std::string((char*)key, key_size) << field_size << std::string((char*)value, field_size);
-      auto output = ss.str();
-      txn->get_logger()->write(output.c_str(), output.size());
-    }
     if (persist_commit_record) {
       DCHECK(txn->get_logger());
       std::ostringstream ss;
@@ -742,6 +901,8 @@ public:
     v.push_back(lock_response_handler);
     v.push_back(read_validation_request_handler);
     v.push_back(read_validation_response_handler);
+    v.push_back(read_validation_and_redo_request_handler);
+    v.push_back(read_validation_and_redo_response_handler);
     v.push_back(abort_request_handler);
     v.push_back(write_request_handler);
     v.push_back(write_response_handler);

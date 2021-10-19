@@ -27,6 +27,8 @@ public:
 
   virtual bool is_replicated() const = 0;
 
+  std::size_t get_coordinator_id() { return coordinator_id; }
+
   virtual bool has_master_partition(std::size_t partition_id) const = 0;
 
   virtual std::size_t master_coordinator(std::size_t partition_id) const = 0;

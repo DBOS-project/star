@@ -32,6 +32,8 @@ enum class TwoPLMessage {
   RELEASE_WRITE_LOCK_RESPONSE,
   PREPARE_REQUEST,
   PREPARE_RESPONSE,
+  PREPARE_REDO_REQUEST,
+  PREPARE_REDO_RESPONSE,
   NFIELDS
 };
 
@@ -111,6 +113,41 @@ public:
     return message_size;
   }
 
+  template<class DatabaseType>
+  static std::size_t new_prepare_and_redo_message(Message &message, const std::vector<TwoPLRWKey> & redoWriteSet, DatabaseType & db) {
+    auto message_size = MessagePiece::get_header_size();
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(TwoPLMessage::PREPARE_REDO_REQUEST), message_size,
+        0, 0);
+    
+    Encoder encoder(message.data);
+    size_t start_off = encoder.size();
+    encoder << message_piece_header;
+    encoder << redoWriteSet.size();
+    for (size_t i = 0; i < redoWriteSet.size(); ++i) {
+      auto writeKey = redoWriteSet[i];
+      auto tableId = writeKey.get_table_id();
+      auto partitionId = writeKey.get_partition_id();
+      auto table = db.find_table(tableId, partitionId);
+      auto key_size = table->key_size();
+      auto value_size = table->value_size();
+      auto key = writeKey.get_key();
+      auto value = writeKey.get_value();
+      encoder << tableId << partitionId << key_size;
+      encoder.write_n_bytes(key, key_size);
+      encoder << value_size;
+      encoder.write_n_bytes(value, value_size);
+    }
+
+    message_size = encoder.size() - start_off;
+    message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(TwoPLMessage::PREPARE_REDO_REQUEST),
+        message_size, 0, 0);
+    encoder.replace_bytes_range(start_off, (void *)&message_piece_header, sizeof(message_piece_header));
+    message.flush();
+    return message_size;
+  }
+
   static std::size_t new_prepare_message(Message &message, ITable &table) {
 
     /*
@@ -129,7 +166,9 @@ public:
   }
 
   static std::size_t new_write_message(Message &message, ITable &table,
-                                       const void *key, const void *value) {
+                                       const void *key, const void *value,
+                                       uint64_t commit_tid,
+                                       bool persist_commit_record = false) {
 
     /*
      * The structure of a write request: (primary key, field value)
@@ -138,13 +177,13 @@ public:
     auto key_size = table.key_size();
     auto field_size = table.field_size();
 
-    auto message_size = MessagePiece::get_header_size() + key_size + field_size;
+    auto message_size = MessagePiece::get_header_size() + key_size + field_size + sizeof(commit_tid) + sizeof(persist_commit_record);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(TwoPLMessage::WRITE_REQUEST), message_size,
         table.tableID(), table.partitionID());
 
     Encoder encoder(message.data);
-    encoder << message_piece_header;
+    encoder << message_piece_header << commit_tid << persist_commit_record;
     encoder.write_n_bytes(key, key_size);
     table.serialize_value(encoder, value);
     message.flush();
@@ -520,13 +559,17 @@ public:
      */
 
     DCHECK(inputPiece.get_message_length() ==
-           MessagePiece::get_header_size() + key_size + field_size);
+           MessagePiece::get_header_size() + sizeof(uint64_t) + sizeof(bool) + key_size + field_size);
 
-    auto stringPiece = inputPiece.toStringPiece();
+    Decoder dec(inputPiece.toStringPiece());
+    uint64_t commit_tid;
+    bool persist_commit_record;
+    dec >> commit_tid >> persist_commit_record;
+    auto stringPiece = dec.bytes;
 
     const void *key = stringPiece.data();
     stringPiece.remove_prefix(key_size);
-
+    const void *value = stringPiece.data();
     table.deserialize_value(key, stringPiece);
 
     // prepare response message header
@@ -539,6 +582,15 @@ public:
     encoder << message_piece_header;
     responseMessage.flush();
     responseMessage.set_gen_time(Time::now());
+
+    if (persist_commit_record) {
+      DCHECK(txn->get_logger());
+      std::ostringstream ss;
+      ss << commit_tid << true;
+      auto output = ss.str();
+      txn->get_logger()->write(output.c_str(), output.size());
+      txn->get_logger()->sync();
+    }
   }
 
   static void write_response_handler(MessagePiece inputPiece,
@@ -593,6 +645,93 @@ public:
     encoder << message_piece_header;
     responseMessage.flush();
     responseMessage.set_gen_time(Time::now());
+  }
+
+
+  static void prepare_and_redo_request_handler(MessagePiece inputPiece,
+                                    Message &responseMessage, ITable &table,
+                                    Transaction *txn) {
+
+    DCHECK(inputPiece.get_message_type() ==
+           static_cast<uint32_t>(TwoPLMessage::PREPARE_REDO_REQUEST));
+
+    auto stringPiece = inputPiece.toStringPiece();
+    Decoder dec(stringPiece);
+    std::size_t redoWriteSetSize;
+
+    bool success = true;
+
+    dec >> redoWriteSetSize;
+
+    DCHECK(txn->get_logger());
+
+    for (size_t i = 0; i < redoWriteSetSize; ++i) {
+      uint64_t tableId;
+      uint64_t partitionId;
+      dec >> tableId >> partitionId;
+      auto table = txn->getTable(tableId, partitionId);
+      std::size_t key_size, value_size;
+      uint64_t tid;
+      dec >> key_size;
+      DCHECK(key_size == table->key_size());
+      const void * key = dec.get_raw_ptr();
+      dec.remove_prefix(key_size);
+      dec >> value_size;
+      DCHECK(value_size == table->value_size());
+      const void * value = dec.get_raw_ptr();
+      dec.remove_prefix(value_size);
+
+      std::ostringstream ss;
+      ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
+      auto output = ss.str();
+      txn->get_logger()->write(output.c_str(), output.size());
+    }
+
+    // prepare response message header
+    auto message_size =
+        MessagePiece::get_header_size() + sizeof(bool);
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(TwoPLMessage::PREPARE_REDO_RESPONSE),
+        message_size, 0, 0);
+
+    star::Encoder encoder(responseMessage.data);
+    encoder << message_piece_header;
+    encoder << success;
+
+    responseMessage.flush();
+
+    if (txn->get_logger()) {
+      // write the vote
+      std::ostringstream ss;
+      ss << success;
+      auto output = ss.str();
+      txn->get_logger()->write(output.c_str(), output.size());
+    }
+
+    if (txn->get_logger()) {
+      // sync the vote and redo
+      // On recovery, the txn is considered prepared only if all votes are true // passed all validation
+      txn->get_logger()->sync();
+    }
+  }
+
+  static void prepare_and_redo_response_handler(MessagePiece inputPiece,
+                                               Message &responseMessage,
+                                               ITable &table,
+                                               Transaction *txn) {
+    DCHECK(inputPiece.get_message_type() ==
+           static_cast<uint32_t>(TwoPLMessage::PREPARE_REDO_RESPONSE));
+
+    bool success;
+
+    Decoder dec(inputPiece.toStringPiece());
+
+    dec >> success;
+
+    txn->pendingResponses--;
+    txn->network_size += inputPiece.get_message_length();
+
+    DCHECK(success);
   }
 
   static void prepare_response_handler(MessagePiece inputPiece,
@@ -852,6 +991,8 @@ public:
     v.push_back(release_write_lock_response_handler);
     v.push_back(prepare_request_handler);
     v.push_back(prepare_response_handler);
+    v.push_back(prepare_and_redo_request_handler);
+    v.push_back(prepare_and_redo_response_handler);
     return v;
   }
 };

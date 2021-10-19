@@ -59,6 +59,7 @@ public:
   void sync() {
     flush();
     DCHECK(fd >= 0);
+    //int err = 0;
     int err = ::fdatasync(fd);
     CHECK(err == 0);
   }

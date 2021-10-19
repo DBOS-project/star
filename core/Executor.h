@@ -83,8 +83,21 @@ public:
     bool retry_transaction = false;
 
     //auto startTime = std::chrono::steady_clock::now();
+    auto t = workload.next_transaction(context, 0, storage, this->id);
+    auto dummy_transaction = t.release();
+    setupHandlers(*dummy_transaction);
     do {
+      auto tmp_transaction = transaction.get();
+      bool replace_with_dummy = tmp_transaction == nullptr;
+      if (replace_with_dummy) {
+        // Hack: Make sure transaction is not nullptr
+        transaction.reset(dummy_transaction);
+      }
       process_request();
+      if (replace_with_dummy) {
+        // swap it back.
+        transaction.reset(tmp_transaction);
+      }
 
       if (!partitioner->is_backup()) {
         // backup node stands by for replication

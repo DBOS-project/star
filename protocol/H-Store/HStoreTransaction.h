@@ -112,6 +112,10 @@ public:
 
   virtual bool is_single_partition() = 0;
 
+  virtual ITable* getTable(size_t tableId, size_t partitionId) {
+    return get_table(tableId, partitionId);
+  }
+
   virtual TransactionResult execute(std::size_t worker_id) = 0;
 
   virtual void reset_query() = 0;
@@ -272,6 +276,8 @@ public:
   std::function<std::size_t(void)> remote_request_handler;
 
   std::function<void()> message_flusher;
+
+  std::function<ITable*(std::size_t, std::size_t)> get_table;
 
   Partitioner &partitioner;
   Operation operation;

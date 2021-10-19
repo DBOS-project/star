@@ -20,6 +20,7 @@ class SiloTransaction {
 public:
   using MetaDataType = std::atomic<uint64_t>;
 
+  using DatabaseType = std::atomic<uint64_t>;
   SiloTransaction(std::size_t coordinator_id, std::size_t partition_id,
                   Partitioner &partitioner)
       : coordinator_id(coordinator_id), partition_id(partition_id),
@@ -97,6 +98,10 @@ public:
   virtual int32_t get_partition(int i) = 0;
 
   virtual bool is_single_partition() = 0;
+  
+  virtual ITable* getTable(size_t tableId, size_t partitionId) {
+    return get_table(tableId, partitionId);
+  }
 
   void reset() {
     pendingResponses = 0;
@@ -252,6 +257,7 @@ public:
   std::function<std::size_t(void)> remote_request_handler;
 
   std::function<void()> message_flusher;
+  std::function<ITable*(std::size_t, std::size_t)> get_table;
 
   Partitioner &partitioner;
   Operation operation;

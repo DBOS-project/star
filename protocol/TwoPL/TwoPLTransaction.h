@@ -98,6 +98,10 @@ public:
 
   virtual bool is_single_partition() = 0;
 
+  virtual ITable* getTable(size_t tableId, size_t partitionId) {
+    return get_table(tableId, partitionId);
+  }
+
   void reset() {
     pendingResponses = 0;
     network_size = 0;
@@ -283,6 +287,8 @@ public:
 
   std::function<void()> message_flusher;
 
+  std::function<ITable*(std::size_t, std::size_t)> get_table;
+  
   Partitioner &partitioner;
   Operation operation;
   std::vector<TwoPLRWKey> readSet, writeSet;

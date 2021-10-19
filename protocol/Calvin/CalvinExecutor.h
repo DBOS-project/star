@@ -357,6 +357,7 @@ public:
       auto *worker = this->all_executors[worker_id];
       return worker->process_request();
     };
+    txn.get_table = [this](std::size_t tableId, std::size_t partitionId) { return this->db.find_table(tableId, partitionId); };
     txn.message_flusher = [this](std::size_t worker_id) {
       auto *worker = this->all_executors[worker_id];
       worker->flush_messages();

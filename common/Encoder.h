@@ -27,6 +27,9 @@ public:
 
   std::size_t size() { return bytes.size(); }
 
+  void replace_bytes_range(std::size_t offset, const void * ptr, std::size_t size) {
+    memcpy(&bytes[0] + offset, ptr, size);
+  }
 private:
   std::string &bytes;
 };
@@ -48,6 +51,12 @@ public:
     std::memcpy(ptr, bytes.data(), size);
     bytes.remove_prefix(size);
   }
+
+  void remove_prefix(std::size_t size) {
+    bytes.remove_prefix(size);
+  }
+
+  const char * get_raw_ptr() { return bytes.data(); }
 
   std::size_t size() { return bytes.size(); }
 

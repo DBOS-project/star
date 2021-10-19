@@ -97,6 +97,10 @@ public:
 
   virtual bool is_single_partition() = 0;
 
+  virtual ITable* getTable(size_t tableId, size_t partitionId) {
+    return get_table(tableId, partitionId);
+  }
+
   void reset() {
     abort_lock = false;
     abort_no_retry = false;
@@ -347,6 +351,8 @@ public:
   std::function<std::size_t(std::size_t)> remote_request_handler;
 
   std::function<void(std::size_t)> message_flusher;
+
+  std::function<ITable*(std::size_t, std::size_t)> get_table;
 
   Partitioner &partitioner;
   std::vector<bool> active_coordinators;

@@ -168,6 +168,15 @@ public:
     // generate tid
     uint64_t commit_tid = generate_tid(txn);
 
+    // Persist commit record
+    if (txn.get_logger()) {
+      std::ostringstream ss;
+      ss << commit_tid << true;
+      auto output = ss.str();
+      txn.get_logger()->write(output.c_str(), output.size());
+      txn.get_logger()->sync();
+    }
+
     // write and replicate
     // Release partition locks
     write_and_replicate(txn, commit_tid, messages);
@@ -367,6 +376,7 @@ public:
 
     txn.remote_request_handler = [this]() { return this->process_request(); };
     txn.message_flusher = [this]() { this->flush_messages(); };
+    txn.get_table = [this](std::size_t tableId, std::size_t partitionId) { return this->db.find_table(tableId, partitionId); };
     txn.set_logger(this->logger.get());
   };
 
