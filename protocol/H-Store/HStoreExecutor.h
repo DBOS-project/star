@@ -239,9 +239,9 @@ public:
         auto table = this->db.find_table(tableId, partitionId);
         auto coordinatorId = this->partitioner->master_coordinator(partitionId);
         auto owner_cluster_worker = partition_owner_cluster_worker(partitionId);
-        writeSetGroupByClusterWorkers[coordinatorId].push_back(writeKey);
+        writeSetGroupByClusterWorkers[owner_cluster_worker].push_back(writeKey);
         if (coordinatorCovered[coordinatorId] == false) {
-          workerShouldPersistLog[i] = true;
+          workerShouldPersistLog[owner_cluster_worker] = true;
           coordinatorCovered[coordinatorId] = true;
         }
       }
