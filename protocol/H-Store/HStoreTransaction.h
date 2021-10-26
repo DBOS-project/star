@@ -10,6 +10,7 @@
 #include "core/Partitioner.h"
 #include "core/Table.h"
 #include "protocol/TwoPL/TwoPLRWKey.h"
+#include "common/WALLogger.h"
 #include <chrono>
 #include <glog/logging.h>
 #include <vector>
@@ -29,11 +30,11 @@ public:
   
   virtual ~HStoreTransaction() = default;
 
-  void set_logger(BufferedFileWriter * logger) {
+  void set_logger(WALLogger * logger) {
     this->logger = logger;
   }
 
-  BufferedFileWriter * get_logger() {
+  WALLogger * get_logger() {
     return this->logger;
   }
 
@@ -301,6 +302,6 @@ public:
   Partitioner &partitioner;
   Operation operation;
   std::vector<TwoPLRWKey> readSet, writeSet;
-  BufferedFileWriter * logger = nullptr;
+  WALLogger * logger = nullptr;
 };
 } // namespace star

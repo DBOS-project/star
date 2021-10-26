@@ -64,6 +64,7 @@ public:
     int err = 0;
     if (emulated_persist_latency)
       std::this_thread::sleep_for(std::chrono::microseconds(emulated_persist_latency));
+    //err = fdatasync(fd);
     CHECK(err == 0);
   }
 

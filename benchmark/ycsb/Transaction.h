@@ -75,27 +75,26 @@ public:
       if (query.UPDATE[i]) {
 
         if (this->execution_phase) {
-          RandomType local_random;
           storage.ycsb_values[i].Y_F01.assign(
-              local_random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
+              random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
           storage.ycsb_values[i].Y_F02.assign(
-              local_random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
+              random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
           storage.ycsb_values[i].Y_F03.assign(
-              local_random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
+              random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
           storage.ycsb_values[i].Y_F04.assign(
-              local_random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
+              random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
           storage.ycsb_values[i].Y_F05.assign(
-              local_random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
+              random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
           storage.ycsb_values[i].Y_F06.assign(
-              local_random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
+              random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
           storage.ycsb_values[i].Y_F07.assign(
-              local_random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
+              random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
           storage.ycsb_values[i].Y_F08.assign(
-              local_random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
+              random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
           storage.ycsb_values[i].Y_F09.assign(
-              local_random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
+              random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
           storage.ycsb_values[i].Y_F10.assign(
-              local_random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
+              random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
         }
 
         this->update(ycsbTableID, context.getPartitionID(key),

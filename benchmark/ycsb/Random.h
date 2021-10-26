@@ -26,6 +26,9 @@ public:
     return result;
   }
 
+  void init_seed(std::size_t seed) {
+
+  }
 private:
   static const std::string &characters() {
     static std::string characters_ =

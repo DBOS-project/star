@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "common/WALLogger.h"
+
 namespace star {
 class Context {
 
@@ -38,10 +40,13 @@ public:
   std::size_t sleep_time = 50; // us
   std::string partitioner;
   std::size_t delay_time = 0;
+  std::size_t wal_group_commit_time = 10;// us
   std::string log_path;
   std::string cdf_path;
   std::size_t cpu_core_id = 0;
   std::size_t cross_txn_workers = 0;
+  bool hstore_command_logging = true;
+  star::WALLogger * logger = nullptr;
   // https://www.storagereview.com/review/intel-ssd-dc-p4510-review
   // We emulate 110us write latency of Intel DC P4510 SSD.
   std::size_t emulated_persist_latency = 110;

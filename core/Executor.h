@@ -5,6 +5,7 @@
 #pragma once
 
 #include "common/Percentile.h"
+#include "common/WALLogger.h"
 #include "common/BufferedFileWriter.h"
 #include "core/ControlMessage.h"
 #include "core/Defs.h"
@@ -56,10 +57,15 @@ public:
     message_stats.resize(messageHandlers.size(), 0);
     message_sizes.resize(messageHandlers.size(), 0);
 
-    if (context.log_path != "") {
-      std::string redo_filename =
-          context.log_path + "_" + std::to_string(id) + ".txt";
-      logger = std::make_unique<BufferedFileWriter>(redo_filename.c_str(), context.emulated_persist_latency);
+    if (context.logger) {
+      DCHECK(context.log_path != "");
+      logger = context.logger;
+    } else {
+      if (context.log_path != "") {
+        std::string redo_filename =
+            context.log_path + "_" + std::to_string(id) + ".txt";
+        logger = new SimpleWALLogger(redo_filename.c_str(), context.emulated_persist_latency);
+      }
     }
   }
 
@@ -360,7 +366,7 @@ public:
   std::vector<std::size_t> message_stats, message_sizes;
   LockfreeQueue<Message *> in_queue, out_queue, master_unlock_in_queue;
 
-  std::unique_ptr<BufferedFileWriter> logger;
+  WALLogger * logger = nullptr;
   void record_txn_breakdown_stats(TransactionType & txn) {
     if (txn.is_single_partition()) {
       local_txn_stall_time_pct.add(txn.get_stall_time());

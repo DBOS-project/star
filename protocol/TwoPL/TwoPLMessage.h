@@ -588,8 +588,8 @@ public:
       std::ostringstream ss;
       ss << commit_tid << true;
       auto output = ss.str();
-      txn->get_logger()->write(output.c_str(), output.size());
-      txn->get_logger()->sync();
+      auto lsn = txn->get_logger()->write(output.c_str(), output.size());
+      txn->get_logger()->sync(lsn);
     }
   }
 
@@ -699,19 +699,19 @@ public:
     encoder << success;
 
     responseMessage.flush();
-
+    std::size_t lsn = 0;
     if (txn->get_logger()) {
       // write the vote
       std::ostringstream ss;
       ss << success;
       auto output = ss.str();
-      txn->get_logger()->write(output.c_str(), output.size());
+      lsn = txn->get_logger()->write(output.c_str(), output.size());
     }
 
     if (txn->get_logger()) {
       // sync the vote and redo
       // On recovery, the txn is considered prepared only if all votes are true // passed all validation
-      txn->get_logger()->sync();
+      txn->get_logger()->sync(lsn);
     }
   }
 

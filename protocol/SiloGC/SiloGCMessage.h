@@ -433,18 +433,19 @@ public:
 
     responseMessage.flush();
 
+    std::size_t lsn = 0;
     if (txn->get_logger()) {
       // write a vote for a key
       std::ostringstream ss;
       ss << success;
       auto output = ss.str();
-      txn->get_logger()->write(output.c_str(), output.size());
+      lsn = txn->get_logger()->write(output.c_str(), output.size());
     }
 
     if (txn->get_logger() && last_validation) {
       // sync the votes
       // On recovery, the txn is considered prepared only if all votes are true // passed all validation
-      txn->get_logger()->sync();
+      txn->get_logger()->sync(lsn);
     }
   }
 

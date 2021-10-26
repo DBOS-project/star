@@ -1,6 +1,7 @@
 #include "benchmark/ycsb/Database.h"
 #include "core/Coordinator.h"
 #include "core/Macros.h"
+#include "common/WALLogger.h"
 
 DEFINE_int32(read_write_ratio, 80, "read write ratio");
 DEFINE_int32(read_only_ratio, 0, "read only transaction ratio");
@@ -36,6 +37,18 @@ int main(int argc, char *argv[]) {
   if (FLAGS_zipf > 0) {
     context.isUniform = false;
     star::Zipf::globalZipf().init(context.keysPerPartition, FLAGS_zipf);
+  }
+
+  if (context.log_path != "" && context.wal_group_commit_time != 0) {
+    std::string redo_filename =
+          context.log_path + "_group_commit.txt";
+    context.logger = new star::GroupCommitLogger(redo_filename, context.wal_group_commit_time, context.emulated_persist_latency);
+    LOG(INFO) << "WAL Group Commiting on[" << redo_filename << "]";
+  } else {
+    std::string redo_filename =
+          context.log_path + "_non_group_commit.txt";
+    context.logger = new star::SimpleWALLogger(redo_filename, context.emulated_persist_latency);
+    LOG(INFO) << "WAL Group Commiting off";
   }
 
   star::ycsb::Database db;

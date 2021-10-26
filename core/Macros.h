@@ -39,9 +39,11 @@ DEFINE_bool(tcp_no_delay, true, "TCP Nagle algorithm, true: disable nagle");
 DEFINE_bool(tcp_quick_ack, true, "TCP quick ack mode, true: enable quick ack");
 DEFINE_bool(enable_hstore_master, true, "enable hstore master for lock scheduling");
 DEFINE_bool(cpu_affinity, false, "pinning each thread to a separate core");
+DEFINE_bool(hstore_command_logging, true, "configure command logging mode for hstore");
 DEFINE_int32(cross_txn_workers, 0, "number of workers generating cross-partition transactions");
 DEFINE_int32(cpu_core_id, 0, "cpu core id");
 DEFINE_int32(persist_latency, 110, "emulated persist latency");
+DEFINE_int32(wal_group_commit_time, 10, "wal group commit time in us");
 
 #define SETUP_CONTEXT(context)                                                 \
   boost::algorithm::split(context.peers, FLAGS_servers,                        \
@@ -80,4 +82,6 @@ DEFINE_int32(persist_latency, 110, "emulated persist latency");
   context.cpu_core_id = FLAGS_cpu_core_id;                                     \
   context.cross_txn_workers = FLAGS_cross_txn_workers;                         \
   context.emulated_persist_latency = FLAGS_persist_latency;                    \
+  context.wal_group_commit_time = FLAGS_wal_group_commit_time;                 \
+  context.hstore_command_logging = FLAGS_hstore_command_logging;               \
   context.set_star_partitioner();

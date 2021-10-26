@@ -5,6 +5,7 @@
 #pragma once
 
 #include "common/Operation.h"
+#include "common/WALLogger.h"
 #include "core/Defs.h"
 #include "core/Partitioner.h"
 #include "protocol/Calvin/CalvinHelper.h"
@@ -28,11 +29,11 @@ public:
 
   virtual ~CalvinTransaction() = default;
   
-  void set_logger(BufferedFileWriter * logger) {
+  void set_logger(WALLogger * logger) {
     this->logger = logger;
   }
 
-  BufferedFileWriter * get_logger() {
+  WALLogger * get_logger() {
     return this->logger;
   }
 
@@ -377,6 +378,6 @@ public:
   std::vector<bool> active_coordinators;
   Operation operation; // never used
   std::vector<CalvinRWKey> readSet, writeSet;
-  BufferedFileWriter * logger = nullptr;
+  WALLogger * logger = nullptr;
 };
 } // namespace star

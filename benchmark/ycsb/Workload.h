@@ -42,10 +42,25 @@ public:
       }
     }
 
+    static std::atomic<uint64_t> tid_cnt(0);
+    long long transactionId = tid_cnt.fetch_add(1);
+    auto random_seed = Time::now();
+    random.init_seed(random_seed);
     std::unique_ptr<TransactionType> p =
         std::make_unique<ReadModifyWrite<Transaction>>(
             coordinator_id, partition_id, db, context, random, partitioner,
             storage);
+
+    if (context.log_path != "" && context.protocol == "HStore" && context.hstore_command_logging) {
+      DCHECK(context.logger);
+      std::ostringstream ss;
+      ss << partition_id  << transactionId << "YCSB OP" << random_seed;
+      auto output = ss.str();
+      auto lsn = context.logger->write(output.c_str(), output.size());
+      if (p->is_single_partition()) {
+        context.logger->sync(lsn);
+      }
+    }
 
     return p;
   }

@@ -473,7 +473,7 @@ public:
                                               ITable &table, Transaction *txn) {
     DCHECK(inputPiece.get_message_type() ==
            static_cast<uint32_t>(SiloMessage::READ_VALIDATION_AND_REDO_REQUEST));
-
+    std::size_t lsn = 0;
     /*
      * The structure of a read validation request: (primary key, read key
      * offset, tid, last_validation) The structure of a read validation response: (success?, read
@@ -535,7 +535,7 @@ public:
       std::ostringstream ss;
       ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
       auto output = ss.str();
-      txn->get_logger()->write(output.c_str(), output.size());
+      lsn = txn->get_logger()->write(output.c_str(), output.size());
     }
 
     // prepare response message header
@@ -556,13 +556,13 @@ public:
       std::ostringstream ss;
       ss << success;
       auto output = ss.str();
-      txn->get_logger()->write(output.c_str(), output.size());
+      lsn = txn->get_logger()->write(output.c_str(), output.size());
     }
 
     if (txn->get_logger()) {
       // sync the vote and redo
       // On recovery, the txn is considered prepared only if all votes are true // passed all validation
-      txn->get_logger()->sync();
+      txn->get_logger()->sync(lsn);
     }
   }
 
@@ -755,8 +755,8 @@ public:
       std::ostringstream ss;
       ss << commit_tid << true;
       auto output = ss.str();
-      txn->get_logger()->write(output.c_str(), output.size());
-      txn->get_logger()->sync();
+      auto lsn = txn->get_logger()->write(output.c_str(), output.size());
+      txn->get_logger()->sync(lsn);
     }
   }
 

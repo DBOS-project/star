@@ -5,6 +5,7 @@
 #pragma once
 
 #include "common/Message.h"
+#include "common/WALLogger.h"
 #include "common/Operation.h"
 #include "core/Defs.h"
 #include "core/Partitioner.h"
@@ -29,11 +30,11 @@ public:
 
   virtual ~TwoPLTransaction() = default;
 
-  void set_logger(BufferedFileWriter * logger) {
+  void set_logger(WALLogger * logger) {
     this->logger = logger;
   }
 
-  BufferedFileWriter * get_logger() {
+  WALLogger * get_logger() {
     return this->logger;
   }
 
@@ -311,6 +312,6 @@ public:
   Partitioner &partitioner;
   Operation operation;
   std::vector<TwoPLRWKey> readSet, writeSet;
-  BufferedFileWriter * logger = nullptr;
+  WALLogger * logger = nullptr;
 };
 } // namespace star

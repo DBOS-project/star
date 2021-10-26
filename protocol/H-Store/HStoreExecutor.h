@@ -187,8 +187,8 @@ public:
         std::ostringstream ss;
         ss << commit_tid << true;
         auto output = ss.str();
-        txn.get_logger()->write(output.c_str(), output.size());
-        txn.get_logger()->sync();
+        auto lsn = txn.get_logger()->write(output.c_str(), output.size());
+        txn.get_logger()->sync(lsn);
       }
     }
 
@@ -207,26 +207,28 @@ public:
 
     auto &readSet = txn.readSet;
     auto &writeSet = txn.writeSet;
-
+    std::vector<TwoPLRWKey> emptyWirteSet;
     if (txn.is_single_partition()) {
-      // Redo logging
-      for (size_t j = 0; j < writeSet.size(); ++j) {
-        auto &writeKey = writeSet[j];
-        auto tableId = writeKey.get_table_id();
-        auto partitionId = writeKey.get_partition_id();
-        auto owner_cluster_worker = partition_owner_cluster_worker(partitionId);
-        DCHECK(owner_cluster_worker == this_cluster_worker_id);
-        auto table = this->db.find_table(tableId, partitionId);
-        auto key_size = table->key_size();
-        auto value_size = table->value_size();
-        auto key = writeKey.get_key();
-        auto value = writeKey.get_value();
-        DCHECK(key);
-        DCHECK(value);
-        std::ostringstream ss;
-        ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
-        auto output = ss.str();
-        txn.get_logger()->write(output.c_str(), output.size());
+      if (this->context.hstore_command_logging == false) {
+        // Redo logging
+        for (size_t j = 0; j < writeSet.size(); ++j) {
+          auto &writeKey = writeSet[j];
+          auto tableId = writeKey.get_table_id();
+          auto partitionId = writeKey.get_partition_id();
+          auto owner_cluster_worker = partition_owner_cluster_worker(partitionId);
+          DCHECK(owner_cluster_worker == this_cluster_worker_id);
+          auto table = this->db.find_table(tableId, partitionId);
+          auto key_size = table->key_size();
+          auto value_size = table->value_size();
+          auto key = writeKey.get_key();
+          auto value = writeKey.get_value();
+          DCHECK(key);
+          DCHECK(value);
+          std::ostringstream ss;
+          ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
+          auto output = ss.str();
+          txn.get_logger()->write(output.c_str(), output.size());
+        }
       }
     } else {
       std::vector<std::vector<TwoPLRWKey>> writeSetGroupByClusterWorkers(this->context.worker_num * this->context.coordinator_num);
@@ -252,27 +254,30 @@ public:
           continue;
         auto owner_cluster_worker = i;
         if (owner_cluster_worker == this_cluster_worker_id) {
-          // Redo logging
-          for (size_t j = 0; j < writeSet.size(); ++j) {
-            auto &writeKey = writeSet[j];
-            auto tableId = writeKey.get_table_id();
-            auto partitionId = writeKey.get_partition_id();
-            auto table = this->db.find_table(tableId, partitionId);
-            auto key_size = table->key_size();
-            auto value_size = table->value_size();
-            auto key = writeKey.get_key();
-            auto value = writeKey.get_value();
-            DCHECK(key);
-            DCHECK(value);
-            std::ostringstream ss;
-            ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
-            auto output = ss.str();
-            txn.get_logger()->write(output.c_str(), output.size());
+          if (this->context.hstore_command_logging == false) {
+            // Redo logging
+            for (size_t j = 0; j < writeSet.size(); ++j) {
+              auto &writeKey = writeSet[j];
+              auto tableId = writeKey.get_table_id();
+              auto partitionId = writeKey.get_partition_id();
+              auto table = this->db.find_table(tableId, partitionId);
+              auto key_size = table->key_size();
+              auto value_size = table->value_size();
+              auto key = writeKey.get_key();
+              auto value = writeKey.get_value();
+              DCHECK(key);
+              DCHECK(value);
+              std::ostringstream ss;
+              ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
+              auto output = ss.str();
+              txn.get_logger()->write(output.c_str(), output.size());
+            }
           }
         } else {
           txn.pendingResponses++;
+          
           txn.network_size += MessageFactoryType::new_prepare_and_redo_message(
-              *messages[owner_cluster_worker], writeSet, this->db, workerShouldPersistLog[i]);
+              *messages[owner_cluster_worker],this->context.hstore_command_logging == false ? writeSet : emptyWirteSet, this->db, workerShouldPersistLog[i]);
         }
       }
       sync_messages(txn);
@@ -489,7 +494,7 @@ public:
     txn.remote_request_handler = [this]() { return this->process_request(); };
     txn.message_flusher = [this]() { this->flush_messages(); };
     txn.get_table = [this](std::size_t tableId, std::size_t partitionId) { return this->db.find_table(tableId, partitionId); };
-    txn.set_logger(this->logger.get());
+    txn.set_logger(this->logger);
   };
 
   using Transaction = TransactionType;
@@ -498,7 +503,7 @@ public:
   static void prepare_and_redo_request_handler(MessagePiece inputPiece,
                                     Message &responseMessage, ITable &table,
                                     Transaction *txn) {
-
+    std::size_t lsn = 0;
     DCHECK(inputPiece.get_message_type() ==
            static_cast<uint32_t>(HStoreMessage::PREPARE_REDO_REQUEST));
 
@@ -532,7 +537,7 @@ public:
       std::ostringstream ss;
       ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
       auto output = ss.str();
-      txn->get_logger()->write(output.c_str(), output.size());
+      lsn = txn->get_logger()->write(output.c_str(), output.size());
     }
 
     // prepare response message header
@@ -548,18 +553,19 @@ public:
 
     responseMessage.flush();
 
+    
     if (txn->get_logger()) {
       // write the vote
       std::ostringstream ss;
       ss << success;
       auto output = ss.str();
-      txn->get_logger()->write(output.c_str(), output.size());
+      lsn = txn->get_logger()->write(output.c_str(), output.size());
     }
 
     if (persist_log && txn->get_logger()) {
       // sync the vote and redo
       // On recovery, the txn is considered prepared only if all votes are true // passed all validation
-      txn->get_logger()->sync();
+      txn->get_logger()->sync(lsn);
     }
   }
 
@@ -829,8 +835,8 @@ public:
       std::ostringstream ss;
       ss << commit_tid << true;
       auto output = ss.str();
-      txn->get_logger()->write(output.c_str(), output.size());
-      txn->get_logger()->sync();
+      auto lsn = txn->get_logger()->write(output.c_str(), output.size());
+      txn->get_logger()->sync(lsn);
     }
   }
 
