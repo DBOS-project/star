@@ -193,18 +193,18 @@ public:
 
   static std::size_t new_replication_message(Message &message, ITable &table,
                                              const void *key, const void *value,
-                                             uint64_t commit_tid) {
+                                             uint64_t commit_tid, bool sync_redo) {
 
     /*
      * The structure of a replication request: (primary key, field value,
-     * commit_tid)
+     * commit_tid, sync_redo)
      */
 
     auto key_size = table.key_size();
     auto field_size = table.field_size();
 
     auto message_size = MessagePiece::get_header_size() + key_size +
-                        field_size + sizeof(commit_tid) + sizeof(uint64_t);
+                        field_size + sizeof(commit_tid) + sizeof(uint64_t) + sizeof(bool);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(TwoPLMessage::REPLICATION_REQUEST), message_size,
         table.tableID(), table.partitionID());
@@ -213,7 +213,7 @@ public:
     encoder << message_piece_header;
     encoder.write_n_bytes(key, key_size);
     table.serialize_value(encoder, value);
-    encoder << commit_tid;
+    encoder << commit_tid << sync_redo;
     uint64_t current_ts_micro = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count();
     encoder << current_ts_micro;
     message.flush();
@@ -774,7 +774,7 @@ public:
     uint64_t current_ts_micro1 = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count();
     /*
      * The structure of a replication request: (primary key, field value, commit
-     * tid) The structure of a replication response: ()
+     * tid, sync_redo) The structure of a replication response: ()
      */
 
     auto stringPiece = inputPiece.toStringPiece();
@@ -785,8 +785,9 @@ public:
     stringPiece.remove_prefix(field_size);
 
     uint64_t commit_tid, req_timestamp;
+    bool sync_redo = false;
     Decoder dec(stringPiece);
-    dec >> commit_tid >> req_timestamp;
+    dec >> commit_tid >> sync_redo >> req_timestamp;
 
     DCHECK(dec.size() == 0);
 
@@ -796,6 +797,18 @@ public:
     DCHECK(last_tid < commit_tid);
     table.deserialize_value(key, valueStringPiece);
     TwoPLHelper::write_lock_release(tid, commit_tid);
+
+    uint64_t lsn = 0;
+    if (txn->get_logger()) {
+      std::ostringstream ss;
+      ss << commit_tid << std::string((const char *)key, key_size) << std::string(valueStringPiece.data(), field_size);
+      auto output = ss.str();
+      lsn = txn->get_logger()->write(output.c_str(), output.size());
+    }
+
+    if (txn->get_logger() && sync_redo) {
+      txn->get_logger()->sync(lsn);
+    }
 
     // prepare response message header
     auto message_size = MessagePiece::get_header_size() + sizeof(uint64_t) * 3;

@@ -183,7 +183,7 @@ public:
         txn.record_commit_persistence_time(us);
       });
       // Persist commit record after successful prepare phase
-      if (txn.get_logger()) {
+      if (txn.get_logger() && txn.is_single_partition() == false && this->context.hstore_command_logging == false) {
         std::ostringstream ss;
         ss << commit_tid << true;
         auto output = ss.str();
@@ -1488,6 +1488,7 @@ public:
         } else {
           DCHECK((int)partition_owner_cluster_worker(partition_id) == this_cluster_worker_id);
           DCHECK(owned_partition_locked_by[partition_id] == -1);
+          
           this->transaction =
               this->workload.next_transaction(this->context, partition_id, storage, this->id);
           //startTime = std::chrono::steady_clock::now();
@@ -1504,6 +1505,11 @@ public:
               obtain_master_partitions_lock(*this->transaction);
             }
           }
+          auto ltc =
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - this->transaction->startTime)
+              .count();
+          this->transaction->set_stall_time(ltc);
         }
 
         if (retry_transaction) {

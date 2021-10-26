@@ -456,7 +456,9 @@ private:
     auto logger = txn.get_logger();
     std::vector<bool> persist_commit_record(writeSet.size(), false);
     std::vector<bool> coordinator_covered(this->context.coordinator_num, false);
-    
+    std::vector<std::vector<bool>> persist_replication(writeSet.size(), std::vector<bool>(this->context.coordinator_num, false));
+    std::vector<bool> coordinator_covered_for_replication(this->context.coordinator_num, false);
+
     if (txn.get_logger()) {
       // We set persist_commit_record[i] to true if it is the last write to the coordinator
       // We traverse backwards and set the sync flag for the first write whose coordinator_covered is not true
@@ -473,6 +475,24 @@ private:
         if (coordinator_covered[coordinatorId] == false) {
           coordinator_covered[coordinatorId] = true;
           persist_commit_record[i] = true;
+        }
+
+        for (auto k = 0u; k < partitioner.total_coordinators(); ++k) {
+          // k does not have this partition
+          if (!partitioner.is_partition_replicated_on(partitionId, k)) {
+            continue;
+          }
+
+          // already write
+          if (k == partitioner.master_coordinator(partitionId)) {
+            continue;
+          }
+
+          // remote replication
+          if (k != txn.coordinator_id && coordinator_covered_for_replication[k] == false) {
+            coordinator_covered_for_replication[k] = true;
+            persist_replication[i][k] = true;
+          }
         }
       }
     }
@@ -532,7 +552,7 @@ private:
           auto coordinatorID = k;
           txn.network_size += MessageFactoryType::new_replication_message(
               *messages[coordinatorID], *table, writeKey.get_key(),
-              writeKey.get_value(), commit_tid);
+              writeKey.get_value(), commit_tid, persist_replication[i][k]);
         }
       }
 

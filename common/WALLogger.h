@@ -35,8 +35,11 @@ public:
 class GroupCommitLogger : public WALLogger {
 public:
 
-  GroupCommitLogger(const std::string & filename, std::size_t group_commit_latency = 10, std::size_t emulated_persist_latency = 0) 
-    : WALLogger(filename, emulated_persist_latency), writer(filename.c_str(), emulated_persist_latency), write_lsn(0), sync_lsn(0), group_commit_latency_us(group_commit_latency), last_sync_time(Time::now()), waiting_syncs(0) {
+  GroupCommitLogger(const std::string & filename, std::size_t group_commit_txn_cnt, std::size_t group_commit_latency = 10, std::size_t emulated_persist_latency = 0) 
+    : WALLogger(filename, emulated_persist_latency), writer(filename.c_str(), 
+    emulated_persist_latency), write_lsn(0), sync_lsn(0), 
+    group_commit_latency_us(group_commit_latency), 
+    group_commit_txn_cnt(group_commit_txn_cnt), last_sync_time(Time::now()), waiting_syncs(0) {
   }
 
   ~GroupCommitLogger() override {}
@@ -53,7 +56,7 @@ public:
   void do_sync() {
     std::lock_guard<std::mutex> g(mtx);
     auto waiting_sync_cnt = waiting_syncs.load();
-    if (waiting_sync_cnt <= 10 && (Time::now() - last_sync_time) / 1000 <= group_commit_latency_us) {
+    if (waiting_sync_cnt < group_commit_txn_cnt && (Time::now() - last_sync_time) / 1000 < group_commit_latency_us) {
         return;
     }
     
@@ -74,7 +77,7 @@ public:
     waiting_syncs.fetch_add(1);
     while (sync_lsn.load() < lsn) {
       std::this_thread::sleep_for(std::chrono::microseconds(10));
-      if (waiting_syncs.load() > 10 || (Time::now() - last_sync_time) / 1000 > group_commit_latency_us) {
+      if (waiting_syncs.load() >= group_commit_txn_cnt || (Time::now() - last_sync_time) / 1000 >= group_commit_latency_us) {
         do_sync();
       }
     }
@@ -90,6 +93,7 @@ private:
   std::atomic<uint64_t> write_lsn;
   std::atomic<uint64_t> sync_lsn;
   std::size_t group_commit_latency_us;
+  std::size_t group_commit_txn_cnt;
   std::atomic<std::size_t> last_sync_time;
   std::atomic<uint64_t> waiting_syncs;
   

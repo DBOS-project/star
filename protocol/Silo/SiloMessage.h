@@ -217,7 +217,7 @@ public:
 
   static std::size_t new_replication_message(Message &message, ITable &table,
                                              const void *key, const void *value,
-                                             uint64_t commit_tid) {
+                                             uint64_t commit_tid, bool sync_redo) {
 
     /*
      * The structure of a replication request: (primary key, field value,
@@ -228,7 +228,7 @@ public:
     auto field_size = table.field_size();
 
     auto message_size = MessagePiece::get_header_size() + key_size +
-                        field_size + sizeof(commit_tid);
+                        field_size + sizeof(commit_tid) + sizeof(bool);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(SiloMessage::REPLICATION_REQUEST), message_size,
         table.tableID(), table.partitionID());
@@ -237,7 +237,7 @@ public:
     encoder << message_piece_header;
     encoder.write_n_bytes(key, key_size);
     table.serialize_value(encoder, value);
-    encoder << commit_tid;
+    encoder << commit_tid << sync_redo;
     message.flush();
     message.set_gen_time(Time::now());
     return message_size;
@@ -794,7 +794,7 @@ public:
 
     /*
      * The structure of a replication request: (primary key, field value,
-     * commit_tid).
+     * commit_tid, sync_redo).
      * The structure of a replication response: null
      */
 
@@ -810,8 +810,9 @@ public:
     stringPiece.remove_prefix(field_size);
 
     uint64_t commit_tid;
+    bool sync_redo = false;
     Decoder dec(stringPiece);
-    dec >> commit_tid;
+    dec >> commit_tid >> sync_redo;
 
     DCHECK(dec.size() == 0);
 
@@ -821,6 +822,18 @@ public:
     DCHECK(last_tid < commit_tid);
     table.deserialize_value(key, valueStringPiece);
     SiloHelper::unlock(tid, commit_tid);
+
+    uint64_t lsn = 0;
+    if (txn->get_logger()) {
+      std::ostringstream ss;
+      ss << commit_tid << std::string((const char *)key, key_size) << std::string(valueStringPiece.data(), field_size);
+      auto output = ss.str();
+      lsn = txn->get_logger()->write(output.c_str(), output.size());
+    }
+
+    if (txn->get_logger() && sync_redo) {
+      txn->get_logger()->sync(lsn);
+    }
 
     // prepare response message header
     auto message_size = MessagePiece::get_header_size();
