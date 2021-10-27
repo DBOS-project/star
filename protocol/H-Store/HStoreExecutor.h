@@ -183,12 +183,12 @@ public:
         txn.record_commit_persistence_time(us);
       });
       // Persist commit record after successful prepare phase
-      if (txn.get_logger() && txn.is_single_partition() == false && this->context.hstore_command_logging == false) {
+      if (txn.get_logger()) {
         std::ostringstream ss;
         ss << commit_tid << true;
         auto output = ss.str();
         auto lsn = txn.get_logger()->write(output.c_str(), output.size());
-        txn.get_logger()->sync(lsn);
+        txn.get_logger()->sync(lsn, [&](){ txn.remote_request_handler(); });
       }
     }
 
@@ -565,7 +565,7 @@ public:
     if (persist_log && txn->get_logger()) {
       // sync the vote and redo
       // On recovery, the txn is considered prepared only if all votes are true // passed all validation
-      txn->get_logger()->sync(lsn);
+      txn->get_logger()->sync(lsn, [&](){ txn->remote_request_handler(); });
     }
   }
 
@@ -836,7 +836,7 @@ public:
       ss << commit_tid << true;
       auto output = ss.str();
       auto lsn = txn->get_logger()->write(output.c_str(), output.size());
-      txn->get_logger()->sync(lsn);
+      txn->get_logger()->sync(lsn, [&](){ txn->remote_request_handler(); });
     }
   }
 

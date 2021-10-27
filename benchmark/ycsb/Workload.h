@@ -57,9 +57,6 @@ public:
       ss << partition_id  << transactionId << "YCSB OP" << random_seed;
       auto output = ss.str();
       auto lsn = context.logger->write(output.c_str(), output.size());
-      if (p->is_single_partition()) {
-        context.logger->sync(lsn);
-      }
     }
 
     return p;

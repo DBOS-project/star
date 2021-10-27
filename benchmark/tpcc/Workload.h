@@ -67,15 +67,12 @@ public:
       transactionType = "TPCC NewOrder";
     }
 
-    if (context.log_path != "" && context.protocol == "HStore") {
+    if (context.log_path != "" && context.protocol == "HStore" && context.hstore_command_logging) {
       DCHECK(context.logger);
       std::ostringstream ss;
       ss << partition_id  << transactionId << transactionType << random_seed;
       auto output = ss.str();
       auto lsn = context.logger->write(output.c_str(), output.size());
-      if (p->is_single_partition()) {
-        context.logger->sync(lsn);
-      }
     }
 
     return p;

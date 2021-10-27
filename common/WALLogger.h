@@ -24,7 +24,7 @@ public:
   virtual ~WALLogger() {}
 
   virtual size_t write(const char *str, long size) = 0;
-  virtual void sync(size_t lsn) = 0;
+  virtual void sync(size_t lsn, std::function<void()> on_blocking = [](){}) = 0;
   virtual void close() = 0;
 
   const std::string filename;
@@ -56,7 +56,7 @@ public:
   void do_sync() {
     std::lock_guard<std::mutex> g(mtx);
     auto waiting_sync_cnt = waiting_syncs.load();
-    if (waiting_sync_cnt < group_commit_txn_cnt && (Time::now() - last_sync_time) / 1000 < group_commit_latency_us) {
+    if (waiting_sync_cnt < group_commit_txn_cnt / 2 && (Time::now() - last_sync_time) / 1000 < group_commit_latency_us) {
         return;
     }
     
@@ -73,11 +73,12 @@ public:
     sync_lsn.store(flush_lsn);
   }
 
-  void sync(std::size_t lsn) override {
+  void sync(std::size_t lsn, std::function<void()> on_blocking = [](){}) override {
     waiting_syncs.fetch_add(1);
     while (sync_lsn.load() < lsn) {
+      on_blocking();
       std::this_thread::sleep_for(std::chrono::microseconds(10));
-      if (waiting_syncs.load() >= group_commit_txn_cnt || (Time::now() - last_sync_time) / 1000 >= group_commit_latency_us) {
+      if (waiting_syncs.load() >= group_commit_txn_cnt / 2 || (Time::now() - last_sync_time) / 1000 >= group_commit_latency_us) {
         do_sync();
       }
     }
@@ -115,7 +116,7 @@ public:
     return 0;
   }
 
-  void sync(std::size_t lsn) override {
+  void sync(std::size_t lsn, std::function<void()> on_blocking = [](){}) override {
     std::lock_guard<std::mutex> g(mtx);
     writer.sync();
   }

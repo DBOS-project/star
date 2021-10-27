@@ -562,7 +562,7 @@ public:
     if (txn->get_logger()) {
       // sync the vote and redo
       // On recovery, the txn is considered prepared only if all votes are true // passed all validation
-      txn->get_logger()->sync(lsn);
+      txn->get_logger()->sync(lsn, [&](){ txn->remote_request_handler(); });
     }
   }
 
@@ -756,7 +756,7 @@ public:
       ss << commit_tid << true;
       auto output = ss.str();
       auto lsn = txn->get_logger()->write(output.c_str(), output.size());
-      txn->get_logger()->sync(lsn);
+      txn->get_logger()->sync(lsn, [&](){ txn->remote_request_handler(); });
     }
   }
 
@@ -800,7 +800,7 @@ public:
 
     DCHECK(inputPiece.get_message_length() == MessagePiece::get_header_size() +
                                                   key_size + field_size +
-                                                  sizeof(uint64_t));
+                                                  sizeof(uint64_t) + sizeof(bool));
 
     auto stringPiece = inputPiece.toStringPiece();
 
@@ -832,7 +832,7 @@ public:
     }
 
     if (txn->get_logger() && sync_redo) {
-      txn->get_logger()->sync(lsn);
+      txn->get_logger()->sync(lsn, [&](){ txn->remote_request_handler(); });
     }
 
     // prepare response message header

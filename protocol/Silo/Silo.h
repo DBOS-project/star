@@ -117,7 +117,7 @@ public:
         ss << commit_tid << true;
         auto output = ss.str();
         auto lsn = txn.get_logger()->write(output.c_str(), output.size());
-        txn.get_logger()->sync(lsn);
+        txn.get_logger()->sync(lsn, [&](){ txn.remote_request_handler(); });
       }
     }
 

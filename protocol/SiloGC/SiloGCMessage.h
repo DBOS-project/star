@@ -445,7 +445,7 @@ public:
     if (txn->get_logger() && last_validation) {
       // sync the votes
       // On recovery, the txn is considered prepared only if all votes are true // passed all validation
-      txn->get_logger()->sync(lsn);
+      txn->get_logger()->sync(lsn, [&](){ txn->remote_request_handler(); });
     }
   }
 
