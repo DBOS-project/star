@@ -183,7 +183,7 @@ public:
         txn.record_commit_persistence_time(us);
       });
       // Persist commit record after successful prepare phase
-      if (txn.get_logger()) {
+      if (txn.get_logger() && (txn.is_single_partition() == false || this->context.hstore_command_logging == false)) {
         std::ostringstream ss;
         ss << commit_tid << true;
         auto output = ss.str();
