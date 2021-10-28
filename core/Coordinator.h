@@ -261,6 +261,8 @@ public:
       oDispatcherThreads[i].join();
     }
 
+    if (context.logger)
+      context.logger->print_sync_time();
     measure_round_trip();
     close_sockets();
 

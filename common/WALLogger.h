@@ -14,6 +14,8 @@
 #include <mutex>
 #include <atomic>
 
+#include "common/Percentile.h"
+
 #include "BufferedFileWriter.h"
 #include "Time.h"
 namespace star {
@@ -26,6 +28,8 @@ public:
   virtual size_t write(const char *str, long size) = 0;
   virtual void sync(size_t lsn, std::function<void()> on_blocking = [](){}) = 0;
   virtual void close() = 0;
+
+  virtual void print_sync_time()  {};
 
   const std::string filename;
   std::size_t emulated_persist_latency;
@@ -64,8 +68,10 @@ public:
     waiting_sync_cnt = waiting_syncs.load();
 
     if (sync_lsn < write_lsn) {
+      auto t = Time::now();
       writer.flush();
       writer.sync();
+      sync_time.add(Time::now() - t);
       //LOG(INFO) << "sync " << waiting_sync_cnt << " writes"; 
     }
     last_sync_time = Time::now();
@@ -88,6 +94,13 @@ public:
     writer.close();
   }
 
+  void print_sync_time() override {
+    LOG(INFO) << "Disk Sync time "
+              << this->sync_time.nth(50) / 1000 << " us (50th), "
+              << this->sync_time.nth(75) / 1000 << " us (75th), "
+              << this->sync_time.nth(90) / 1000 << " us (90th), "
+              << this->sync_time.nth(95) / 1000 << " us (95th). ";
+  }
 private:
   std::mutex mtx;
   BufferedFileWriter writer;
@@ -97,7 +110,7 @@ private:
   std::size_t group_commit_txn_cnt;
   std::atomic<std::size_t> last_sync_time;
   std::atomic<uint64_t> waiting_syncs;
-  
+  Percentile<uint64_t> sync_time;
   
 };
 
