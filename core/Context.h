@@ -56,7 +56,7 @@ public:
   bool tcp_no_delay = true;
   bool tcp_quick_ack = false;
 
-  bool cpu_affinity = true;
+  bool cpu_affinity = false;
 
   bool sleep_on_retry = true;
 

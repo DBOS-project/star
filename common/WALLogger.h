@@ -19,6 +19,121 @@
 #include "BufferedFileWriter.h"
 #include "Time.h"
 namespace star {
+
+
+class BufferedDirectFileWriter {
+
+public:
+  BufferedDirectFileWriter(const char *filename, std::size_t block_size, std::size_t emulated_persist_latency = 0) 
+    : block_size(block_size), emulated_persist_latency(emulated_persist_latency) {
+    long flags = O_WRONLY | O_CREAT | O_TRUNC;
+    if (emulated_persist_latency == 0) {
+      // Not using emulation, use O_DIRECT
+      flags |= O_DIRECT;
+    }
+    fd = open(filename, flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+    CHECK(fd >= 0);
+    CHECK(BUFFER_SIZE % block_size == 0);
+    bytes_total = 0;
+    posix_memalign((void**)&buffer, block_size, BUFFER_SIZE);
+  }
+
+  ~BufferedDirectFileWriter() {
+    free(buffer);
+  }
+
+  void write(const char *str, long size) {
+
+    if (bytes_total + size < BUFFER_SIZE) {
+      memcpy(buffer + bytes_total, str, size);
+      bytes_total += size;
+      return;
+    }
+
+    auto copy_size = BUFFER_SIZE - bytes_total;
+
+    memcpy(buffer + bytes_total, str, copy_size);
+    bytes_total += copy_size;
+    flush();
+
+    str += copy_size;
+    size -= copy_size;
+
+    if (size >= BUFFER_SIZE) {
+      CHECK(false);
+      int err = ::write(fd, str, size);
+      CHECK(err >= 0);
+      bytes_total = 0;
+    } else {
+      memcpy(buffer, str, size);
+      bytes_total += size;
+    }
+  }
+
+  std::size_t roundUp(std::size_t numToRound, std::size_t multiple)
+  {
+      if (multiple == 0)
+          return numToRound;
+
+      int remainder = numToRound % multiple;
+      if (remainder == 0)
+          return numToRound;
+
+      return numToRound + multiple - remainder;
+  }
+
+  std::size_t flush() {
+    DCHECK(fd >= 0);
+    std::size_t s = bytes_total;
+    if (bytes_total > 0) {
+      std::size_t io_size = 0;
+      int err;
+      if (emulated_persist_latency != 0) {
+        io_size = bytes_total;
+      } else {
+        io_size = roundUp(bytes_total, block_size);
+        CHECK(io_size <= BUFFER_SIZE);
+      }
+      err = ::write(fd, buffer, io_size);
+      int errnumber = errno;
+      CHECK(err >= 0);
+      CHECK(errnumber == 0);
+    }
+    bytes_total = 0;
+    return s;
+  }
+
+  std::size_t sync() {
+    DCHECK(fd >= 0);
+    int err = 0;
+    std::size_t s;
+    if (emulated_persist_latency != 0) {
+      s = flush();
+      std::this_thread::sleep_for(std::chrono::microseconds(emulated_persist_latency));
+    } else {
+      s = flush();
+    }
+    CHECK(err == 0);
+    return s;
+  }
+
+  void close() {
+    flush();
+    int err = ::close(fd);
+    CHECK(err == 0);
+  }
+
+public:
+  static constexpr uint32_t BUFFER_SIZE = 1024 * 1024 * 4; // 4MB
+
+private:
+  int fd;
+  size_t block_size;
+  char *buffer;
+  std::size_t bytes_total;
+  std::size_t emulated_persist_latency;
+};
+
 class WALLogger {
 public:
   WALLogger(const std::string & filename, std::size_t emulated_persist_latency) : filename(filename), emulated_persist_latency(emulated_persist_latency) {}
@@ -29,7 +144,7 @@ public:
   virtual void sync(size_t lsn, std::function<void()> on_blocking = [](){}) = 0;
   virtual void close() = 0;
 
-  virtual void print_sync_time()  {};
+  virtual void print_sync_stats()  {};
 
   const std::string filename;
   std::size_t emulated_persist_latency;
@@ -39,11 +154,19 @@ public:
 class GroupCommitLogger : public WALLogger {
 public:
 
-  GroupCommitLogger(const std::string & filename, std::size_t group_commit_txn_cnt, std::size_t group_commit_latency = 10, std::size_t emulated_persist_latency = 0) 
+  GroupCommitLogger(const std::string & filename, std::size_t group_commit_txn_cnt, std::size_t group_commit_latency = 10, std::size_t emulated_persist_latency = 0, std::size_t block_size = 4096) 
     : WALLogger(filename, emulated_persist_latency), writer(filename.c_str(), 
-    emulated_persist_latency), write_lsn(0), sync_lsn(0), 
+    block_size, emulated_persist_latency), write_lsn(0), sync_lsn(0), 
     group_commit_latency_us(group_commit_latency), 
     group_commit_txn_cnt(group_commit_txn_cnt), last_sync_time(Time::now()), waiting_syncs(0) {
+    std::thread([this](){
+      while (true) {
+        if (waiting_syncs.load() >= this->group_commit_txn_cnt / 2 || (Time::now() - last_sync_time) / 1000 >= group_commit_latency_us) {
+          do_sync();
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(2));
+      }
+    }).detach();
   }
 
   ~GroupCommitLogger() override {}
@@ -69,10 +192,11 @@ public:
 
     if (sync_lsn < write_lsn) {
       auto t = Time::now();
-      writer.flush();
-      writer.sync();
+      sync_batch_bytes.add(writer.sync());
       sync_time.add(Time::now() - t);
       //LOG(INFO) << "sync " << waiting_sync_cnt << " writes"; 
+      grouping_time.add(Time::now() - last_sync_time);
+      sync_batch_size.add(waiting_sync_cnt);
     }
     last_sync_time = Time::now();
     waiting_syncs -= waiting_sync_cnt;
@@ -84,9 +208,6 @@ public:
     while (sync_lsn.load() < lsn) {
       on_blocking();
       std::this_thread::sleep_for(std::chrono::microseconds(10));
-      if (waiting_syncs.load() >= group_commit_txn_cnt / 2 || (Time::now() - last_sync_time) / 1000 >= group_commit_latency_us) {
-        do_sync();
-      }
     }
   }
 
@@ -94,16 +215,31 @@ public:
     writer.close();
   }
 
-  void print_sync_time() override {
-    LOG(INFO) << "Disk Sync time "
+  void print_sync_stats() override {
+    LOG(INFO) << "Log Hardening Time "
               << this->sync_time.nth(50) / 1000 << " us (50th), "
               << this->sync_time.nth(75) / 1000 << " us (75th), "
               << this->sync_time.nth(90) / 1000 << " us (90th), "
-              << this->sync_time.nth(95) / 1000 << " us (95th). ";
+              << this->sync_time.nth(95) / 1000 << " us (95th). "
+              << "Log Hardenning Batch Size "
+              << this->sync_batch_size.nth(50) << " (50th), "
+              << this->sync_batch_size.nth(75) << " (75th), "
+              << this->sync_batch_size.nth(90) << " (90th), "
+              << this->sync_batch_size.nth(95) << " (95th). "
+               << "Log Hardenning Bytes "
+              << this->sync_batch_bytes.nth(50) << " (50th), "
+              << this->sync_batch_bytes.nth(75) << " (75th), "
+              << this->sync_batch_bytes.nth(90) << " (90th), "
+              << this->sync_batch_bytes.nth(95) << " (95th). "
+              << "Log Grouping Time "
+              << this->grouping_time.nth(50) / 1000 << " us (50th), "
+              << this->grouping_time.nth(75) / 1000 << " us (75th), "
+              << this->grouping_time.nth(90) / 1000 << " us (90th), "
+              << this->grouping_time.nth(95) / 1000 << " us (95th). ";
   }
 private:
   std::mutex mtx;
-  BufferedFileWriter writer;
+  BufferedDirectFileWriter writer;
   std::atomic<uint64_t> write_lsn;
   std::atomic<uint64_t> sync_lsn;
   std::size_t group_commit_latency_us;
@@ -111,15 +247,17 @@ private:
   std::atomic<std::size_t> last_sync_time;
   std::atomic<uint64_t> waiting_syncs;
   Percentile<uint64_t> sync_time;
-  
+  Percentile<uint64_t> grouping_time;
+  Percentile<uint64_t> sync_batch_size;
+  Percentile<uint64_t> sync_batch_bytes;
 };
 
 
 class SimpleWALLogger : public WALLogger {
 public:
 
-  SimpleWALLogger(const std::string & filename, std::size_t emulated_persist_latency = 0) 
-    : WALLogger(filename, emulated_persist_latency), writer(filename.c_str(), emulated_persist_latency) {
+  SimpleWALLogger(const std::string & filename, std::size_t emulated_persist_latency = 0, std::size_t block_size = 4096) 
+    : WALLogger(filename, emulated_persist_latency), writer(filename.c_str(), block_size, emulated_persist_latency) {
   }
 
   ~SimpleWALLogger() override {}
@@ -140,7 +278,7 @@ public:
   }
 
 private:
-  BufferedFileWriter writer;
+  BufferedDirectFileWriter writer;
   std::mutex mtx;
 };
 

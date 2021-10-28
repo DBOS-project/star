@@ -262,7 +262,7 @@ public:
     }
 
     if (context.logger)
-      context.logger->print_sync_time();
+      context.logger->print_sync_stats();
     measure_round_trip();
     close_sockets();
 

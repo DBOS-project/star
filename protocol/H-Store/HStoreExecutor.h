@@ -188,7 +188,7 @@ public:
         ss << commit_tid << true;
         auto output = ss.str();
         auto lsn = txn.get_logger()->write(output.c_str(), output.size());
-        txn.get_logger()->sync(lsn, [&](){ txn.remote_request_handler(); });
+        txn.get_logger()->sync(lsn, [&](){ process_request(); });
       }
     }
 
@@ -500,7 +500,7 @@ public:
   using Transaction = TransactionType;
 
 
-  static void prepare_and_redo_request_handler(MessagePiece inputPiece,
+  void prepare_and_redo_request_handler(MessagePiece inputPiece,
                                     Message &responseMessage, ITable &table,
                                     Transaction *txn) {
     std::size_t lsn = 0;
@@ -565,7 +565,7 @@ public:
     if (persist_log && txn->get_logger()) {
       // sync the vote and redo
       // On recovery, the txn is considered prepared only if all votes are true // passed all validation
-      txn->get_logger()->sync(lsn, [&](){ txn->remote_request_handler(); });
+      txn->get_logger()->sync(lsn, [&, this](){ process_request(); });
     }
   }
 
@@ -836,7 +836,7 @@ public:
       ss << commit_tid << true;
       auto output = ss.str();
       auto lsn = txn->get_logger()->write(output.c_str(), output.size());
-      txn->get_logger()->sync(lsn, [&](){ txn->remote_request_handler(); });
+      txn->get_logger()->sync(lsn, [&, this](){ process_request(); });
     }
   }
 
