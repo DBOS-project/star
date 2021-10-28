@@ -116,8 +116,7 @@ public:
         std::ostringstream ss;
         ss << commit_tid << true;
         auto output = ss.str();
-        auto lsn = txn.get_logger()->write(output.c_str(), output.size());
-        txn.get_logger()->sync(lsn, [&](){ txn.remote_request_handler(); });
+        auto lsn = txn.get_logger()->write(output.c_str(), output.size(), true, [&](){ txn.remote_request_handler(); });
       }
     }
 
@@ -253,7 +252,7 @@ private:
         std::ostringstream ss;
         ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
         auto output = ss.str();
-        txn.get_logger()->write(output.c_str(), output.size());
+        txn.get_logger()->write(output.c_str(), output.size(), false);
       }
     } else {
       std::vector<std::vector<SiloRWKey>> readSetGroupByCoordinator(context.coordinator_num);
@@ -325,7 +324,7 @@ private:
             std::ostringstream ss;
             ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
             auto output = ss.str();
-            txn.get_logger()->write(output.c_str(), output.size());
+            txn.get_logger()->write(output.c_str(), output.size(), false);
           }
 
         } else {

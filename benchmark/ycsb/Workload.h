@@ -56,7 +56,7 @@ public:
       std::ostringstream ss;
       ss << partition_id  << transactionId << "YCSB OP" << random_seed;
       auto output = ss.str();
-      auto lsn = context.logger->write(output.c_str(), output.size());
+      auto lsn = context.logger->write(output.c_str(), output.size(), true);
       context.logger->sync(lsn);
     }
 

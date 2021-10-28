@@ -140,7 +140,7 @@ public:
 
   virtual ~WALLogger() {}
 
-  virtual size_t write(const char *str, long size) = 0;
+  virtual size_t write(const char *str, long size, bool persist, std::function<void()> on_blocking = [](){}) = 0;
   virtual void sync(size_t lsn, std::function<void()> on_blocking = [](){}) = 0;
   virtual void close() = 0;
 
@@ -154,7 +154,7 @@ public:
 class GroupCommitLogger : public WALLogger {
 public:
 
-  GroupCommitLogger(const std::string & filename, std::size_t group_commit_txn_cnt, std::size_t group_commit_latency = 10, std::size_t emulated_persist_latency = 0, std::size_t block_size = 4096) 
+  GroupCommitLogger(const std::string & filename, std::size_t group_commit_txn_cnt, std::size_t group_commit_latency = 10, std::size_t emulated_persist_latency = 0, std::size_t block_size = 512) 
     : WALLogger(filename, emulated_persist_latency), writer(filename.c_str(), 
     block_size, emulated_persist_latency), write_lsn(0), sync_lsn(0), 
     group_commit_latency_us(group_commit_latency), 
@@ -171,12 +171,18 @@ public:
 
   ~GroupCommitLogger() override {}
 
-  std::size_t write(const char *str, long size) override{
-    std::lock_guard<std::mutex> g(mtx);
-    auto start_lsn = write_lsn.load();
-    auto end_lsn = start_lsn + size;
-    writer.write(str, size);
-    write_lsn += size;
+  std::size_t write(const char *str, long size, bool persist, std::function<void()> on_blocking = [](){}) override{
+    uint64_t end_lsn;
+    {
+      std::lock_guard<std::mutex> g(mtx);
+      auto start_lsn = write_lsn.load();
+      end_lsn = start_lsn + size;
+      writer.write(str, size);
+      write_lsn += size;
+    }
+    if (persist) {
+      sync(end_lsn, on_blocking);
+    }
     return end_lsn;
   }
 
@@ -261,9 +267,12 @@ public:
   }
 
   ~SimpleWALLogger() override {}
-  std::size_t write(const char *str, long size) override{
+  std::size_t write(const char *str, long size, bool persist, std::function<void()> on_blocking = [](){}) override{
     std::lock_guard<std::mutex> g(mtx);
     writer.write(str, size);
+    if (persist) {
+      writer.sync();
+    }
     return 0;
   }
 

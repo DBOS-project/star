@@ -535,7 +535,7 @@ public:
       std::ostringstream ss;
       ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
       auto output = ss.str();
-      lsn = txn->get_logger()->write(output.c_str(), output.size());
+      lsn = txn->get_logger()->write(output.c_str(), output.size(), false);
     }
 
     // prepare response message header
@@ -556,13 +556,13 @@ public:
       std::ostringstream ss;
       ss << success;
       auto output = ss.str();
-      lsn = txn->get_logger()->write(output.c_str(), output.size());
+      lsn = txn->get_logger()->write(output.c_str(), output.size(), true, [&](){ txn->remote_request_handler(); });
     }
 
     if (txn->get_logger()) {
       // sync the vote and redo
       // On recovery, the txn is considered prepared only if all votes are true // passed all validation
-      txn->get_logger()->sync(lsn, [&](){ txn->remote_request_handler(); });
+      //txn->get_logger()->sync(lsn, );
     }
   }
 
@@ -755,8 +755,8 @@ public:
       std::ostringstream ss;
       ss << commit_tid << true;
       auto output = ss.str();
-      auto lsn = txn->get_logger()->write(output.c_str(), output.size());
-      txn->get_logger()->sync(lsn, [&](){ txn->remote_request_handler(); });
+      auto lsn = txn->get_logger()->write(output.c_str(), output.size(), true, [&](){ txn->remote_request_handler(); });
+      //txn->get_logger()->sync(lsn, );
     }
   }
 
@@ -828,12 +828,12 @@ public:
       std::ostringstream ss;
       ss << commit_tid << std::string((const char *)key, key_size) << std::string(valueStringPiece.data(), field_size);
       auto output = ss.str();
-      lsn = txn->get_logger()->write(output.c_str(), output.size());
+      lsn = txn->get_logger()->write(output.c_str(), output.size(), sync_redo, [&](){ txn->remote_request_handler(); });
     }
 
-    if (txn->get_logger() && sync_redo) {
-      txn->get_logger()->sync(lsn, [&](){ txn->remote_request_handler(); });
-    }
+    // if (txn->get_logger() && sync_redo) {
+    //   txn->get_logger()->sync(lsn, [&](){ txn->remote_request_handler(); });
+    // }
 
     // prepare response message header
     auto message_size = MessagePiece::get_header_size();
