@@ -47,6 +47,7 @@ public:
   std::size_t cross_txn_workers = 0;
   bool hstore_command_logging = true;
   star::WALLogger * logger = nullptr;
+  std::size_t group_commit_batch_size = 7;
   // https://www.storagereview.com/review/intel-ssd-dc-p4510-review
   // We emulate 110us write latency of Intel DC P4510 SSD.
   std::size_t emulated_persist_latency = 110;

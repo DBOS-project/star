@@ -42,7 +42,7 @@ int main(int argc, char *argv[]) {
   if (context.log_path != "" && context.wal_group_commit_time != 0) {
     std::string redo_filename =
           context.log_path + "_group_commit.txt";
-    context.logger = new star::GroupCommitLogger(redo_filename, context.worker_num, context.wal_group_commit_time, context.emulated_persist_latency);
+    context.logger = new star::GroupCommitLogger(redo_filename, context.group_commit_batch_size, context.wal_group_commit_time, context.emulated_persist_latency);
     LOG(INFO) << "WAL Group Commiting on[" << redo_filename << "]";
   } else {
     std::string redo_filename =

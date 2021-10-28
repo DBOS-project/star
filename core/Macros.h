@@ -44,6 +44,7 @@ DEFINE_int32(cross_txn_workers, 0, "number of workers generating cross-partition
 DEFINE_int32(cpu_core_id, 0, "cpu core id");
 DEFINE_int32(persist_latency, 110, "emulated persist latency");
 DEFINE_int32(wal_group_commit_time, 10, "wal group commit time in us");
+DEFINE_int32(wal_group_commit_size, 7, "wal group commit batch size");
 
 #define SETUP_CONTEXT(context)                                                 \
   boost::algorithm::split(context.peers, FLAGS_servers,                        \
@@ -84,4 +85,5 @@ DEFINE_int32(wal_group_commit_time, 10, "wal group commit time in us");
   context.emulated_persist_latency = FLAGS_persist_latency;                    \
   context.wal_group_commit_time = FLAGS_wal_group_commit_time;                 \
   context.hstore_command_logging = FLAGS_hstore_command_logging;               \
+  context.group_commit_batch_size = FLAGS_wal_group_commit_size;               \
   context.set_star_partitioner();
