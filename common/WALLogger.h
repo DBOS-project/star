@@ -154,7 +154,7 @@ public:
 class GroupCommitLogger : public WALLogger {
 public:
 
-  GroupCommitLogger(const std::string & filename, std::size_t group_commit_txn_cnt, std::size_t group_commit_latency = 10, std::size_t emulated_persist_latency = 0, std::size_t block_size = 512) 
+  GroupCommitLogger(const std::string & filename, std::size_t group_commit_txn_cnt, std::size_t group_commit_latency = 10, std::size_t emulated_persist_latency = 0, std::size_t block_size = 4096) 
     : WALLogger(filename, emulated_persist_latency), writer(filename.c_str(), 
     block_size, emulated_persist_latency), write_lsn(0), sync_lsn(0), 
     group_commit_latency_us(group_commit_latency), 
