@@ -161,7 +161,7 @@ public:
     group_commit_txn_cnt(group_commit_txn_cnt), last_sync_time(Time::now()), waiting_syncs(0) {
     std::thread([this](){
       while (true) {
-        if (waiting_syncs.load() >= this->group_commit_txn_cnt / 2 || (Time::now() - last_sync_time) / 1000 >= group_commit_latency_us) {
+        if (waiting_syncs.load() >= this->group_commit_txn_cnt || (Time::now() - last_sync_time) / 1000 >= group_commit_latency_us) {
           do_sync();
         }
         std::this_thread::sleep_for(std::chrono::microseconds(2));
@@ -189,7 +189,7 @@ public:
   void do_sync() {
     std::lock_guard<std::mutex> g(mtx);
     auto waiting_sync_cnt = waiting_syncs.load();
-    if (waiting_sync_cnt < group_commit_txn_cnt / 2 && (Time::now() - last_sync_time) / 1000 < group_commit_latency_us) {
+    if (waiting_sync_cnt < group_commit_txn_cnt && (Time::now() - last_sync_time) / 1000 < group_commit_latency_us) {
         return;
     }
     
