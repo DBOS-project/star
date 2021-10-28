@@ -62,9 +62,11 @@ public:
     flush();
     DCHECK(fd >= 0);
     int err = 0;
-    if (emulated_persist_latency)
+    if (emulated_persist_latency != 0) {
       std::this_thread::sleep_for(std::chrono::microseconds(emulated_persist_latency));
-    //err = fdatasync(fd);
+    } else {
+      err = fdatasync(fd);
+    }
     CHECK(err == 0);
   }
 
