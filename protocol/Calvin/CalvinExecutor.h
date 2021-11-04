@@ -183,7 +183,7 @@ public:
         // generate transaction
         auto partition_id = random.uniform_dist(0, context.partition_num - 1);
         transactions[i] =
-            workload.next_transaction(context, partition_id, storages[i], this->id);
+            workload.next_transaction(context, partition_id, this->id);
         transactions[i]->set_id(i);
         prepare_transaction(*transactions[i]);
       }

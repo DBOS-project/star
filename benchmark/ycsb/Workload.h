@@ -30,7 +30,6 @@ public:
 
   std::unique_ptr<TransactionType> next_transaction(ContextType &context,
                                                     std::size_t partition_id,
-                                                    StorageType &storage, 
                                                     std::size_t worker_id) {
     if (context.cross_txn_workers > 0) {
       const static uint32_t num_workers_per_node = context.partition_num / context.coordinator_num;
@@ -48,18 +47,23 @@ public:
     random.init_seed(random_seed);
     std::unique_ptr<TransactionType> p =
         std::make_unique<ReadModifyWrite<Transaction>>(
-            coordinator_id, partition_id, db, context, random, partitioner,
-            storage);
+            coordinator_id, partition_id, db, context, random, partitioner);
 
-    if (context.log_path != "" && context.protocol == "HStore" && context.hstore_command_logging) {
-      DCHECK(context.logger);
-      std::ostringstream ss;
-      ss << partition_id  << transactionId << "YCSB OP" << random_seed;
-      auto output = ss.str();
-      auto lsn = context.logger->write(output.c_str(), output.size(), true);
-      context.logger->sync(lsn);
-    }
+    return p;
+  }
 
+  std::unique_ptr<TransactionType> deserialize_from_raw(ContextType &context, const std::string & data) {
+    Decoder decoder(data);
+    uint64_t seed;
+    std::size_t ith_replica;
+    std::size_t partition_id;
+    decoder >> ith_replica >> seed >> partition_id;
+    RandomType random;
+    random.init_seed(seed);
+ 
+    std::unique_ptr<TransactionType> p =
+        std::make_unique<ReadModifyWrite<Transaction>>(
+            coordinator_id, partition_id, db, context, random, partitioner, ith_replica);
     return p;
   }
 

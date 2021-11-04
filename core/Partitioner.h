@@ -33,6 +33,10 @@ public:
 
   virtual std::size_t master_coordinator(std::size_t partition_id) const = 0;
 
+  virtual std::size_t get_ith_replica_coordinator(std::size_t partition_id, std::size_t ith) const { return 0; }
+
+  virtual std::vector<std::size_t> get_replica_coordinators(std::size_t partition_id) const { return {}; }
+
   virtual bool is_partition_replicated_on(std::size_t partition_id,
                                           std::size_t coordinator_id) const = 0;
 
@@ -76,6 +80,44 @@ public:
     return partition_id % coordinator_num;
   }
 
+  std::size_t get_ith_replica_coordinator(std::size_t partition_id, std::size_t ith) const override {
+    DCHECK(ith < replica_num());
+    std::size_t first_replica = master_coordinator(partition_id);
+    if (ith == 0)
+      return first_replica;
+    std::size_t last_replica = (first_replica + N - 1) % coordinator_num;
+    if (last_replica >= first_replica) {
+      return first_replica + ith;
+    } else {
+      return (first_replica + ith) % coordinator_num;
+      // if (first_replica + ith < coordinator_num)
+      //   return first_replica + ith;
+      // else
+      //   return 0 + coordinator_num - first_replica - ith;
+    }
+  }
+
+  std::vector<std::size_t> get_replica_coordinators(std::size_t partition_id) const override {
+    std::size_t first_replica = master_coordinator(partition_id);
+    std::size_t last_replica = (first_replica + N - 1) % coordinator_num;
+    std::vector<std::size_t> res;
+    if (last_replica >= first_replica) {
+      for (std::size_t i = first_replica; i <= last_replica; ++i) {
+        res.push_back(i);
+      }
+      return res;
+    } else {
+      for (std::size_t i = first_replica; i < coordinator_num; ++i) {
+        res.push_back(i);
+      }
+      for (std::size_t i = 0; i <= last_replica; ++i) {
+        res.push_back(i);
+      }
+    }
+    DCHECK(res.size() == replica_num());
+    return res;
+  }
+
   bool is_partition_replicated_on(std::size_t partition_id,
                                   std::size_t coordinator_id) const override {
     DCHECK(coordinator_id < coordinator_num);
@@ -110,6 +152,10 @@ public:
 
   bool has_master_partition(std::size_t partition_id) const override {
     return coordinator_id == 0;
+  }
+
+  std::vector<std::size_t> get_replica_coordinators(std::size_t partition_id) const override {
+    return {0, 1};
   }
 
   std::size_t master_coordinator(std::size_t partition_id) const override {

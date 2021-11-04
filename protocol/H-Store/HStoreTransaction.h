@@ -22,9 +22,9 @@ public:
   using MetaDataType = std::atomic<uint64_t>;
 
   HStoreTransaction(std::size_t coordinator_id, std::size_t partition_id,
-                   Partitioner &partitioner)
+                   Partitioner &partitioner, std::size_t ith_replica)
       : coordinator_id(coordinator_id), partition_id(partition_id),
-        startTime(std::chrono::steady_clock::now()), partitioner(partitioner) {
+        startTime(std::chrono::steady_clock::now()), partitioner(partitioner), ith_replica(ith_replica) {
     reset();
   }
   
@@ -131,6 +131,9 @@ public:
   virtual int32_t get_partition(int i) = 0;
 
   virtual bool is_single_partition() = 0;
+
+  // Which replica this txn runs on
+  virtual const std::string serialize(std::size_t ith_replica = 0) = 0;
 
   virtual ITable* getTable(size_t tableId, size_t partitionId) {
     return get_table(tableId, partitionId);
@@ -300,8 +303,10 @@ public:
   std::function<ITable*(std::size_t, std::size_t)> get_table;
 
   Partitioner &partitioner;
+  std::size_t ith_replica;
   Operation operation;
   std::vector<TwoPLRWKey> readSet, writeSet;
   WALLogger * logger = nullptr;
+  int initiating_cluster_worker_id = -1;
 };
 } // namespace star

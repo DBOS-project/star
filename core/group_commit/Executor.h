@@ -63,7 +63,6 @@ public:
 
     LOG(INFO) << "Executor " << id << " starts.";
 
-    StorageType storage;
     uint64_t last_seed = 0;
 
     // transaction only commit in a single group
@@ -113,7 +112,7 @@ public:
             auto partition_id = get_partition_id();
 
             transaction =
-                workload.next_transaction(context, partition_id, storage, this->id);
+                workload.next_transaction(context, partition_id, this->id);
             setupHandlers(*transaction);
           }
 

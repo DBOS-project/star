@@ -75,7 +75,6 @@ public:
 
     LOG(INFO) << "Executor " << id << " starts.";
 
-    StorageType storage;
     uint64_t last_seed = 0;
 
     ExecutorStatus status;
@@ -89,7 +88,7 @@ public:
     bool retry_transaction = false;
 
     //auto startTime = std::chrono::steady_clock::now();
-    auto t = workload.next_transaction(context, 0, storage, this->id);
+    auto t = workload.next_transaction(context, 0, this->id);
     auto dummy_transaction = t.release();
     setupHandlers(*dummy_transaction);
     do {
@@ -116,7 +115,7 @@ public:
           auto partition_id = get_partition_id();
 
           transaction =
-              workload.next_transaction(context, partition_id, storage, this->id);
+              workload.next_transaction(context, partition_id, this->id);
           //startTime = std::chrono::steady_clock::now();
           setupHandlers(*transaction);
         }
@@ -359,6 +358,7 @@ public:
   Percentile<uint64_t> dist_txn_stall_time_pct, dist_txn_commit_work_time_pct, 
   dist_txn_commit_persistence_time_pct, dist_txn_commit_prepare_time_pct,dist_txn_commit_write_back_time_pct, dist_txn_commit_unlock_time_pct, dist_txn_local_work_time_pct, dist_txn_remote_work_time_pct;
   std::unique_ptr<TransactionType> transaction;
+  std::unique_ptr<TransactionType> transaction_replica;
   std::vector<std::unique_ptr<Message>> messages;
   std::vector<
       std::function<void(MessagePiece, Message &, ITable &, TransactionType *)>>

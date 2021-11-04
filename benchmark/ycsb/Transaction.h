@@ -31,9 +31,9 @@ public:
   ReadModifyWrite(std::size_t coordinator_id, std::size_t partition_id,
                   DatabaseType &db, const ContextType &context,
                   RandomType &random, Partitioner &partitioner,
-                  Storage &storage)
-      : Transaction(coordinator_id, partition_id, partitioner), db(db),
-        context(context), random(random), storage(storage),
+                  std::size_t ith_replica = 0)
+      : Transaction(coordinator_id, partition_id, partitioner, ith_replica), db(db),
+        context(context), random(random),
         partition_id(partition_id),
         query(makeYCSBQuery<keys_num>()(context, partition_id, random, partitioner)) {}
 
@@ -44,6 +44,13 @@ public:
   virtual bool is_single_partition() override { return query.number_of_parts() == 1; }
 
   virtual ~ReadModifyWrite() override = default;
+
+  virtual const std::string serialize(std::size_t ith_replica = 0) override {
+    std::string res;
+    Encoder encoder(res);
+    encoder << ith_replica << random.get_seed() << partition_id;
+    return res;
+  }
 
   TransactionResult execute(std::size_t worker_id) override {
     ScopedTimer t_local_work([&, this](uint64_t us) {
@@ -122,7 +129,7 @@ private:
   DatabaseType &db;
   const ContextType &context;
   RandomType &random;
-  Storage &storage;
+  Storage storage;
   std::size_t partition_id;
   YCSBQuery<keys_num> query;
 };

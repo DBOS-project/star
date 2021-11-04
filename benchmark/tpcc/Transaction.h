@@ -28,9 +28,9 @@ public:
 
   NewOrder(std::size_t coordinator_id, std::size_t partition_id,
            DatabaseType &db, const ContextType &context, RandomType &random,
-           Partitioner &partitioner, Storage &storage)
-      : Transaction(coordinator_id, partition_id, partitioner), db(db),
-        context(context), random(random), storage(storage),
+           Partitioner &partitioner, std::size_t ith_replica = 0)
+      : Transaction(coordinator_id, partition_id, partitioner, ith_replica), db(db),
+        context(context), random(random),
         partition_id(partition_id),
         query(makeNewOrderQuery()(context, partition_id + 1, random)) {}
 
@@ -41,6 +41,14 @@ public:
   virtual bool is_single_partition() override { return query.number_of_parts() == 1; }
 
   virtual ~NewOrder() override = default;
+
+  virtual const std::string serialize(std::size_t ith_replica = 0) override {
+    std::string res;
+    uint32_t txn_type = 1;
+    Encoder encoder(res);
+    encoder << txn_type << ith_replica << random.get_seed() << partition_id;
+    return res;
+  }
 
   TransactionResult execute(std::size_t worker_id) override {
 
@@ -277,7 +285,7 @@ private:
   DatabaseType &db;
   const ContextType &context;
   RandomType &random;
-  Storage &storage;
+  Storage storage;
   std::size_t partition_id;
   NewOrderQuery query;
 };
@@ -291,9 +299,9 @@ public:
 
   Payment(std::size_t coordinator_id, std::size_t partition_id,
           DatabaseType &db, const ContextType &context, RandomType &random,
-          Partitioner &partitioner, Storage &storage)
-      : Transaction(coordinator_id, partition_id, partitioner), db(db),
-        context(context), random(random), storage(storage),
+          Partitioner &partitioner, std::size_t ith_replica = 0)
+      : Transaction(coordinator_id, partition_id, partitioner, ith_replica), db(db),
+        context(context), random(random),
         partition_id(partition_id),
         query(makePaymentQuery()(context, partition_id + 1, random)) {}
 
@@ -305,6 +313,14 @@ public:
   virtual bool is_single_partition() override { return query.number_of_parts() == 1; }
   
   virtual ~Payment() override = default;
+
+  virtual const std::string serialize(std::size_t ith_replica = 0) override {
+    std::string res;
+    uint32_t txn_type = 1;
+    Encoder encoder(res);
+    encoder << txn_type << ith_replica << random.get_seed() << partition_id;
+    return res;
+  }
 
   TransactionResult execute(std::size_t worker_id) override {
     ScopedTimer t_local_work([&, this](uint64_t us) {
@@ -467,7 +483,7 @@ private:
   DatabaseType &db;
   const ContextType &context;
   RandomType &random;
-  Storage &storage;
+  Storage storage;
   std::size_t partition_id;
   PaymentQuery query;
 };

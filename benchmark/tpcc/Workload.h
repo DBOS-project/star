@@ -31,7 +31,7 @@ public:
 
   std::unique_ptr<TransactionType> next_transaction(ContextType &context,
                                                     std::size_t partition_id,
-                                                    StorageType &storage, std::size_t worker_id) {
+                                                    std::size_t worker_id) {
 
     int x = random.uniform_dist(1, 100);
     std::unique_ptr<TransactionType> p;
@@ -46,37 +46,48 @@ public:
     if (context.workloadType == TPCCWorkloadType::MIXED) {
       if (x <= 50) {
         p = std::make_unique<NewOrder<Transaction>>(
-            coordinator_id, partition_id, db, context, random, partitioner,
-            storage);
+            coordinator_id, partition_id, db, context, random, partitioner);
         transactionType = "TPCC NewOrder";
       } else {
         p = std::make_unique<Payment<Transaction>>(coordinator_id, partition_id,
                                                    db, context, random,
-                                                   partitioner, storage);
+                                                   partitioner);
         transactionType = "TPCC Payment";
       }
     } else if (context.workloadType == TPCCWorkloadType::NEW_ORDER_ONLY) {
       p = std::make_unique<NewOrder<Transaction>>(coordinator_id, partition_id,
                                                   db, context, random,
-                                                  partitioner, storage);
+                                                  partitioner);
       transactionType = "TPCC NewOrder";
     } else {
       p = std::make_unique<Payment<Transaction>>(coordinator_id, partition_id,
                                                  db, context, random,
-                                                 partitioner, storage);
+                                                 partitioner);
       transactionType = "TPCC NewOrder";
     }
 
-    if (context.log_path != "" && context.protocol == "HStore" && context.hstore_command_logging) {
-      DCHECK(context.logger);
-      std::ostringstream ss;
-      ss << partition_id  << transactionId << transactionType << random_seed;
-      auto output = ss.str();
-      auto lsn = context.logger->write(output.c_str(), output.size(), true);
-      context.logger->sync(lsn);
-    }
-
     return p;
+  }
+
+  std::unique_ptr<TransactionType> deserialize_from_raw(ContextType &context, const std::string & data) {
+    Decoder decoder(data);
+    uint64_t seed;
+    uint32_t txn_type;
+    std::size_t ith_replica;
+    std::size_t partition_id;
+    decoder >> txn_type >> ith_replica >> seed >> partition_id;
+    RandomType random;
+    random.init_seed(seed);
+
+    if (txn_type == 0) {
+      return std::make_unique<NewOrder<Transaction>>(
+            coordinator_id, partition_id, db, context, random, partitioner,
+             ith_replica);
+    } else {
+      return std::make_unique<Payment<Transaction>>(coordinator_id, partition_id,
+                                                   db, context, random,
+                                                   partitioner, ith_replica);
+    }
   }
 
 private:

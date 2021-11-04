@@ -202,8 +202,6 @@ public:
     ProtocolType protocol(db, phase_context, *partitioner);
     WorkloadType workload(coordinator_id, db, random, *partitioner);
 
-    StorageType storage;
-
     uint64_t last_seed = 0;
     //LOG(INFO) << "query_num " << query_num << " batch_size " << batch_size;
     for (auto i = 0u; i < query_num; i++) {
@@ -219,7 +217,7 @@ public:
         } else {
           std::size_t partition_id = get_partition_id(status);
           transaction =
-              workload.next_transaction(phase_context, partition_id, storage, this->id);
+              workload.next_transaction(phase_context, partition_id, this->id);
           setupHandlers(*transaction, protocol);
         }
 
