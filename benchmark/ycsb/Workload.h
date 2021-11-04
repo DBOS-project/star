@@ -44,11 +44,11 @@ public:
     static std::atomic<uint64_t> tid_cnt(0);
     long long transactionId = tid_cnt.fetch_add(1);
     auto random_seed = Time::now();
-    random.init_seed(random_seed);
+    random.set_seed(random_seed);
     std::unique_ptr<TransactionType> p =
         std::make_unique<ReadModifyWrite<Transaction>>(
             coordinator_id, partition_id, db, context, random, partitioner);
-
+    p->txn_random_seed_start = random_seed;
     return p;
   }
 
@@ -57,13 +57,25 @@ public:
     uint64_t seed;
     std::size_t ith_replica;
     std::size_t partition_id;
-    decoder >> ith_replica >> seed >> partition_id;
+    int32_t partition_count;
+    //std::vector<int32_t> partitions;
+    decoder >> ith_replica >> seed >> partition_id >> partition_count;
+    // for (int32_t i = 0; i < partition_count; ++i){
+    //   int32_t p;
+    //   decoder >> p;
+    //   partitions.push_back(p);
+    // }
     RandomType random;
-    random.init_seed(seed);
+    random.set_seed(seed);
  
     std::unique_ptr<TransactionType> p =
         std::make_unique<ReadModifyWrite<Transaction>>(
             coordinator_id, partition_id, db, context, random, partitioner, ith_replica);
+    p->txn_random_seed_start = seed;
+    DCHECK(p->get_partition_count() == partition_count);
+    // for (int32_t i = 0; i < partition_count; ++i){
+    //   DCHECK(partitions[i] == p->get_partition(i));
+    // }
     return p;
   }
 

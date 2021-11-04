@@ -70,7 +70,7 @@ public:
         if (crossPartition <= context.crossPartitionProbability &&
             context.partition_num > 1) {
           if (query.num_parts == 1) {
-            query.num_parts = 1;
+            query.num_parts = 0;
             for (int j = 0; j < context.crossPartitionPartNum; ++j) {
               if (query.num_parts >= (int)context.partition_num)
                 break;
@@ -82,8 +82,8 @@ public:
                     good = false;
                   }
                 }
-                if (partitioner.has_master_partition(pid)) // We want a partition that is not on this node.
-                  good = false;
+                // if (partitioner.has_master_partition(pid)) // We want a partition that is not on this node.
+                //   good = false;
                 if (good == true)
                   break;
                 pid =  random.uniform_dist(0, context.partition_num - 1);

@@ -42,7 +42,7 @@ public:
 
 
     std::string transactionType;
-    random.init_seed(random_seed);
+    random.set_seed(random_seed);
     if (context.workloadType == TPCCWorkloadType::MIXED) {
       if (x <= 50) {
         p = std::make_unique<NewOrder<Transaction>>(
@@ -65,7 +65,7 @@ public:
                                                  partitioner);
       transactionType = "TPCC NewOrder";
     }
-
+    p->txn_random_seed_start = random_seed;
     return p;
   }
 
@@ -77,16 +77,20 @@ public:
     std::size_t partition_id;
     decoder >> txn_type >> ith_replica >> seed >> partition_id;
     RandomType random;
-    random.init_seed(seed);
+    random.set_seed(seed);
 
     if (txn_type == 0) {
-      return std::make_unique<NewOrder<Transaction>>(
+      auto p = std::make_unique<NewOrder<Transaction>>(
             coordinator_id, partition_id, db, context, random, partitioner,
              ith_replica);
+      p->txn_random_seed_start = seed;
+      return p;
     } else {
-      return std::make_unique<Payment<Transaction>>(coordinator_id, partition_id,
+      auto p = std::make_unique<Payment<Transaction>>(coordinator_id, partition_id,
                                                    db, context, random,
                                                    partitioner, ith_replica);
+      p->txn_random_seed_start = seed;
+      return p;
     }
   }
 

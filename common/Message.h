@@ -151,6 +151,15 @@ public:
   }
 
 public:
+  void set_is_replica(bool is_replica) {
+    clear_source_node_id();
+    get_header_ref() |= (is_replica << IS_REPLICA_OFFSET);
+  }
+  // Whether this message is designated to a replica
+  uint64_t get_is_replica() {
+    return (get_header_ref() >> IS_REPLICA_OFFSET) & IS_REPLICA_MASK;
+  }
+
   void set_source_node_id(uint64_t source_node_id) {
     DCHECK(source_node_id < (1 << 7));
     clear_source_node_id();
@@ -197,6 +206,10 @@ public:
     *reinterpret_cast<uint32_t *>(&data[0] + sizeof(header_type) + sizeof(deadbeef_type)) = id;
   }
 private:
+  void clear_is_replica_bit() {
+    get_header_ref() &= ~(IS_REPLICA_MASK << IS_REPLICA_OFFSET);
+  }
+
   void clear_source_node_id() {
     get_header_ref() &= ~(SOURCE_NODE_ID_MASK << SOURCE_NODE_ID_OFFSET);
   }
@@ -264,8 +277,11 @@ public:
   static constexpr uint64_t MESSAGE_COUNT_MASK = 0x7fff;
   static constexpr uint64_t MESSAGE_COUNT_OFFSET = 27;
 
-  static constexpr uint64_t MESSAGE_LENGTH_MASK = 0x7ffffffull;
-  static constexpr uint64_t MESSAGE_LENGTH_OFFSET = 0;
+  static constexpr uint64_t MESSAGE_LENGTH_MASK = 0x3ffffffull;
+  static constexpr uint64_t MESSAGE_LENGTH_OFFSET = 1;
+
+  static constexpr uint64_t IS_REPLICA_MASK = 0x1l;
+  static constexpr uint64_t IS_REPLICA_OFFSET = 0;
 
   static constexpr uint32_t DEADBEEF = 0xDEADBEEF;
 };

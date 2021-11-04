@@ -46,7 +46,7 @@ public:
     std::string res;
     uint32_t txn_type = 1;
     Encoder encoder(res);
-    encoder << txn_type << ith_replica << random.get_seed() << partition_id;
+    encoder << txn_type << ith_replica << this->txn_random_seed_start << partition_id;
     return res;
   }
 
@@ -318,7 +318,7 @@ public:
     std::string res;
     uint32_t txn_type = 1;
     Encoder encoder(res);
-    encoder << txn_type << ith_replica << random.get_seed() << partition_id;
+    encoder << txn_type << ith_replica << this->txn_random_seed_start << partition_id;
     return res;
   }
 

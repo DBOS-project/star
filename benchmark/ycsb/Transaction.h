@@ -48,7 +48,10 @@ public:
   virtual const std::string serialize(std::size_t ith_replica = 0) override {
     std::string res;
     Encoder encoder(res);
-    encoder << ith_replica << random.get_seed() << partition_id;
+    encoder << ith_replica << this->txn_random_seed_start << partition_id;
+    encoder << get_partition_count();
+    for (int32_t i = 0; i < get_partition_count(); ++i)
+      encoder << get_partition(i);
     return res;
   }
 

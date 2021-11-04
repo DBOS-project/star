@@ -337,7 +337,7 @@ public:
       return std::make_unique<HashReplicatedPartitioner<5>>(coordinator_id,
                                                             coordinator_num);
     } else if (part == "hash6") {
-      return std::make_unique<HashReplicatedPartitioner<6>>(coordinator_id,
+    return std::make_unique<HashReplicatedPartitioner<6>>(coordinator_id,
                                                             coordinator_num);
     } else if (part == "hash7") {
       return std::make_unique<HashReplicatedPartitioner<7>>(coordinator_id,
