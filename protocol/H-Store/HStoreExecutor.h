@@ -232,9 +232,8 @@ public:
             *messages[replica_inititing_cluster_worker_id], i, txn_command_data, this_cluster_worker_id);
         }
         txn.message_flusher();
-        auto txn_command_data = txn.serialize(0);
-        txn.get_logger()->write(txn_command_data.c_str(), txn_command_data.size(), true, [&, this]() {txn.remote_request_handler();});
         sync_messages(txn, true);
+        txn.get_logger()->sync(txn.txn_cmd_log_lsn, [&, this]() {txn.remote_request_handler();});
         DCHECK(txn.abort_lock == false);
         write_back_command_logging(txn, commit_tid, messages);
       } else {
@@ -1826,6 +1825,10 @@ public:
     } else {
       auto partition_id = managed_partitions[this->random.next() % managed_partitions.size()];
       auto txn = this->workload.next_transaction(this->context, partition_id, this->id).release();
+      if (this->partitioner->replica_num() == 1) {
+        auto txn_command_data = txn->serialize(0);
+        txn->txn_cmd_log_lsn = this->logger->write(txn_command_data.c_str(), txn_command_data.size(), false);
+      }
       return txn;
     }
   }
