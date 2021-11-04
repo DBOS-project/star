@@ -512,6 +512,29 @@ public:
     //auto &readSet = txn.readSet;
     auto &writeSet = txn.writeSet;
 
+    std::vector<bool> persist_commit_record(writeSet.size(), false);
+    std::vector<bool> coordinator_covered(this->context.coordinator_num, false);
+    
+    if (txn.get_logger()) {
+      // We set persist_commit_record[i] to true if it is the last write to the coordinator
+      // We traverse backwards and set the sync flag for the first write whose coordinator_covered is not true
+      for (auto i = (int)writeSet.size() - 1; i >= 0; i--) {
+        auto &writeKey = writeSet[i];
+        auto tableId = writeKey.get_table_id();
+        auto partitionId = writeKey.get_partition_id();
+        auto table = this->db.find_table(tableId, partitionId);
+        auto key_size = table->key_size();
+        auto field_size = table->field_size();
+        auto owner_cluster_worker = partition_owner_cluster_worker(partitionId, txn.ith_replica);
+        if (owner_cluster_worker == this_cluster_worker_id)
+          continue;
+        auto coordinatorId = this->partitioner->master_coordinator(partitionId);
+        if (coordinator_covered[coordinatorId] == false) {
+          coordinator_covered[coordinatorId] = true;
+          persist_commit_record[i] = true;
+        }
+      }
+    }
     for (auto i = 0u; i < writeSet.size(); i++) {
       auto &writeKey = writeSet[i];
       auto tableId = writeKey.get_table_id();
@@ -528,7 +551,7 @@ public:
         txn.pendingResponses++;
         txn.network_size += MessageFactoryType::new_write_back_message(
             *messages[owner_cluster_worker], *table, writeKey.get_key(),
-            writeKey.get_value(), this_cluster_worker_id, commit_tid, txn.ith_replica, false);
+            writeKey.get_value(), this_cluster_worker_id, commit_tid, txn.ith_replica, persist_commit_record[i]);
         //LOG(INFO) << "Partition worker " << this_cluster_worker_id << " issueed write request on partition " << partitionId;
       }
     }
@@ -1159,7 +1182,7 @@ public:
       std::ostringstream ss;
       ss << commit_tid << true;
       auto output = ss.str();
-      auto lsn = this->logger->write(output.c_str(), output.size(), true, [&, this](){ process_request(); });
+      auto lsn = this->logger->write(output.c_str(), output.size(), false, [&, this](){ process_request(); });
       //txn->get_logger()->sync(lsn, );
     }
   }
