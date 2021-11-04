@@ -122,6 +122,7 @@ public:
     encoder << this_worker_id;
     encoder << sync;
     encoder << ith_replica;
+    message.set_is_replica(ith_replica > 0);
     message.flush();
     message.set_gen_time(Time::now());
     return message_size;
@@ -152,6 +153,7 @@ public:
     Encoder encoder(message.data);
     encoder << message_piece_header << ith_replica << this_cluster_worker_id;
     encoder.write_n_bytes(data.c_str(), data.size());
+    message.set_is_replica(ith_replica > 0);
     message.flush();
     message.set_gen_time(Time::now());
     return message_size;
@@ -189,6 +191,7 @@ public:
         static_cast<uint32_t>(HStoreMessage::PREPARE_REDO_REQUEST),
         message_size, 0, 0);
     encoder.replace_bytes_range(start_off, (void *)&message_piece_header, sizeof(message_piece_header));
+    message.set_is_replica(ith_replica > 0);
     message.flush();
     return message_size;
   }
@@ -231,8 +234,8 @@ public:
         static_cast<uint32_t>(HStoreMessage::ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST), message_size,
         table.tableID(), table.partitionID());
 
-    LOG(INFO) << "this_cluster_worker_id "<< this_worker_id << " new_acquire_partition_lock_and_read_message message on partition " 
-              << table.partitionID() << " of " << ith_replica << " replica";
+    // LOG(INFO) << "this_cluster_worker_id "<< this_worker_id << " new_acquire_partition_lock_and_read_message message on partition " 
+    //           << table.partitionID() << " of " << ith_replica << " replica";
 
     Encoder encoder(message.data);
     encoder << message_piece_header;
@@ -240,6 +243,7 @@ public:
     encoder << key_offset;
     encoder << this_worker_id;
     encoder << ith_replica;
+    message.set_is_replica(ith_replica > 0);
     message.flush();
     message.set_gen_time(Time::now());
     return message_size;
@@ -261,12 +265,13 @@ public:
         static_cast<uint32_t>(HStoreMessage::ACQUIRE_PARTITION_LOCK_REQUEST), message_size,
         0, partition_id);
 
-    LOG(INFO) << "source_cluster_worker_id " << source_cluster_worker_id  << " cluster_worker_id "<< cluster_worker_id << " new_acquire_partition_lock message on partition " 
-              << partition_id << " of " << ith_replica << " replica" << " managed by cluster worker " << owner_cluster_worker;
+    // LOG(INFO) << "source_cluster_worker_id " << source_cluster_worker_id  << " cluster_worker_id "<< cluster_worker_id << " new_acquire_partition_lock message on partition " 
+    //           << partition_id << " of " << ith_replica << " replica" << " managed by cluster worker " << owner_cluster_worker;
     Encoder encoder(message.data);
     encoder << message_piece_header;
     encoder << source_cluster_worker_id << cluster_worker_id;
     encoder << ith_replica;
+    message.set_is_replica(ith_replica > 0);
     message.flush();
     message.set_gen_time(Time::now());
     return message_size;
@@ -295,6 +300,7 @@ public:
     encoder << ith_replica;
     encoder.write_n_bytes(key, key_size);
     table.serialize_value(encoder, value);
+    message.set_is_replica(ith_replica > 0);
     message.flush();
     message.set_gen_time(Time::now());
     return message_size;

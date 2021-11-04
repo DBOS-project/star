@@ -286,6 +286,7 @@ public:
   Operation operation;
   std::vector<SiloRWKey> readSet, writeSet;
   WALLogger * logger = nullptr;
+  uint64_t txn_random_seed_start = 0;
 };
 
 } // namespace star

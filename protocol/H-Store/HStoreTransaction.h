@@ -308,5 +308,6 @@ public:
   std::vector<TwoPLRWKey> readSet, writeSet;
   WALLogger * logger = nullptr;
   int initiating_cluster_worker_id = -1;
+  uint64_t txn_random_seed_start = 0;
 };
 } // namespace star

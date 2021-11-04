@@ -382,5 +382,6 @@ public:
   Operation operation; // never used
   std::vector<CalvinRWKey> readSet, writeSet;
   WALLogger * logger = nullptr;
+  uint64_t txn_random_seed_start = 0;
 };
 } // namespace star
