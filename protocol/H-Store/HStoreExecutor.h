@@ -2076,6 +2076,7 @@ public:
               << " commit_work " << this->local_txn_commit_work_time_pct.nth(50) << " us, "
               << " commit_prepare " << this->local_txn_commit_prepare_time_pct.nth(50) << " us, "
               << " commit_persistence " << this->local_txn_commit_persistence_time_pct.nth(50) << " us, "
+              << " commit_replication " << this->local_txn_commit_replication_time_pct.nth(50) << " us, "
               << " commit_write_back " << this->local_txn_commit_write_back_time_pct.nth(50) << " us, "
               << " commit_release_lock " << this->local_txn_commit_unlock_time_pct.nth(50) << " us \n"
               << " DIST txn stall " << this->dist_txn_stall_time_pct.nth(50) << " us, "
@@ -2084,6 +2085,7 @@ public:
               << " commit_work " << this->dist_txn_commit_work_time_pct.nth(50) << " us, "
               << " commit_prepare " << this->dist_txn_commit_prepare_time_pct.nth(50) << " us, "
               << " commit_persistence " << this->dist_txn_commit_persistence_time_pct.nth(50) << " us, "
+              << " commit_replication " << this->local_txn_commit_replication_time_pct.nth(50) << " us, "
               << " commit_write_back " << this->dist_txn_commit_write_back_time_pct.nth(50) << " us, "
               << " commit_release_lock " << this->dist_txn_commit_unlock_time_pct.nth(50) << " us \n";
 
