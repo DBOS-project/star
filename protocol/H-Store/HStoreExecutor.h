@@ -201,40 +201,56 @@ public:
       if (txn.ith_replica == 0) { // When executing on master replica, do replications to the rest of the replicas
         DCHECK(txn.initiating_cluster_worker_id == -1);
         DCHECK(is_replica_worker == false);
-        for (size_t i = 1; i < this->partitioner->replica_num(); ++i) {
-          auto partition_id = txn.partition_id;
-          DCHECK(partition_id < this->context.partition_num);
+        bool has_replicas = this->partitioner->replica_num() > 1;
+        {
+          ScopedTimer t([&, this](uint64_t us) {
+            if (has_replicas && txn.ith_replica == 0) {
+              txn.record_commit_replication_time(us);
+            }
+          });
+          for (size_t i = 1; i < this->partitioner->replica_num(); ++i) {
+            auto partition_id = txn.partition_id;
+            DCHECK(partition_id < this->context.partition_num);
 
-          auto replica_idx = i;
-          auto replica_inititing_cluster_worker_id = partition_owner_cluster_worker(partition_id, i);
-          
-          // //do {
-          //   bool in_set = false;
-          //   for (auto j = 0; j < txn.get_partition_count(); ++j) {
-          //     txn.pendingResponses++;
-          //     auto partition_id_j = txn.get_partition(j);
-          //     if (partition_id == partition_id_j) {
-          //       in_set = true;
-          //     }
-          //     auto owner_cluster_worker = partition_owner_cluster_worker(partition_id_j, replica_idx);  
-          //     txn.network_size += MessageFactoryType::new_acquire_partition_lock_message(
-          //       *messages[owner_cluster_worker], partition_id_j, this_cluster_worker_id, replica_inititing_cluster_worker_id, owner_cluster_worker, replica_idx);
-          //   }
-          //   DCHECK(in_set);
-          //   sync_messages(txn, true);
-          // //}
-          DCHECK(txn.abort_lock == false);
-          txn.pendingResponses++;
-          auto txn_command_data = txn.serialize(i);
-          // LOG(INFO) << "this_cluster_worker " << this_cluster_worker_id << " issue command replication on remote worker "
-          //           << replica_inititing_cluster_worker_id << " on partition " << txn.partition_id << " is sp " << txn.is_single_partition();
-          txn.network_size += MessageFactoryType::new_command_replication(
-            *messages[replica_inititing_cluster_worker_id], i, txn_command_data, this_cluster_worker_id);
+            auto replica_idx = i;
+            auto replica_inititing_cluster_worker_id = partition_owner_cluster_worker(partition_id, i);
+            
+            // //do {
+            //   bool in_set = false;
+            //   for (auto j = 0; j < txn.get_partition_count(); ++j) {
+            //     txn.pendingResponses++;
+            //     auto partition_id_j = txn.get_partition(j);
+            //     if (partition_id == partition_id_j) {
+            //       in_set = true;
+            //     }
+            //     auto owner_cluster_worker = partition_owner_cluster_worker(partition_id_j, replica_idx);  
+            //     txn.network_size += MessageFactoryType::new_acquire_partition_lock_message(
+            //       *messages[owner_cluster_worker], partition_id_j, this_cluster_worker_id, replica_inititing_cluster_worker_id, owner_cluster_worker, replica_idx);
+            //   }
+            //   DCHECK(in_set);
+            //   sync_messages(txn, true);
+            // //}
+            DCHECK(txn.abort_lock == false);
+            txn.pendingResponses++;
+            auto txn_command_data = txn.serialize(i);
+            // LOG(INFO) << "this_cluster_worker " << this_cluster_worker_id << " issue command replication on remote worker "
+            //           << replica_inititing_cluster_worker_id << " on partition " << txn.partition_id << " is sp " << txn.is_single_partition();
+            txn.network_size += MessageFactoryType::new_command_replication(
+              *messages[replica_inititing_cluster_worker_id], i, txn_command_data, this_cluster_worker_id);
+          }
+          txn.message_flusher();
+          sync_messages(txn, true);
         }
-        txn.message_flusher();
-        sync_messages(txn, true);
-        txn.get_logger()->sync(txn.txn_cmd_log_lsn, [&, this]() {txn.remote_request_handler();});
-        DCHECK(txn.abort_lock == false);
+        {
+          ScopedTimer t([&, this](uint64_t us) {
+            txn.record_commit_persistence_time(us);
+          });
+          txn.get_logger()->sync(txn.txn_cmd_log_lsn, [&, this]() {txn.remote_request_handler();});
+          DCHECK(txn.abort_lock == false);
+        }
+        ScopedTimer t([&, this](uint64_t us) {
+          txn.record_commit_write_back_time(us);
+        });
         write_back_command_logging(txn, commit_tid, messages);
       } else {
         DCHECK(txn.initiating_cluster_worker_id != -1);
