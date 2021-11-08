@@ -16,7 +16,7 @@ enum class PartitionStrategy { RANGE, ROUND_ROBIN };
 class Context : public star::Context {
 public:
   std::size_t getPartitionID(std::size_t key) const {
-    CHECK(key >= 0 && key < partition_num * keysPerPartition);
+    DCHECK(key >= 0 && key < partition_num * keysPerPartition);
 
     if (strategy == PartitionStrategy::ROUND_ROBIN) {
       return key % partition_num;

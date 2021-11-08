@@ -284,7 +284,7 @@ public:
 private:
   DatabaseType &db;
   const ContextType &context;
-  RandomType &random;
+  RandomType random;
   Storage storage;
   std::size_t partition_id;
   NewOrderQuery query;
@@ -482,7 +482,7 @@ public:
 private:
   DatabaseType &db;
   const ContextType &context;
-  RandomType &random;
+  RandomType random;
   Storage storage;
   std::size_t partition_id;
   PaymentQuery query;

@@ -131,7 +131,7 @@ public:
 private:
   DatabaseType &db;
   const ContextType &context;
-  RandomType &random;
+  RandomType random;
   Storage storage;
   std::size_t partition_id;
   YCSBQuery<keys_num> query;
