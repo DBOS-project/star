@@ -245,7 +245,7 @@ public:
           ScopedTimer t([&, this](uint64_t us) {
             txn.record_commit_persistence_time(us);
           });
-          txn.get_logger()->sync(txn.txn_cmd_log_lsn, [&, this]() {txn.remote_request_handler();});
+          txn.get_logger()->sync(txn.txn_cmd_log_lsn);
           DCHECK(txn.abort_lock == false);
         }
         ScopedTimer t([&, this](uint64_t us) {
@@ -265,7 +265,7 @@ public:
           txn.network_size += MessageFactoryType::new_command_replication_response_message(
             *messages[txn.initiating_cluster_worker_id]);
           txn.message_flusher();
-          txn.get_logger()->write(txn_command_data.c_str(), txn_command_data.size(), true, [&, this]() {txn.remote_request_handler();});
+          txn.get_logger()->write(txn_command_data.c_str(), txn_command_data.size(), true);
           write_back_command_logging(txn, commit_tid, messages);
         }
       }
@@ -293,7 +293,7 @@ public:
           std::ostringstream ss;
           ss << commit_tid << true;
           auto output = ss.str();
-          auto lsn = txn.get_logger()->write(output.c_str(), output.size(), true, [&](){ process_request(); });
+          auto lsn = txn.get_logger()->write(output.c_str(), output.size(), true);
         }
       }
 
