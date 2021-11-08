@@ -1860,6 +1860,8 @@ public:
         queuedTxns.pop_front();
         return txn;
       }
+      // Sleep for a while to save cpu
+      std::this_thread::sleep_for(std::chrono::microseconds(10));
       return nullptr;
     } else {
       auto partition_id = managed_partitions[this->random.next() % managed_partitions.size()];
