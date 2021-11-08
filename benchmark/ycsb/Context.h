@@ -16,7 +16,7 @@ enum class PartitionStrategy { RANGE, ROUND_ROBIN };
 class Context : public star::Context {
 public:
   std::size_t getPartitionID(std::size_t key) const {
-    DCHECK(key >= 0 && key < partition_num * keysPerPartition);
+    CHECK(key >= 0 && key < partition_num * keysPerPartition);
 
     if (strategy == PartitionStrategy::ROUND_ROBIN) {
       return key % partition_num;
@@ -28,12 +28,14 @@ public:
   std::size_t getGlobalKeyID(std::size_t key, std::size_t partitionID) const {
     DCHECK(key >= 0 && key < keysPerPartition && partitionID >= 0 &&
            partitionID < partition_num);
-
+    std::size_t ret_key;
     if (strategy == PartitionStrategy::ROUND_ROBIN) {
-      return key * partition_num + partitionID;
+      ret_key = key * partition_num + partitionID;
     } else {
-      return partitionID * keysPerPartition + key;
+      ret_key = partitionID * keysPerPartition + key;
     }
+    CHECK(ret_key >= 0 && ret_key < partition_num * keysPerPartition);
+    return ret_key;
   }
 
   Context get_single_partition_context() const {
