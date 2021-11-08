@@ -70,8 +70,8 @@ public:
         if (crossPartition <= context.crossPartitionProbability &&
             context.partition_num > 1) {
           if (query.num_parts == 1) {
-            query.num_parts = 0;
-            for (int j = 0; j < context.crossPartitionPartNum; ++j) {
+            query.num_parts = 1;
+            for (int j = query.num_parts; j < context.crossPartitionPartNum; ++j) {
               if (query.num_parts >= (int)context.partition_num)
                 break;
               int32_t pid = random.uniform_dist(0, context.partition_num - 1);
@@ -92,9 +92,9 @@ public:
             }
           }
           auto newPartitionID = query.parts[i % query.num_parts];
-          while (newPartitionID == (int32_t)partitionID) {
-            newPartitionID = query.parts[random.uniform_dist(0, query.num_parts - 1)];
-          }
+          // while (newPartitionID == (int32_t)partitionID) {
+          //   newPartitionID = query.parts[random.uniform_dist(0, query.num_parts - 1)];
+          // }
           query.Y_KEY[i] = context.getGlobalKeyID(key, newPartitionID);
           query.cross_partition = true;
         } else {

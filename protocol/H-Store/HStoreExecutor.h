@@ -185,9 +185,9 @@ public:
 
   bool commit(TransactionType &txn,
               std::vector<std::unique_ptr<Message>> &messages) {
-    if (is_replica_worker) { // Should always succeed for replica
-      CHECK(txn.abort_lock == false);
-    }
+    // if (is_replica_worker) { // Should always succeed for replica
+    //   CHECK(txn.abort_lock == false);
+    // }
     if (txn.abort_lock) {
       abort(txn, messages);
       return false;
@@ -246,11 +246,11 @@ public:
           txn.get_logger()->write(txn_command_data.c_str(), txn_command_data.size(), true);
           write_back_command_logging(txn, commit_tid, messages);
         } else {
-          write_back_command_logging(txn, commit_tid, messages);
           txn.network_size += MessageFactoryType::new_command_replication_response_message(
             *messages[txn.initiating_cluster_worker_id]);
           txn.message_flusher();
           txn.get_logger()->write(txn_command_data.c_str(), txn_command_data.size(), true, [&, this]() {txn.remote_request_handler();});
+          write_back_command_logging(txn, commit_tid, messages);
         }
       }
     } else {
@@ -562,7 +562,9 @@ public:
         int partitionId = txn.get_partition(i);
         auto owner_cluster_worker = partition_owner_cluster_worker(partitionId, txn.ith_replica);
         if (owner_cluster_worker == this_cluster_worker_id) {
-          //LOG(INFO) << "Commit release lock partition " << partitionId << " by cluster worker" << this_cluster_worker_id << " ith_replica " << txn.ith_replica;
+          DCHECK(owned_partition_locked_by[partitionId] != -1);
+          DCHECK(owned_partition_locked_by[partitionId] == this_cluster_worker_id);
+          //LOG(INFO) << "Commit MP release lock partition " << partitionId << " by cluster worker" << this_cluster_worker_id << " ith_replica " << txn.ith_replica;
           owned_partition_locked_by[partitionId] = -1; // unlock partitions
         } else {
             txn.pendingResponses++;
@@ -628,8 +630,6 @@ public:
       if ((int)owner_cluster_worker == this_cluster_worker_id) {
         remote = false;
         if (owned_partition_locked_by[partition_id] != -1 && owned_partition_locked_by[partition_id] != this_cluster_worker_id) {
-          if (is_replica_worker)
-            DCHECK(false);
           success = false;
           return;
         }
@@ -1848,10 +1848,6 @@ public:
     } else {
       auto partition_id = managed_partitions[this->random.next() % managed_partitions.size()];
       auto txn = this->workload.next_transaction(this->context, partition_id, this->id).release();
-      if (this->partitioner->replica_num() == 1) {
-        auto txn_command_data = txn->serialize(0);
-        txn->txn_cmd_log_lsn = this->logger->write(txn_command_data.c_str(), txn_command_data.size(), false);
-      }
       return txn;
     }
   }
@@ -1928,6 +1924,10 @@ public:
               std::chrono::steady_clock::now() - this->transaction->startTime)
               .count();
           this->transaction->set_stall_time(ltc);
+          if (this->transaction->ith_replica == 0 && this->context.hstore_command_logging) {
+            auto txn_command_data = this->transaction->serialize(0);
+            this->transaction->txn_cmd_log_lsn = this->logger->write(txn_command_data.c_str(), txn_command_data.size(), false);
+          }
         }
 
         if (retry_transaction) {
@@ -1988,7 +1988,6 @@ public:
             this->transaction.release();
           } else {
             // Txns on slave replicas won't abort due to locking failure.
-            DCHECK(this->transaction->ith_replica == 0);
             if (this->transaction->abort_lock) {
               this->n_abort_lock.fetch_add(1);
             } else {

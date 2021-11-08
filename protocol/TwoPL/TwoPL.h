@@ -192,6 +192,7 @@ public:
     if (txn.get_logger()) {
       // We set persist_commit_record[i] to true if it is the last write to the coordinator
       // We traverse backwards and set the sync flag for the first write whose coordinator_covered is not true
+      bool has_other_node = false;
       for (auto i = (int)writeSet.size() - 1; i >= 0; i--) {
         auto &writeKey = writeSet[i];
         auto tableId = writeKey.get_table_id();
@@ -201,12 +202,13 @@ public:
         auto field_size = table->field_size();
         if (partitioner.has_master_partition(partitionId))
           continue;
+        has_other_node = true;
         auto coordinatorId = partitioner.master_coordinator(partitionId);
         if (coordinator_covered[coordinatorId] == false) {
           coordinator_covered[coordinatorId] = true;
           persist_commit_record[i] = true;
         }
-
+        
         for (auto k = 0u; k < partitioner.total_coordinators(); ++k) {
           // k does not have this partition
           if (!partitioner.is_partition_replicated_on(partitionId, k)) {
@@ -224,6 +226,15 @@ public:
             persist_replication[i][k] = true;
           }
         }
+      }
+      bool has_persist = false;
+      for (size_t i = 0; i < writeSet.size(); ++i) {
+        if (persist_commit_record[i]) {
+          has_persist = true;
+        }
+      }
+      if (writeSet.size() && has_other_node) {
+        DCHECK(has_persist);
       }
     }
   

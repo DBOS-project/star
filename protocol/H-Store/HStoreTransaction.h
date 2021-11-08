@@ -47,7 +47,14 @@ public:
  
   std::size_t commit_prepare_time_us = 0;
   std::size_t commit_persistence_time_us = 0;
+  std::size_t commit_replication_time_us = 0;
+  virtual void record_commit_replication_time(uint64_t us) {
+    commit_replication_time_us += us;
+  }
 
+  virtual size_t get_commit_replication_time() {
+    return commit_replication_time_us;
+  }
   virtual void record_commit_persistence_time(uint64_t us) {
     commit_persistence_time_us += us;
   }
@@ -309,6 +316,6 @@ public:
   WALLogger * logger = nullptr;
   int initiating_cluster_worker_id = -1;
   uint64_t txn_random_seed_start = 0;
-  uint64_t txn_cmd_log_lsn;
+  uint64_t txn_cmd_log_lsn = 0;
 };
 } // namespace star

@@ -223,6 +223,7 @@ public:
               << " commit_prepare " << this->local_txn_commit_prepare_time_pct.nth(50) << " us, "
               << " commit_persistence " << this->local_txn_commit_persistence_time_pct.nth(50) << " us, "
               << " commit_write_back " << this->local_txn_commit_write_back_time_pct.nth(50) << " us, "
+              << " commit_replication " << this->local_txn_commit_replication_time_pct.nth(50) << " us, "
               << " commit_release_lock " << this->local_txn_commit_unlock_time_pct.nth(50) << " us \n"
               << " DIST txn stall " << this->dist_txn_stall_time_pct.nth(50) << " us, "
               << " local_work " << this->dist_txn_local_work_time_pct.nth(50) << " us, "
@@ -231,6 +232,7 @@ public:
               << " commit_prepare " << this->dist_txn_commit_prepare_time_pct.nth(50) << " us, "
               << " commit_persistence " << this->dist_txn_commit_persistence_time_pct.nth(50) << " us, "
               << " commit_write_back " << this->dist_txn_commit_write_back_time_pct.nth(50) << " us, "
+              << " commit_replication " << this->dist_txn_commit_replication_time_pct.nth(50) << " us, "
               << " commit_release_lock " << this->dist_txn_commit_unlock_time_pct.nth(50) << " us \n";
 
     if (id == 0) {
@@ -354,9 +356,9 @@ public:
   WorkloadType workload;
   std::unique_ptr<Delay> delay;
   Percentile<int64_t> percentile, dist_latency, local_latency, commit_latency; 
-  Percentile<uint64_t> local_txn_stall_time_pct, local_txn_commit_work_time_pct, local_txn_commit_persistence_time_pct, local_txn_commit_prepare_time_pct, local_txn_commit_write_back_time_pct, local_txn_commit_unlock_time_pct, local_txn_local_work_time_pct, local_txn_remote_work_time_pct;
+  Percentile<uint64_t> local_txn_stall_time_pct, local_txn_commit_work_time_pct, local_txn_commit_persistence_time_pct, local_txn_commit_prepare_time_pct, local_txn_commit_replication_time_pct, local_txn_commit_write_back_time_pct, local_txn_commit_unlock_time_pct, local_txn_local_work_time_pct, local_txn_remote_work_time_pct;
   Percentile<uint64_t> dist_txn_stall_time_pct, dist_txn_commit_work_time_pct, 
-  dist_txn_commit_persistence_time_pct, dist_txn_commit_prepare_time_pct,dist_txn_commit_write_back_time_pct, dist_txn_commit_unlock_time_pct, dist_txn_local_work_time_pct, dist_txn_remote_work_time_pct;
+  dist_txn_commit_persistence_time_pct, dist_txn_commit_prepare_time_pct,dist_txn_commit_write_back_time_pct, dist_txn_commit_unlock_time_pct, dist_txn_local_work_time_pct, dist_txn_commit_replication_time_pct, dist_txn_remote_work_time_pct;
   std::unique_ptr<TransactionType> transaction;
   std::unique_ptr<TransactionType> transaction_replica;
   std::vector<std::unique_ptr<Message>> messages;
@@ -377,6 +379,7 @@ public:
       local_txn_remote_work_time_pct.add(txn.get_remote_work_time());
       local_txn_commit_persistence_time_pct.add(txn.get_commit_persistence_time());
       local_txn_commit_prepare_time_pct.add(txn.get_commit_prepare_time());
+      local_txn_commit_replication_time_pct.add(txn.get_commit_replication_time());
     } else {
       dist_txn_stall_time_pct.add(txn.get_stall_time());
       dist_txn_commit_work_time_pct.add(txn.get_commit_work_time());
@@ -386,6 +389,7 @@ public:
       dist_txn_remote_work_time_pct.add(txn.get_remote_work_time());
       dist_txn_commit_persistence_time_pct.add(txn.get_commit_persistence_time());
       dist_txn_commit_prepare_time_pct.add(txn.get_commit_prepare_time());
+      dist_txn_commit_replication_time_pct.add(txn.get_commit_replication_time());
     }
   }
 };
