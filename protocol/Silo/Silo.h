@@ -116,7 +116,7 @@ public:
         std::ostringstream ss;
         ss << commit_tid << true;
         auto output = ss.str();
-        auto lsn = txn.get_logger()->write(output.c_str(), output.size(), true, [&](){ txn.remote_request_handler(); });
+        auto lsn = txn.get_logger()->write(output.c_str(), output.size(), true);
       }
     }
 

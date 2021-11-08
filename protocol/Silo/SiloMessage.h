@@ -556,7 +556,7 @@ public:
       std::ostringstream ss;
       ss << success;
       auto output = ss.str();
-      lsn = txn->get_logger()->write(output.c_str(), output.size(), true, [&](){ txn->remote_request_handler(); });
+      lsn = txn->get_logger()->write(output.c_str(), output.size(), true);
     }
 
     if (txn->get_logger()) {
@@ -755,7 +755,7 @@ public:
       std::ostringstream ss;
       ss << commit_tid << true;
       auto output = ss.str();
-      auto lsn = txn->get_logger()->write(output.c_str(), output.size(), true, [&](){ txn->remote_request_handler(); });
+      auto lsn = txn->get_logger()->write(output.c_str(), output.size(), true);
       //txn->get_logger()->sync(lsn, );
     }
   }
@@ -828,7 +828,7 @@ public:
       std::ostringstream ss;
       ss << commit_tid << std::string((const char *)key, key_size) << std::string(valueStringPiece.data(), field_size);
       auto output = ss.str();
-      lsn = txn->get_logger()->write(output.c_str(), output.size(), sync_redo, [&](){ txn->remote_request_handler(); });
+      lsn = txn->get_logger()->write(output.c_str(), output.size(), sync_redo);
     }
 
     // if (txn->get_logger() && sync_redo) {
