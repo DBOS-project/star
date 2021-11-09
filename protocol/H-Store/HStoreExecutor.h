@@ -622,6 +622,9 @@ public:
       //LOG(INFO) << "Waiting for " << txn.pendingResponses << " responses";
       while (txn.pendingResponses > 0) {
         txn.remote_request_handler();
+        if (this->is_replica_worker) {
+          std::this_thread::sleep_for(std::chrono::microseconds(10));
+        }
       }
     }
   }
