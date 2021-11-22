@@ -62,6 +62,7 @@ public:
         SiloHelper::unlock(tid);
       } else {
         auto coordinatorID = partitioner.master_coordinator(partitionId);
+        messages[coordinatorID]->set_transaction_id(txn.transaction_id);
         txn.network_size += MessageFactoryType::new_abort_message(
             *messages[coordinatorID], *table, writeKey.get_key());
       }
@@ -179,6 +180,7 @@ private:
       } else {
         txn.pendingResponses++;
         auto coordinatorID = partitioner.master_coordinator(partitionId);
+        messages[coordinatorID]->set_transaction_id(txn.transaction_id);
         txn.network_size += MessageFactoryType::new_lock_message(
             *messages[coordinatorID], *table, writeKey.get_key(), i);
       }
@@ -330,6 +332,7 @@ private:
         } else {
           txn.pendingResponses++;
           auto coordinatorID = i;
+          messages[coordinatorID]->set_transaction_id(txn.transaction_id);
           txn.network_size += MessageFactoryType::new_read_validation_and_redo_message(
               *messages[coordinatorID], readSet, writeSet, db);
         }
@@ -394,6 +397,7 @@ private:
 
         txn.pendingResponses++;
         auto coordinatorID = partitioner.master_coordinator(partitionId);
+        messages[coordinatorID]->set_transaction_id(txn.transaction_id);
         txn.network_size += MessageFactoryType::new_read_validation_message(
             *messages[coordinatorID], *table, key, i, tid);
       }
@@ -512,6 +516,7 @@ private:
       } else {
         txn.pendingResponses++;
         auto coordinatorID = partitioner.master_coordinator(partitionId);
+        messages[coordinatorID]->set_transaction_id(txn.transaction_id);
         txn.network_size += MessageFactoryType::new_write_message(
             *messages[coordinatorID], *table, writeKey.get_key(),
             writeKey.get_value(), commit_tid, persist_commit_record[i]);
@@ -549,6 +554,7 @@ private:
         } else {
           txn.pendingResponses++;
           auto coordinatorID = k;
+          messages[coordinatorID]->set_transaction_id(txn.transaction_id);
           txn.network_size += MessageFactoryType::new_replication_message(
               *messages[coordinatorID], *table, writeKey.get_key(),
               writeKey.get_value(), commit_tid, persist_replication[i][k]);
@@ -581,6 +587,7 @@ private:
         SiloHelper::unlock(tid, commit_tid);
       } else {
         auto coordinatorID = partitioner.master_coordinator(partitionId);
+        messages[coordinatorID]->set_transaction_id(txn.transaction_id);
         txn.network_size += MessageFactoryType::new_release_lock_message(
             *messages[coordinatorID], *table, writeKey.get_key(), commit_tid);
       }

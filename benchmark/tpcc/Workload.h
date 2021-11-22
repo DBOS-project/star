@@ -29,6 +29,13 @@ public:
       : coordinator_id(coordinator_id), db(db), random(random),
         partitioner(partitioner) {}
 
+  static int64_t next_transaction_id(uint64_t coordinator_id) {
+    constexpr int coordinator_id_offset = 56;
+    static std::atomic<int64_t> tid_static{1};
+    auto tid = tid_static.fetch_add(1);
+    return ((int64_t)coordinator_id << coordinator_id_offset) | tid;
+  }
+
   std::unique_ptr<TransactionType> next_transaction(ContextType &context,
                                                     std::size_t partition_id,
                                                     std::size_t worker_id) {
@@ -66,6 +73,7 @@ public:
       transactionType = "TPCC NewOrder";
     }
     p->txn_random_seed_start = random_seed;
+    p->transaction_id = next_transaction_id(coordinator_id);
     return p;
   }
 

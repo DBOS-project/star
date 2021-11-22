@@ -91,6 +91,7 @@ public:
   using header_type = uint64_t;
   using deadbeef_type = uint32_t;
   using source_cluster_worker_id_type = int32_t;
+  using transaction_id_type = int64_t;
   using iterator_type = Iterator;
 
   Message() : data(get_prefix_size(), 0) {
@@ -205,6 +206,14 @@ public:
   void set_source_cluster_worker_id(int32_t id) {
     *reinterpret_cast<uint32_t *>(&data[0] + sizeof(header_type) + sizeof(deadbeef_type)) = id;
   }
+
+  int64_t get_transaction_id() const {
+    return *reinterpret_cast<const int64_t *>(&data[0] + sizeof(header_type) + sizeof(deadbeef_type) + sizeof(source_cluster_worker_id_type));
+  }
+
+  void set_transaction_id(int64_t tid) {
+    *reinterpret_cast<int64_t *>(&data[0] + sizeof(header_type) + sizeof(deadbeef_type) + sizeof(source_cluster_worker_id_type)) = tid;
+  }
 private:
   void clear_is_replica_bit() {
     get_header_ref() &= ~(IS_REPLICA_MASK << IS_REPLICA_OFFSET);
@@ -257,7 +266,7 @@ public:
   uint64_t put_to_out_queue_time;
 public:
   static constexpr uint32_t get_prefix_size() {
-    return sizeof(header_type) + sizeof(deadbeef_type) + sizeof(source_cluster_worker_id_type);
+    return sizeof(header_type) + sizeof(deadbeef_type) + sizeof(source_cluster_worker_id_type) + sizeof(transaction_id_type);
   }
 
   static uint64_t get_message_length(uint64_t v) {
