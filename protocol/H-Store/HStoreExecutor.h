@@ -155,15 +155,15 @@ public:
         } else {
           // send messages to other partitions to abort and unlock partitions
           // No need to wait for the response.
-          txn.pendingResponses++;
+          //txn.pendingResponses++;
           auto tableId = 0;
           auto table = this->db.find_table(tableId, partition_id);
           messages[owner_cluster_worker]->set_transaction_id(txn.transaction_id);
           txn.network_size += MessageFactoryType::new_release_partition_lock_message(
-              *messages[owner_cluster_worker], *table, this_cluster_worker_id, true, txn.ith_replica);
+              *messages[owner_cluster_worker], *table, this_cluster_worker_id, false, txn.ith_replica);
         }
       }
-      sync_messages(txn, true);
+      txn.message_flusher();
     } else {
       DCHECK(txn.pendingResponses == 0);
       DCHECK(txn.get_partition_count() == 1);
@@ -245,24 +245,27 @@ public:
         if (txn.is_single_partition() == true) {
           sync_messages(txn, true);
         }
+        release_partition_locks_async(txn, messages);
       } else {
         DCHECK(txn.initiating_cluster_worker_id != -1);
         DCHECK(txn.initiating_transaction_id != 0);
         auto txn_command_data = txn.serialize(txn.ith_replica);
         if (txn.is_single_partition()) {
-          messages[txn.initiating_cluster_worker_id]->set_transaction_id(txn.initiating_transaction_id);
-          txn.network_size += MessageFactoryType::new_command_replication_response_message(
-            *messages[txn.initiating_cluster_worker_id]);
-          txn.message_flusher();
-          txn.get_logger()->write(txn_command_data.c_str(), txn_command_data.size(), true);
-          write_back_command_logging(txn, commit_tid, messages);
-        } else {
-          messages[txn.initiating_cluster_worker_id]->set_transaction_id(txn.initiating_transaction_id);
-          txn.network_size += MessageFactoryType::new_command_replication_response_message(
-            *messages[txn.initiating_cluster_worker_id]);
-          txn.message_flusher();
           txn.get_logger()->write(txn_command_data.c_str(), txn_command_data.size(), true, [&, this]() {txn.remote_request_handler();});
+          messages[txn.initiating_cluster_worker_id]->set_transaction_id(txn.initiating_transaction_id);
+          txn.network_size += MessageFactoryType::new_command_replication_response_message(
+            *messages[txn.initiating_cluster_worker_id]);
+          txn.message_flusher();
           write_back_command_logging(txn, commit_tid, messages);
+          release_partition_locks_async(txn, messages);
+        } else {
+          txn.get_logger()->write(txn_command_data.c_str(), txn_command_data.size(), true, [&, this]() {txn.remote_request_handler();});
+          messages[txn.initiating_cluster_worker_id]->set_transaction_id(txn.initiating_transaction_id);
+          txn.network_size += MessageFactoryType::new_command_replication_response_message(
+            *messages[txn.initiating_cluster_worker_id]);
+          txn.message_flusher();
+          write_back_command_logging(txn, commit_tid, messages);
+          release_partition_locks_async(txn, messages);
         }
       }
     } else {
@@ -522,6 +525,36 @@ public:
     }
   }
 
+  void release_partition_locks_async(TransactionType &txn, std::vector<std::unique_ptr<Message>> &messages) {
+    if (txn.is_single_partition() == false) {
+      int partition_count = txn.get_partition_count();
+      for (int i = 0; i < partition_count; ++i) {
+        int partitionId = txn.get_partition(i);
+        auto owner_cluster_worker = partition_owner_cluster_worker(partitionId, txn.ith_replica);
+        if (owner_cluster_worker == this_cluster_worker_id) {
+          DCHECK(owned_partition_locked_by[partitionId] != -1);
+          DCHECK(owned_partition_locked_by[partitionId] == txn.transaction_id);
+          //LOG(INFO) << "Commit MP release lock partition " << partitionId << " by cluster worker" << this_cluster_worker_id << " ith_replica " << txn.ith_replica << " txn " << tid_to_string(txn.transaction_id);;
+          owned_partition_locked_by[partitionId] = -1; // unlock partitions
+        } else {
+            auto tableId = 0;
+            auto table = this->db.find_table(tableId, partitionId);
+            // send messages to other partitions to unlock partitions;
+            messages[owner_cluster_worker]->set_transaction_id(txn.transaction_id);
+            txn.network_size += MessageFactoryType::new_release_partition_lock_message(
+                *messages[owner_cluster_worker], *table, this_cluster_worker_id, false, txn.ith_replica);
+            //LOG(INFO) << "Partition worker " << this_cluster_worker_id << " issueed lock release request on partition " << partitionId << " ith_replica " << txn.ith_replica << " txn " << tid_to_string(txn.transaction_id);;
+        }
+      }
+      txn.message_flusher();
+    } else {
+      DCHECK(txn.get_partition_count() == 1);
+      auto partition_id = txn.get_partition(0);
+      DCHECK(owned_partition_locked_by[partition_id] == txn.transaction_id);
+      //LOG(INFO) << "Commit release lock partition " << partition_id << " by cluster worker " << this_cluster_worker_id << " ith_replica " << txn.ith_replica << " txn " << tid_to_string(txn.transaction_id);;
+      owned_partition_locked_by[partition_id] = -1;
+    }
+  }
 
   void write_back_command_logging(TransactionType &txn, uint64_t commit_tid,
                   std::vector<std::unique_ptr<Message>> &messages) {
@@ -574,33 +607,7 @@ public:
     }
     if (txn.is_single_partition() == false) {
       txn.message_flusher();
-      int partition_count = txn.get_partition_count();
-      for (int i = 0; i < partition_count; ++i) {
-        int partitionId = txn.get_partition(i);
-        auto owner_cluster_worker = partition_owner_cluster_worker(partitionId, txn.ith_replica);
-        if (owner_cluster_worker == this_cluster_worker_id) {
-          DCHECK(owned_partition_locked_by[partitionId] != -1);
-          DCHECK(owned_partition_locked_by[partitionId] == txn.transaction_id);
-          //LOG(INFO) << "Commit MP release lock partition " << partitionId << " by cluster worker" << this_cluster_worker_id << " ith_replica " << txn.ith_replica << " txn " << tid_to_string(txn.transaction_id);;
-          owned_partition_locked_by[partitionId] = -1; // unlock partitions
-        } else {
-            txn.pendingResponses++;
-            auto tableId = 0;
-            auto table = this->db.find_table(tableId, partitionId);
-            // send messages to other partitions to unlock partitions;
-            messages[owner_cluster_worker]->set_transaction_id(txn.transaction_id);
-            txn.network_size += MessageFactoryType::new_release_partition_lock_message(
-                *messages[owner_cluster_worker], *table, this_cluster_worker_id, true, txn.ith_replica);
-            //LOG(INFO) << "Partition worker " << this_cluster_worker_id << " issueed lock release request on partition " << partitionId << " ith_replica " << txn.ith_replica << " txn " << tid_to_string(txn.transaction_id);;
-        }
-      }
-      sync_messages(txn);
-    } else {
-      DCHECK(txn.get_partition_count() == 1);
-      auto partition_id = txn.get_partition(0);
-      DCHECK(owned_partition_locked_by[partition_id] == txn.transaction_id);
-      //LOG(INFO) << "Commit release lock partition " << partition_id << " by cluster worker " << this_cluster_worker_id << " ith_replica " << txn.ith_replica << " txn " << tid_to_string(txn.transaction_id);;
-      owned_partition_locked_by[partition_id] = -1;
+      sync_messages(txn, true);
     }
   }
 
@@ -1349,7 +1356,7 @@ public:
   }
 
   void process_new_transactions() {
-    if (active_txns.size() >= 3) {
+    if (active_txns.size() >= 1) {
       return;
     }
     std::unique_ptr<TransactionType> txn;

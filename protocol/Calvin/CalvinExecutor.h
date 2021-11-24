@@ -75,6 +75,17 @@ public:
 
     messageHandlers = MessageHandlerType::get_message_handlers();
     CHECK(n_workers > 0 && n_workers % n_lock_manager == 0);
+
+    if (context.logger) {
+      DCHECK(context.log_path != "");
+      logger = context.logger;
+    } else {
+      if (context.log_path != "") {
+        std::string redo_filename =
+            context.log_path + "_" + std::to_string(id) + ".txt";
+        logger = new SimpleWALLogger(redo_filename.c_str(), context.emulated_persist_latency);
+      }
+    }
   }
 
   ~CalvinExecutor() = default;
@@ -177,6 +188,7 @@ public:
   }
 
   void generate_transactions() {
+    std::string txn_command_data;
     if (!context.calvin_same_batch || !init_transaction) {
       init_transaction = true;
       for (auto i = id; i < transactions.size(); i += context.worker_num) {
@@ -184,6 +196,7 @@ public:
         auto partition_id = random.uniform_dist(0, context.partition_num - 1);
         transactions[i] =
             workload.next_transaction(context, partition_id, this->id);
+        txn_command_data += transactions[i]->serialize(0);
         transactions[i]->set_id(i);
         prepare_transaction(*transactions[i]);
       }
@@ -193,8 +206,10 @@ public:
         transactions[i]->network_size.store(0);
         transactions[i]->load_read_count();
         transactions[i]->clear_execution_bit();
+        txn_command_data += transactions[i]->serialize(0);
       }
     }
+    this->logger->write(txn_command_data.data(), txn_command_data.size(), true);
   }
 
   void prepare_transaction(TransactionType &txn) {
@@ -338,6 +353,8 @@ public:
         ITable *table = worker->db.find_table(table_id, partition_id);
         CalvinHelper::read(table->search(key), value, table->value_size());
 
+        txn.local_read.fetch_add(-1);
+      } else {
         auto &active_coordinators = txn.active_coordinators;
         for (auto i = 0u; i < active_coordinators.size(); i++) {
           if (i == worker->coordinator_id || !active_coordinators[i])
@@ -347,7 +364,6 @@ public:
           txn.network_size.fetch_add(sz);
           txn.distributed_transaction = true;
         }
-        txn.local_read.fetch_add(-1);
       }
     };
 
@@ -445,6 +461,7 @@ private:
   RandomType random;
   ProtocolType protocol;
   std::unique_ptr<Delay> delay;
+  WALLogger * logger = nullptr;
   std::vector<std::unique_ptr<Message>> messages;
   std::vector<
       std::function<void(MessagePiece, Message &, ITable &,
