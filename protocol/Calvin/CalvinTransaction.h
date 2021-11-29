@@ -25,7 +25,28 @@ public:
       : coordinator_id(coordinator_id), partition_id(partition_id),
         startTime(std::chrono::steady_clock::now()), partitioner(partitioner), ith_replica(ith_replica) {
     reset();
+    lock_request_for_coordinators.resize(partitioner.total_coordinators());
   }
+
+  struct TransactionLockRequest {
+    int source_coordinator;
+    int64_t tid;
+    std::vector<uint32_t> table_ids;
+    std::vector<uint32_t> partition_ids;
+    std::vector<bool> read_writes;
+    std::vector<CalvinRWKey> keys;
+    bool empty() {
+      return keys.size() == 0;
+    }
+
+    void add_key(CalvinRWKey key) {
+      bool read_or_write = key.get_write_lock_bit();
+      keys.push_back(key);
+      read_writes.push_back(read_or_write);
+      partition_ids.push_back(key.get_partition_id());
+      table_ids.push_back(key.get_table_id());
+    }
+  };
 
   virtual ~CalvinTransaction() = default;
   
@@ -158,7 +179,7 @@ public:
     if (execution_phase) {
       return;
     }
-
+    DCHECK(table_id < 1);
     CalvinRWKey readKey;
 
     readKey.set_table_id(table_id);
@@ -179,7 +200,7 @@ public:
     if (execution_phase) {
       return;
     }
-
+    DCHECK(table_id < 1);
     CalvinRWKey readKey;
 
     readKey.set_table_id(table_id);
@@ -199,7 +220,7 @@ public:
     if (execution_phase) {
       return;
     }
-
+    DCHECK(table_id < 1);
     CalvinRWKey readKey;
 
     readKey.set_table_id(table_id);
@@ -258,19 +279,10 @@ public:
           break;
         }
 
-        if (readSet[i].get_local_index_read_bit()) {
-          // this is a local index read
-          auto &readKey = readSet[i];
-          local_index_read_handler(readKey.get_table_id(),
-                                   readKey.get_partition_id(),
-                                   readKey.get_key(), readKey.get_value());
+        if (partitioner.has_master_partition(readSet[i].get_partition_id())) {
+          local_read.fetch_add(1);
         } else {
-
-          if (partitioner.has_master_partition(readSet[i].get_partition_id())) {
-            local_read.fetch_add(1);
-          } else {
-            remote_read.fetch_add(1);
-          }
+          remote_read.fetch_add(1);
         }
 
         readSet[i].set_prepare_processed_bit();
@@ -292,16 +304,6 @@ public:
       // cannot use unsigned type in reverse iteration
       for (int i = int(readSet.size()) - 1; i >= 0; i--) {
 
-        if (readSet[i].get_local_index_read_bit()) {
-          continue;
-        }
-
-        if (CalvinHelper::partition_id_to_lock_manager_id(
-                readSet[i].get_partition_id(), n_lock_manager,
-                replica_group_size) != lock_manager_id) {
-          continue;
-        }
-
         // early return
         if (readSet[i].get_execution_processed_bit()) {
           break;
@@ -316,20 +318,12 @@ public:
       }
 
       message_flusher(worker_id);
-
-      if (active_coordinators[coordinator_id]) {
-
-        // spin on local & remote read
-        while (local_read.load() > 0 || remote_read.load() > 0) {
-          // process remote reads for other workers
-          remote_request_handler(worker_id);
-        }
-
-        return false;
-      } else {
-        // abort if not active
-        return true;
+      DCHECK(local_read.load() == 0);
+      while (remote_read.load() > 0) {
+        // process remote reads for other workers
+        remote_request_handler(worker_id);
       }
+      return false;
     };
   }
 
@@ -346,9 +340,6 @@ public:
   void clear_execution_bit() {
     for (auto i = 0u; i < readSet.size(); i++) {
 
-      if (readSet[i].get_local_index_read_bit()) {
-        continue;
-      }
 
       readSet[i].clear_execution_processed_bit();
     }
@@ -358,7 +349,7 @@ public:
   std::size_t coordinator_id, partition_id, id;
   std::chrono::steady_clock::time_point startTime;
   std::atomic<int32_t> network_size;
-  std::atomic<int32_t> local_read, remote_read;
+  std::atomic<int32_t> local_read{0}, remote_read{0}, remote_write{0};
   int32_t saved_local_read, saved_remote_read;
 
   bool abort_lock, abort_no_retry, abort_read_validation;
@@ -386,6 +377,9 @@ public:
   Partitioner &partitioner;
   std::size_t ith_replica;
   std::vector<bool> active_coordinators;
+  std::vector<TransactionLockRequest> lock_request_for_coordinators;
+  std::vector<bool> votes; // votes.size() == lock_request_for_coordinators.size() after LockResponse Phase
+  bool processed = false;
   Operation operation; // never used
   std::vector<CalvinRWKey> readSet, writeSet;
   WALLogger * logger = nullptr;

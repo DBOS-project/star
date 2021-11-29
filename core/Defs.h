@@ -12,6 +12,8 @@ enum class ExecutorStatus {
   C_PHASE,
   S_PHASE,
   Analysis,
+  LockRequest,
+  LockResponse,
   Execute,
   Kiva_READ,
   Kiva_COMMIT,

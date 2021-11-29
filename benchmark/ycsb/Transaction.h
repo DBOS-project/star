@@ -62,7 +62,7 @@ public:
     DCHECK(context.keysPerTransaction == keys_num);
 
     int ycsbTableID = ycsb::tableID;
-
+    DCHECK(ycsbTableID < 1);
     for (auto i = 0u; i < keys_num; i++) {
       auto key = query.Y_KEY[i];
       storage.ycsb_keys[i].Y_KEY = key;

@@ -194,7 +194,7 @@ public:
             coordinator_id, i, db, context, manager->transactions,
             manager->storages, manager->lock_manager_status,
             manager->worker_status, manager->n_completed_workers,
-            manager->n_started_workers);
+            manager->n_started_workers, manager->active_transactions);
         workers.push_back(w);
         manager->add_worker(w);
         all_executors.push_back(w.get());

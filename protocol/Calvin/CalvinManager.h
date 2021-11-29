@@ -63,6 +63,25 @@ public:
       // wait for all machines until they finish the analysis phase.
       wait4_ack();
 
+      // Once the transactions are generated and analyzed,
+      // exchange the lock requests among nodes.
+      n_started_workers.store(0);
+      n_completed_workers.store(0);
+      signal_worker(ExecutorStatus::LockRequest);
+      wait_all_workers_start();
+      wait_all_workers_finish();
+      // wait for all machines until they finish the lock request phase.
+      wait4_ack();
+
+      // Exchange lock responses among nodes
+      n_started_workers.store(0);
+      n_completed_workers.store(0);
+      signal_worker(ExecutorStatus::LockResponse);
+      wait_all_workers_start();
+      wait_all_workers_finish();
+      // wait for all machines until they finish the lock response phase.
+      wait4_ack();
+
       // Allow each worker to run transactions
       // DB is partitioned by the number of lock managers.
       // The first k workers act as lock managers to grant locks to other
@@ -108,6 +127,29 @@ public:
 
       send_ack();
 
+
+      status = wait4_signal();
+
+      DCHECK(status == ExecutorStatus::LockRequest);
+      n_started_workers.store(0);
+      n_completed_workers.store(0);
+      set_worker_status(ExecutorStatus::LockRequest);
+      wait_all_workers_start();
+      wait_all_workers_finish();
+
+      send_ack();
+
+      status = wait4_signal();
+
+      DCHECK(status == ExecutorStatus::LockResponse);
+      n_started_workers.store(0);
+      n_completed_workers.store(0);
+      set_worker_status(ExecutorStatus::LockResponse);
+      wait_all_workers_start();
+      wait_all_workers_finish();
+
+      send_ack();
+
       status = wait4_signal();
       DCHECK(status == ExecutorStatus::Execute);
       // Allow each worker to run transactions
@@ -141,5 +183,6 @@ public:
   std::vector<std::shared_ptr<CalvinExecutor<WorkloadType>>> workers;
   std::vector<StorageType> storages;
   std::vector<std::unique_ptr<TransactionType>> transactions;
+  std::atomic<uint64_t> active_transactions{0};
 };
 } // namespace star
