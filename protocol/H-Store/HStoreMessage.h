@@ -36,6 +36,8 @@ enum class HStoreMessage {
   MASTER_UNLOCK_PARTITION_RESPONSE,
   COMMAND_REPLICATION_REQUEST,
   COMMAND_REPLICATION_RESPONSE,
+  COMMAND_REPLICATION_SP_REQUEST,
+  COMMAND_REPLICATION_SP_RESPONSE,
   ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST,
   ACQUIRE_PARTITION_LOCK_AND_READ_RESPONSE,
   ACQUIRE_PARTITION_LOCK_REQUEST,
@@ -153,6 +155,29 @@ public:
     Encoder encoder(message.data);
     encoder << message_piece_header << ith_replica << this_cluster_worker_id;
     encoder.write_n_bytes(data.c_str(), data.size());
+    message.set_is_replica(ith_replica > 0);
+    message.flush();
+    message.set_gen_time(Time::now());
+    return message_size;
+  }
+
+  static std::size_t new_command_replication_sp(Message & message, std::size_t ith_replica, const std::vector< std::string> & commands_data, int this_cluster_worker_id) {
+    auto message_size =
+      MessagePiece::get_header_size() + sizeof(std::size_t) + sizeof(commands_data.size()) + sizeof(this_cluster_worker_id);
+    for (size_t i = 0; i < commands_data.size(); ++i) {
+      message_size += sizeof(commands_data[i].size());
+      message_size += commands_data[i].size();
+    }
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+      static_cast<uint32_t>(HStoreMessage::COMMAND_REPLICATION_SP_REQUEST), message_size,
+      0, 0);
+    Encoder encoder(message.data);
+    encoder << message_piece_header << ith_replica << this_cluster_worker_id;
+    encoder << commands_data.size();
+    for (size_t i = 0; i < commands_data.size(); ++i) {
+      encoder << commands_data[i].size();
+      encoder.write_n_bytes(commands_data[i].c_str(), commands_data[i].size());
+    }
     message.set_is_replica(ith_replica > 0);
     message.flush();
     message.set_gen_time(Time::now());
