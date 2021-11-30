@@ -319,5 +319,6 @@ public:
   uint64_t txn_cmd_log_lsn = 0;
   int64_t initiating_transaction_id = 0;
   int64_t transaction_id = 0;
+  bool reordered_in_the_queue = false;
 };
 } // namespace star

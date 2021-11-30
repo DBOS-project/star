@@ -20,7 +20,7 @@ private:
   std::vector<int> parts_touched_tables;
   int cluster_worker_num;
   Percentile<uint64_t> txn_try_times;
-
+  std::size_t batch_per_worker;
   std::atomic<bool> ended{false};
   uint64_t worker_commit = 0;
 public:
@@ -96,6 +96,7 @@ public:
                   << " partitions managed [" << managed_partitions_str 
                   << "], replica partitions maanged [" << managed_replica_partitions_str << "]" 
                   << " is_replica_worker " << is_replica_worker;
+        batch_per_worker = std::max(this->context.batch_size / this->context.worker_num, (std::size_t)1);
       }
 
       owned_partition_locked_by.resize(this->context.partition_num, -1);
@@ -173,6 +174,27 @@ public:
       owned_partition_locked_by[partition_id] = -1;
     }
   }
+
+  bool commit_sp(TransactionType &txn,
+              std::vector<std::unique_ptr<Message>> &messages) {
+    // if (is_replica_worker) { // Should always succeed for replica
+    //   CHECK(txn.abort_lock == false);
+    // }
+    DCHECK(this->context.hstore_command_logging == true);
+    if (txn.abort_lock) {
+      return false;
+    }
+
+    uint64_t commit_tid = generate_tid(txn);
+    DCHECK(txn.get_logger());
+
+    ScopedTimer t([&, this](uint64_t us) {
+      txn.record_commit_write_back_time(us);
+    });
+    write_back_command_logging(txn, commit_tid, messages);
+    return true;
+  }
+
 
   bool commit(TransactionType &txn,
               std::vector<std::unique_ptr<Message>> &messages) {
@@ -645,7 +667,7 @@ public:
                      uint32_t key_offset, const void *key, void *value,
                      bool local_index_read, bool write_lock, bool &success,
                      bool &remote) {
-      if (local_index_read) {
+      if (local_index_read || txn.is_single_partition()) {
         success = true;
         remote = false;
         this->search(table_id, partition_id, key, value);
@@ -662,7 +684,8 @@ public:
         }
         // if (owned_partition_locked_by[partition_id] == -1 && is_replica_worker)
         //    LOG(INFO) << "Tranasction from worker " << this_cluster_worker_id << " locked partition " << partition_id << " txn " << tid_to_string(txn.transaction_id);;
-        owned_partition_locked_by[partition_id] = txn.transaction_id;
+        if (owned_partition_locked_by[partition_id] == -1)
+          owned_partition_locked_by[partition_id] = txn.transaction_id;
 
         success = true;
 
@@ -1354,20 +1377,189 @@ public:
     //   << " remote partition locked released " << success 
     //   << " pending responses " << txn->pendingResponses;
   }
+  void fill_pending_txns(std::size_t limit) {
+    while (pending_txns.size() < limit) {
+      auto t = get_next_transaction();
+      if (t == nullptr)
+        break;
+      pending_txns.push_back(t);
+    }
+  }
+
+  void reorder_pending_txns() {
+    if (pending_txns[0]->reordered_in_the_queue)
+      return;
+    size_t until_ith = 0;
+    for (; until_ith < pending_txns.size(); ++until_ith) {
+      if (pending_txns[until_ith]->reordered_in_the_queue) {
+        break;
+      }
+      pending_txns[until_ith]->reordered_in_the_queue = true;
+    }
+    if (until_ith == 2)
+      return;
+    size_t sp_idx = 0;
+    for (; sp_idx < until_ith; ++sp_idx) {
+      if (pending_txns[sp_idx]->is_single_partition() == false) {
+        break;
+      }
+    }
+    for (size_t i = sp_idx; i < until_ith; ++i) {
+      if (pending_txns[i]->is_single_partition()) {
+        std::swap(pending_txns[sp_idx++], pending_txns[i]);
+      }
+    }
+  }
+
+  void process_batch_of_single_partition_transactions() {
+    if (pending_txns.empty())
+      return;
+    reorder_pending_txns();
+    std::size_t until_ith = 0;
+    for (; until_ith < pending_txns.size(); ++until_ith) {
+      if (pending_txns[until_ith]->is_single_partition()) {
+        int partition_id = pending_txns[until_ith]->get_partition(0);
+        if (owned_partition_locked_by[partition_id] != -1) {
+          break;
+        }
+      } else {
+        break;
+      }
+    }
+
+    if (until_ith == 0)
+      return;
+    //LOG(INFO) << " batch_size " << until_ith;
+    // Locking & Logging
+    std::string txn_command_data;
+    for (size_t i = 0; i < until_ith; ++i) {
+      int partition_id = pending_txns[i]->get_partition(0);
+      owned_partition_locked_by[partition_id] = pending_txns[i]->transaction_id;
+      txn_command_data += pending_txns[i]->serialize(0);
+    }
+
+    auto txn_cmd_log_lsn = this->logger->write(txn_command_data.c_str(), txn_command_data.size(), false);
+    this->logger->sync(txn_cmd_log_lsn, [&, this]() {});
+
+    // TODO: Replication
+
+    // Execution
+    for (size_t i = 0; i < until_ith; ++i) {
+      auto txn = pending_txns[i];
+      int partition_id = txn->get_partition(0);
+      setupHandlers(*txn);
+      active_txns[txn->transaction_id] = txn;
+      auto ltc =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - txn->startTime)
+          .count();
+      txn->set_stall_time(ltc);
+      DCHECK((int)partition_owner_cluster_worker(partition_id, txn->ith_replica) == this_cluster_worker_id);
+
+      auto result = txn->execute(this->id);
+
+      if (result == TransactionResult::READY_TO_COMMIT) {
+        bool commit;
+        {
+          ScopedTimer t([&, this](uint64_t us) {
+            if (commit) {
+              txn->record_commit_work_time(us);
+            } else {
+              auto ltc =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  std::chrono::steady_clock::now() - txn->startTime)
+                  .count();
+              txn->set_stall_time(ltc);
+            }
+          });
+          commit = this->commit_sp(*txn, cluster_worker_messages);
+        }
+        DCHECK(txn->abort_lock == false);
+        ////LOG(INFO) << "Txn Execution result " << (int)result << " commit " << commit;
+        this->n_network_size.fetch_add(txn->network_size);
+        if (commit) {
+          ++worker_commit;
+          this->n_commit.fetch_add(1);
+          if (txn->si_in_serializable) {
+            this->n_si_in_serializable.fetch_add(1);
+          }
+          auto latency =
+              std::chrono::duration_cast<std::chrono::microseconds>(
+                  std::chrono::steady_clock::now() - txn->startTime)
+                  .count();
+          this->percentile.add(latency);
+          if (txn->distributed_transaction) {
+            this->dist_latency.add(latency);
+          } else {
+            this->local_latency.add(latency);
+          }
+          // Make sure it is unlocked.
+          // if (txn->is_single_partition())
+          //   DCHECK(owned_partition_locked_by[partition_id] == -1);
+          this->record_txn_breakdown_stats(*txn);
+          active_txns.erase(txn->transaction_id);
+        } else {
+          DCHECK(false);
+          //LOG(INFO) << "Txn Execution result " << (int)result << " abort ";
+          // Txns on slave replicas won't abort due to locking failure.
+          if (txn->abort_lock) {
+            this->n_abort_lock.fetch_add(1);
+          } else {
+            DCHECK(txn->abort_read_validation);
+            this->n_abort_read_validation.fetch_add(1);
+          }
+          if (this->context.sleep_on_retry) {
+            std::this_thread::sleep_for(std::chrono::microseconds(
+                this->random.uniform_dist(0, 10)));
+          }
+          this->random.set_seed(0);
+          //retry_transaction = true;
+          active_txns.erase(txn->transaction_id);
+        }
+      } else {
+        //LOG(INFO) << "Txn Execution result " << (int)result << " abort ";
+        //this->abort(*txn, cluster_worker_messages);
+        this->n_abort_no_retry.fetch_add(1);
+        //retry_transaction = false;
+        // Make sure it is unlocked.
+        // if (txn->is_single_partition())
+        //   DCHECK(owned_partition_locked_by[partition_id] == -1);
+        active_txns.erase(txn->transaction_id);
+      }
+    }
+
+    // Clean-up
+    for (size_t i = 0; i < until_ith; ++i) {
+      DCHECK(pending_txns[i]->is_single_partition());
+      int partition_id = pending_txns[i]->get_partition(0);
+      owned_partition_locked_by[partition_id] = -1;
+    }
+
+    DCHECK(until_ith <= pending_txns.size());
+    for (std::size_t i = 0; i < until_ith; ++i) {
+      std::unique_ptr<TransactionType> txn(pending_txns.front());
+      pending_txns.pop_front();
+    }
+  }
 
   void process_new_transactions() {
     if (active_txns.size() >= 1) {
       return;
     }
-    std::unique_ptr<TransactionType> txn;
-    if (pending_txns.empty() == false) {
-      txn.reset(pending_txns.front());
-      pending_txns.pop_front();
-    } else {
-      txn.reset(get_next_transaction());
+    if (pending_txns.size() < batch_per_worker) {
+      fill_pending_txns(batch_per_worker);
     }
-    if (txn.get() == nullptr)
+    if (pending_txns.empty())
       return;
+    if (pending_txns[0]->is_single_partition()) {
+      process_batch_of_single_partition_transactions();
+      return;
+    }
+    std::unique_ptr<TransactionType> txn;
+    txn.reset(pending_txns.front());
+    pending_txns.pop_front();
+
+    DCHECK(txn->is_single_partition() == false);
     int partition_id;
     if (is_replica_worker) {
       DCHECK(txn->ith_replica > 0);
@@ -1384,7 +1576,7 @@ public:
       active_txns[txn->transaction_id] = txn.get();
 
       DCHECK((int)partition_owner_cluster_worker(partition_id, txn->ith_replica) == this_cluster_worker_id);
-      DCHECK(owned_partition_locked_by[partition_id] == -1);
+      DCHECK(owned_partition_locked_by[partition_id] == -1 || owned_partition_locked_by[partition_id] == txn->transaction_id);
       //startTime = std::chrono::steady_clock::now();
       setupHandlers(*txn);
       if (txn->is_single_partition()) {
@@ -1447,6 +1639,7 @@ public:
           active_txns.erase(txn->transaction_id);
           txn.release();
         } else {
+          //LOG(INFO) << "Txn Execution result " << (int)result << " abort ";
           // Txns on slave replicas won't abort due to locking failure.
           if (txn->abort_lock) {
             this->n_abort_lock.fetch_add(1);
@@ -1455,16 +1648,16 @@ public:
             this->n_abort_read_validation.fetch_add(1);
           }
           if (this->context.sleep_on_retry) {
-            //std::this_thread::sleep_for(std::chrono::microseconds(
-            //    this->random.uniform_dist(0, this->context.sleep_time)));
+            std::this_thread::sleep_for(std::chrono::microseconds(
+                this->random.uniform_dist(0, 10)));
           }
           this->random.set_seed(0);
           //retry_transaction = true;
           active_txns.erase(txn->transaction_id);
-          pending_txns.push_back(txn.release());
+          pending_txns.push_front(txn.release());
         }
       } else {
-        ////LOG(INFO) << "Txn Execution result " << (int)result << " abort ";
+        //LOG(INFO) << "Txn Execution result " << (int)result << " abort ";
         this->abort(*txn, cluster_worker_messages);
         this->n_abort_no_retry.fetch_add(1);
         //retry_transaction = false;
@@ -1475,7 +1668,7 @@ public:
         txn.release();
       }
     } else {
-      pending_txns.push_back(txn.release());
+      pending_txns.push_front(txn.release());
       txn.reset(nullptr);
     }
   }
