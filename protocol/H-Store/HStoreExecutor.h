@@ -1627,34 +1627,36 @@ public:
       txn_command_data_all += command_data;
     }
 
-    if (is_replica_worker == false) {
-      std::vector<std::string> commands_data;
-      for (size_t i = 0; i < until_ith; ++i) {
-        auto command_data = pending_txns[i]->serialize(1);
-        commands_data.push_back(command_data);
-      }
-      auto partition_id_txn_0 = pending_txns[0]->get_partition(0);
-      auto txn0_tid = pending_txns[0]->transaction_id;
-      auto replica_target_cluster_worker_id = partition_owner_cluster_worker(partition_id_txn_0, 1);
-      for (size_t i = 0; i < until_ith; ++i) {
-        int partition_id = pending_txns[i]->get_partition(0);
-        DCHECK(partition_owner_cluster_worker(partition_id, 1) == replica_target_cluster_worker_id);
-      }
-      cluster_worker_messages[replica_target_cluster_worker_id]->set_transaction_id(txn0_tid);
-      MessageFactoryType::new_command_replication_sp(
-              *cluster_worker_messages[replica_target_cluster_worker_id], 1, commands_data, this_cluster_worker_id);
-      flush_messages();
-      sent_sp_replication_requests += until_ith;
-    } else {
-      for (size_t i = 0; i < until_ith; ++i) {
-        auto partition_id = pending_txns[i]->get_partition(0);
-        DCHECK(pending_txns[i]->replicated_sp);
-        auto txn_id = pending_txns[i]->transaction_id;
-        auto initiating_cluster_worker_id = pending_txns[i]->initiating_cluster_worker_id;
-        cluster_worker_messages[initiating_cluster_worker_id]->set_transaction_id(txn_id);
-        pending_txns[i]->network_size += MessageFactoryType::new_command_replication_sp_response_message(
-            *cluster_worker_messages[initiating_cluster_worker_id]);
+    if (this->partitioner->replica_num() > 1) {
+      if (is_replica_worker == false) {
+        std::vector<std::string> commands_data;
+        for (size_t i = 0; i < until_ith; ++i) {
+          auto command_data = pending_txns[i]->serialize(1);
+          commands_data.push_back(command_data);
+        }
+        auto partition_id_txn_0 = pending_txns[0]->get_partition(0);
+        auto txn0_tid = pending_txns[0]->transaction_id;
+        auto replica_target_cluster_worker_id = partition_owner_cluster_worker(partition_id_txn_0, 1);
+        for (size_t i = 0; i < until_ith; ++i) {
+          int partition_id = pending_txns[i]->get_partition(0);
+          DCHECK(partition_owner_cluster_worker(partition_id, 1) == replica_target_cluster_worker_id);
+        }
+        cluster_worker_messages[replica_target_cluster_worker_id]->set_transaction_id(txn0_tid);
+        MessageFactoryType::new_command_replication_sp(
+                *cluster_worker_messages[replica_target_cluster_worker_id], 1, commands_data, this_cluster_worker_id);
         flush_messages();
+        sent_sp_replication_requests += until_ith;
+      } else {
+        for (size_t i = 0; i < until_ith; ++i) {
+          auto partition_id = pending_txns[i]->get_partition(0);
+          DCHECK(pending_txns[i]->replicated_sp);
+          auto txn_id = pending_txns[i]->transaction_id;
+          auto initiating_cluster_worker_id = pending_txns[i]->initiating_cluster_worker_id;
+          cluster_worker_messages[initiating_cluster_worker_id]->set_transaction_id(txn_id);
+          pending_txns[i]->network_size += MessageFactoryType::new_command_replication_sp_response_message(
+              *cluster_worker_messages[initiating_cluster_worker_id]);
+          flush_messages();
+        }
       }
     }
 
@@ -1664,9 +1666,11 @@ public:
     // Execution
     execute_sp_transaction_batch(std::vector<TransactionType*>(pending_txns.begin(), pending_txns.begin() + until_ith));
 
-    if (is_replica_worker == false) {
-      while (received_sp_replication_responses < sent_sp_replication_requests) {
-        process_request(false);
+    if (this->partitioner->replica_num() > 1) {
+      if (is_replica_worker == false) {
+        while (received_sp_replication_responses < sent_sp_replication_requests) {
+          process_request(false);
+        }
       }
     }
 
