@@ -213,6 +213,7 @@ public:
               << " us (50%) " << this->local_latency.nth(75) << " us (75%) "
               << this->local_latency.nth(95) << " us (95%) " << this->local_latency.nth(99)
               << " us (99%). "
+              << " Round conurrency " << this->round_concurrency.nth(50) << ". "
               << " LOCAL txn stall " << this->local_txn_stall_time_pct.nth(50) << " us, "
               << " local_work " << this->local_txn_local_work_time_pct.nth(50) << " us, "
               << " remote_work " << this->local_txn_remote_work_time_pct.nth(50) << " us, "
@@ -680,7 +681,7 @@ public:
   }
 
   void run_transactions() {
-
+    size_t cc = 0;
     while (!get_lock_manager_bit(lock_manager_id) ||
            !transaction_queue.empty()) {
 
@@ -688,7 +689,7 @@ public:
         process_request();
         continue;
       }
-
+      cc++;
       TransactionType *transaction = transaction_queue.front();
       bool ok = transaction_queue.pop();
       DCHECK(ok);
@@ -747,6 +748,7 @@ public:
       this_transaction->processed = true;
       active_transactions.fetch_sub(1);
     }
+    this->round_concurrency.add(cc);
   }
 
   void setup_execute_handlers(TransactionType &txn) {
@@ -875,6 +877,7 @@ public:
   std::vector<CalvinExecutor *> all_executors;
   TransactionType * this_transaction = nullptr;
   Percentile<int64_t> percentile, dist_latency, local_latency, commit_latency; 
+  Percentile<int64_t> round_concurrency;
   Percentile<uint64_t> local_txn_stall_time_pct, local_txn_commit_work_time_pct, local_txn_commit_persistence_time_pct, local_txn_commit_prepare_time_pct, local_txn_commit_replication_time_pct, local_txn_commit_write_back_time_pct, local_txn_commit_unlock_time_pct, local_txn_local_work_time_pct, local_txn_remote_work_time_pct;
   Percentile<uint64_t> dist_txn_stall_time_pct, dist_txn_commit_work_time_pct, 
                        dist_txn_commit_persistence_time_pct, dist_txn_commit_prepare_time_pct,
