@@ -202,7 +202,37 @@ public:
     }
   }
 
-  void onExit() override {}
+  void onExit() override {
+    LOG(INFO) << "Worker " << this->id << " latency: " << this->percentile.nth(50)
+              << " us (50%) " << this->percentile.nth(75) << " us (75%) "
+              << this->percentile.nth(95) << " us (95%) " << this->percentile.nth(99)
+              << " us (99%). dist txn latency: " << this->dist_latency.nth(50)
+              << " us (50%) " << this->dist_latency.nth(75) << " us (75%) "
+              << this->dist_latency.nth(95) << " us (95%) " << this->dist_latency.nth(99)
+              << " us (99%). local txn latency: " << this->local_latency.nth(50)
+              << " us (50%) " << this->local_latency.nth(75) << " us (75%) "
+              << this->local_latency.nth(95) << " us (95%) " << this->local_latency.nth(99)
+              << " us (99%). "
+              << " LOCAL txn stall " << this->local_txn_stall_time_pct.nth(50) << " us, "
+              << " local_work " << this->local_txn_local_work_time_pct.nth(50) << " us, "
+              << " remote_work " << this->local_txn_remote_work_time_pct.nth(50) << " us, "
+              << " commit_work " << this->local_txn_commit_work_time_pct.nth(50) << " us, "
+              << " commit_prepare " << this->local_txn_commit_prepare_time_pct.nth(50) << " us, "
+              << " commit_persistence " << this->local_txn_commit_persistence_time_pct.nth(50) << " us, "
+              << " commit_replication " << this->local_txn_commit_replication_time_pct.nth(50) << " us, "
+              << " commit_write_back " << this->local_txn_commit_write_back_time_pct.nth(50) << " us, "
+              << " commit_release_lock " << this->local_txn_commit_unlock_time_pct.nth(50) << " us \n"
+              << " DIST txn stall " << this->dist_txn_stall_time_pct.nth(50) << " us, "
+              << " local_work " << this->dist_txn_local_work_time_pct.nth(50) << " us, "
+              << " remote_work " << this->dist_txn_remote_work_time_pct.nth(50) << " us, "
+              << " commit_work " << this->dist_txn_commit_work_time_pct.nth(50) << " us, "
+              << " commit_prepare " << this->dist_txn_commit_prepare_time_pct.nth(50) << " us, "
+              << " commit_persistence " << this->dist_txn_commit_persistence_time_pct.nth(50) << " us, "
+              << " commit_replication " << this->local_txn_commit_replication_time_pct.nth(50) << " us, "
+              << " commit_write_back " << this->dist_txn_commit_write_back_time_pct.nth(50) << " us, "
+              << " commit_release_lock " << this->dist_txn_commit_unlock_time_pct.nth(50) << " us \n";
+
+  }
 
   void push_message(Message *message) override { in_queue.push(message); }
 
@@ -625,6 +655,30 @@ public:
     set_lock_manager_bit(id);
   }
 
+  void record_txn_breakdown_stats(TransactionType & txn) {
+    if (txn.is_single_partition()) {
+      local_txn_stall_time_pct.add(txn.get_stall_time());
+      local_txn_commit_work_time_pct.add(txn.get_commit_work_time());
+      local_txn_commit_write_back_time_pct.add(txn.get_commit_write_back_time());
+      local_txn_commit_unlock_time_pct.add(txn.get_commit_unlock_time());
+      local_txn_local_work_time_pct.add(txn.get_local_work_time());
+      local_txn_remote_work_time_pct.add(txn.get_remote_work_time());
+      local_txn_commit_persistence_time_pct.add(txn.get_commit_persistence_time());
+      local_txn_commit_prepare_time_pct.add(txn.get_commit_prepare_time());
+      local_txn_commit_replication_time_pct.add(txn.get_commit_replication_time());
+    } else {
+      dist_txn_stall_time_pct.add(txn.get_stall_time());
+      dist_txn_commit_work_time_pct.add(txn.get_commit_work_time());
+      dist_txn_commit_write_back_time_pct.add(txn.get_commit_write_back_time());
+      dist_txn_commit_unlock_time_pct.add(txn.get_commit_unlock_time());
+      dist_txn_local_work_time_pct.add(txn.get_local_work_time());
+      dist_txn_remote_work_time_pct.add(txn.get_remote_work_time());
+      dist_txn_commit_persistence_time_pct.add(txn.get_commit_persistence_time());
+      dist_txn_commit_prepare_time_pct.add(txn.get_commit_prepare_time());
+      dist_txn_commit_replication_time_pct.add(txn.get_commit_replication_time());
+    }
+  }
+
   void run_transactions() {
 
     while (!get_lock_manager_bit(lock_manager_id) ||
@@ -639,21 +693,56 @@ public:
       bool ok = transaction_queue.pop();
       DCHECK(ok);
       this_transaction = transaction;
+      auto ltc =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - transaction->startTime)
+          .count();
+      transaction->set_stall_time(ltc);
       auto result = transaction->execute(id);
       n_network_size.fetch_add(transaction->network_size.load());
       if (result == TransactionResult::READY_TO_COMMIT) {
-        protocol.commit(messages, *transaction, lock_manager_id, n_lock_manager,
-                        partitioner.replica_group_size);
+        bool commit;
+        {
+          ScopedTimer t([&, this](uint64_t us) {
+            if (commit) {
+              transaction->record_commit_work_time(us);
+            } else {
+              auto ltc =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  std::chrono::steady_clock::now() - transaction->startTime)
+                  .count();
+              transaction->set_stall_time(ltc);
+            }
+          });
+          {
+            ScopedTimer t([&, this](uint64_t us) {
+              this_transaction->record_commit_write_back_time(us);
+            });
+            commit = protocol.commit(messages, *transaction, lock_manager_id, n_lock_manager,
+                          partitioner.replica_group_size);
+            flush_messages();
+            while (this_transaction->remote_write > 0) {
+              process_request();
+            }
+          }
+          auto latency =
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - transaction->startTime)
+              .count();
+          this->percentile.add(latency);
+          if (transaction->distributed_transaction) {
+            this->dist_latency.add(latency);
+          } else {
+            this->local_latency.add(latency);
+          }
+          record_txn_breakdown_stats(*transaction);
+        }
       } else if (result == TransactionResult::ABORT) {
         // non-active transactions, release lock
         protocol.abort(messages, *transaction, lock_manager_id, n_lock_manager,
                        partitioner.replica_group_size);
       } else {
         CHECK(false) << "abort no retry transaction should not be scheduled.";
-      }
-      flush_messages();
-      while (this_transaction->remote_write > 0) {
-        process_request();
       }
       this_transaction->processed = true;
       active_transactions.fetch_sub(1);
@@ -785,5 +874,12 @@ public:
   LockfreeQueue<TransactionType *> transaction_queue;
   std::vector<CalvinExecutor *> all_executors;
   TransactionType * this_transaction = nullptr;
+  Percentile<int64_t> percentile, dist_latency, local_latency, commit_latency; 
+  Percentile<uint64_t> local_txn_stall_time_pct, local_txn_commit_work_time_pct, local_txn_commit_persistence_time_pct, local_txn_commit_prepare_time_pct, local_txn_commit_replication_time_pct, local_txn_commit_write_back_time_pct, local_txn_commit_unlock_time_pct, local_txn_local_work_time_pct, local_txn_remote_work_time_pct;
+  Percentile<uint64_t> dist_txn_stall_time_pct, dist_txn_commit_work_time_pct, 
+                       dist_txn_commit_persistence_time_pct, dist_txn_commit_prepare_time_pct,
+                       dist_txn_commit_write_back_time_pct, dist_txn_commit_unlock_time_pct, 
+                       dist_txn_local_work_time_pct, dist_txn_commit_replication_time_pct, 
+                       dist_txn_remote_work_time_pct;
 };
 } // namespace star

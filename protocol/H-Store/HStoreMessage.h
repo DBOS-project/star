@@ -145,6 +145,21 @@ public:
     return message_size;
   }
 
+  static std::size_t new_command_replication_sp_response_message(Message & message) {
+    auto message_size = MessagePiece::get_header_size();
+
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(HStoreMessage::COMMAND_REPLICATION_SP_RESPONSE), message_size,
+        0, 0);
+
+    star::Encoder encoder(message.data);
+    encoder << message_piece_header;
+  
+    message.flush();
+    message.set_gen_time(Time::now());
+    return message_size;
+  }
+
 
   static std::size_t new_command_replication(Message & message, std::size_t ith_replica, const std::string & data, int this_cluster_worker_id) {
     auto message_size =

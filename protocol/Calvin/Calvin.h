@@ -32,7 +32,9 @@ public:
 
   bool commit(std::vector<std::unique_ptr<Message>> & messages, TransactionType &txn, std::size_t lock_manager_id,
               std::size_t n_lock_manager, std::size_t replica_group_size) {
-
+    ScopedTimer t([&, this](uint64_t us) {
+      txn.record_commit_write_back_time(us);
+    });
     // write to db
     write(messages, txn, lock_manager_id, n_lock_manager, replica_group_size);
     return true;

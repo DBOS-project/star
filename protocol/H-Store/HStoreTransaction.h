@@ -320,5 +320,6 @@ public:
   int64_t initiating_transaction_id = 0;
   int64_t transaction_id = 0;
   bool reordered_in_the_queue = false;
+  bool replicated_sp = false;
 };
 } // namespace star

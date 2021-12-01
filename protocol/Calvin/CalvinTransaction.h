@@ -300,6 +300,10 @@ public:
                         replica_group_size](std::size_t worker_id) {
       auto lock_manager_id = CalvinHelper::worker_id_to_lock_manager_id(
           worker_id, n_lock_manager, n_worker);
+      {
+      ScopedTimer t_local_work([&, this](uint64_t us) {
+        this->record_local_work_time(us);
+      });
 
       // cannot use unsigned type in reverse iteration
       for (int i = int(readSet.size()) - 1; i >= 0; i--) {
@@ -316,8 +320,12 @@ public:
 
         readSet[i].set_execution_processed_bit();
       }
+      }
 
       message_flusher(worker_id);
+      ScopedTimer t_remote_work([&, this](uint64_t us) {
+        this->record_remote_work_time(us);
+      });
       DCHECK(local_read.load() == 0);
       while (remote_read.load() > 0) {
         // process remote reads for other workers

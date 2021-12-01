@@ -275,6 +275,7 @@ public:
         DCHECK(txn.initiating_transaction_id != 0);
         auto txn_command_data = txn.serialize(txn.ith_replica);
         if (txn.is_single_partition()) {
+          DCHECK(txn.replicated_sp == false);
           txn.get_logger()->write(txn_command_data.c_str(), txn_command_data.size(), true, [&, this]() {txn.remote_request_handler();});
           messages[txn.initiating_cluster_worker_id]->set_transaction_id(txn.initiating_transaction_id);
           txn.network_size += MessageFactoryType::new_command_replication_response_message(
@@ -1134,23 +1135,24 @@ public:
       new_txn->transaction_id = WorkloadType::next_transaction_id(this->context.coordinator_id);
       auto partition_id = new_txn->partition_id;
       DCHECK((int)partition_owner_cluster_worker(partition_id, ith_replica) == this_cluster_worker_id);
-      new_txns.push_back(new_txn.release());
+      new_txn->replicated_sp = true;
+      queuedTxns.emplace_back(new_txn.release());
     }
 
-    process_batch_of_replicated_sp_transactions(new_txns, command_data_all);
+    //process_batch_of_replicated_sp_transactions(new_txns, command_data_all);
 
-    auto message_size = MessagePiece::get_header_size();
+    // auto message_size = MessagePiece::get_header_size();
 
-    auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(HStoreMessage::COMMAND_REPLICATION_SP_RESPONSE), message_size,
-        0, 0);
+    // auto message_piece_header = MessagePiece::construct_message_piece_header(
+    //     static_cast<uint32_t>(HStoreMessage::COMMAND_REPLICATION_SP_RESPONSE), message_size,
+    //     0, 0);
 
-    star::Encoder encoder(responseMessage.data);
-    encoder << message_piece_header;
-    responseMessage.set_transaction_id(new_txns[0]->transaction_id);
+    // star::Encoder encoder(responseMessage.data);
+    // encoder << message_piece_header;
+    // responseMessage.set_transaction_id(new_txns[0]->transaction_id);
 
-    responseMessage.flush();
-    responseMessage.set_gen_time(Time::now());
+    // responseMessage.flush();
+    // responseMessage.set_gen_time(Time::now());
   }
 
 
@@ -1594,10 +1596,12 @@ public:
     }
   }
 
-  bool process_batch_of_sp_transactions() {
+  void process_batch_of_sp_transactions() {
     if (pending_txns.empty())
-      return true;
-    reorder_pending_txns();
+      return;
+    if (is_replica_worker == false) {
+      reorder_pending_txns();
+    }
     std::size_t until_ith = 0;
     for (; until_ith < pending_txns.size(); ++until_ith) {
       if (pending_txns[until_ith]->is_single_partition()) {
@@ -1610,8 +1614,8 @@ public:
       }
     }
 
-    if (until_ith <= 1)
-      return false;
+    if (until_ith <= 0)
+      return;
     //LOG(INFO) << " batch_size " << until_ith;
     // Locking & Logging
     std::string txn_command_data_all;
@@ -1631,16 +1635,27 @@ public:
       }
       auto partition_id_txn_0 = pending_txns[0]->get_partition(0);
       auto txn0_tid = pending_txns[0]->transaction_id;
-      auto replica_inititing_cluster_worker_id = partition_owner_cluster_worker(partition_id_txn_0, 1);
+      auto replica_target_cluster_worker_id = partition_owner_cluster_worker(partition_id_txn_0, 1);
       for (size_t i = 0; i < until_ith; ++i) {
         int partition_id = pending_txns[i]->get_partition(0);
-        DCHECK(partition_owner_cluster_worker(partition_id, 1) == replica_inititing_cluster_worker_id);
+        DCHECK(partition_owner_cluster_worker(partition_id, 1) == replica_target_cluster_worker_id);
       }
-      cluster_worker_messages[replica_inititing_cluster_worker_id]->set_transaction_id(txn0_tid);
+      cluster_worker_messages[replica_target_cluster_worker_id]->set_transaction_id(txn0_tid);
       MessageFactoryType::new_command_replication_sp(
-              *cluster_worker_messages[replica_inititing_cluster_worker_id], 1, commands_data, this_cluster_worker_id);
+              *cluster_worker_messages[replica_target_cluster_worker_id], 1, commands_data, this_cluster_worker_id);
       flush_messages();
-      sent_sp_replication_requests++;
+      sent_sp_replication_requests += until_ith;
+    } else {
+      for (size_t i = 0; i < until_ith; ++i) {
+        auto partition_id = pending_txns[i]->get_partition(0);
+        DCHECK(pending_txns[i]->replicated_sp);
+        auto txn_id = pending_txns[i]->transaction_id;
+        auto initiating_cluster_worker_id = pending_txns[i]->initiating_cluster_worker_id;
+        cluster_worker_messages[initiating_cluster_worker_id]->set_transaction_id(txn_id);
+        pending_txns[i]->network_size += MessageFactoryType::new_command_replication_sp_response_message(
+            *cluster_worker_messages[initiating_cluster_worker_id]);
+        flush_messages();
+      }
     }
 
     auto txn_cmd_log_lsn = this->logger->write(txn_command_data_all.c_str(), txn_command_data_all.size(), false);
@@ -1649,8 +1664,10 @@ public:
     // Execution
     execute_sp_transaction_batch(std::vector<TransactionType*>(pending_txns.begin(), pending_txns.begin() + until_ith));
 
-    while (received_sp_replication_responses < sent_sp_replication_requests) {
-      process_request(false);
+    if (is_replica_worker == false) {
+      while (received_sp_replication_responses < sent_sp_replication_requests) {
+        process_request(false);
+      }
     }
 
     // Clean-up
@@ -1665,7 +1682,7 @@ public:
       std::unique_ptr<TransactionType> txn(pending_txns.front());
       pending_txns.pop_front();
     }
-    return true;
+    return;
   }
 
   void process_new_transactions() {
@@ -1678,9 +1695,8 @@ public:
     if (pending_txns.empty())
       return;
     if (pending_txns[0]->is_single_partition()) {
-      if (process_batch_of_sp_transactions()) {
-        return;
-      }
+      process_batch_of_sp_transactions();
+      return;
     }
     std::unique_ptr<TransactionType> txn;
     txn.reset(pending_txns.front());
