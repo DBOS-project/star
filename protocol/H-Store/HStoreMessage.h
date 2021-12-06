@@ -50,6 +50,8 @@ enum class HStoreMessage {
   PREPARE_RESPONSE,
   PREPARE_REDO_REQUEST,
   PREPARE_REDO_RESPONSE,
+  PERSIST_CMD_BUFFER_REQUEST,
+  PERSIST_CMD_BUFFER_RESPONSE,
   NFIELDS
 };
 
@@ -57,64 +59,35 @@ class HStoreMessageFactory {
 
 public:
 
-  static std::size_t new_master_lock_partition_message(Message &message, ITable & table, uint32_t this_worker_id, int num_parts, std::function<int32_t(int)> get_part_func) {
-
+  static std::size_t new_persist_cmd_buffer_message(Message &message, int ith_replica, int cluster_worker_id) {
     /*
-     * The structure of a partition lock request: (remote_worker_id, # parts, part1, part2...)
+     * The structure of a persist command buffer request: ()
      */
 
     auto message_size =
-        MessagePiece::get_header_size() + sizeof(uint32_t) + + sizeof(uint32_t) + sizeof(int32_t) * num_parts;
+        MessagePiece::get_header_size() + sizeof(cluster_worker_id) + sizeof(ith_replica);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(HStoreMessage::MASTER_LOCK_PARTITION_REQUEST), message_size,
-        table.tableID(), table.partitionID());
+        static_cast<uint32_t>(HStoreMessage::PERSIST_CMD_BUFFER_REQUEST), message_size,
+        0, 0);
 
     Encoder encoder(message.data);
-    encoder << message_piece_header;
-    encoder << this_worker_id;
-    encoder << (uint32_t)num_parts;
-    // std::string dbg_str;
-    // for (size_t i = 0; i < parts.size(); ++i) {
-    //   dbg_str += std::to_string(parts[i]) + ",";
-    // }
-    // LOG(INFO) << "new_master_lock_partition_message cluster_worker " << this_worker_id
-    //           << " need locks on partitions: " << dbg_str;
-    for (int i = 0; i < num_parts; ++i) {
-      encoder << get_part_func(i);
-    }
+    encoder << message_piece_header << cluster_worker_id << ith_replica;
+    message.set_is_replica(ith_replica > 0);
     message.flush();
     message.set_gen_time(Time::now());
     return message_size;
   }
 
-  static std::size_t new_master_unlock_partition_message(Message &message, ITable & table, uint32_t this_worker_id) {
+  static std::size_t new_release_partition_lock_message(Message &message, ITable & table, uint32_t this_worker_id, bool sync, std::size_t ith_replica, bool write_cmd_buffer, const std::string & txn_command_data) {
 
     /*
      * The structure of a partition lock request: (remote_worker_id)
      */
 
     auto message_size =
-        MessagePiece::get_header_size() + sizeof(uint32_t);
-    auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(HStoreMessage::MASTER_UNLOCK_PARTITION_REQUEST), message_size,
-        table.tableID(), table.partitionID());
-
-    Encoder encoder(message.data);
-    encoder << message_piece_header;
-    encoder << this_worker_id;
-    message.flush();
-    message.set_gen_time(Time::now());
-    return message_size;
-  }
-
-  static std::size_t new_release_partition_lock_message(Message &message, ITable & table, uint32_t this_worker_id, bool sync, std::size_t ith_replica) {
-
-    /*
-     * The structure of a partition lock request: (remote_worker_id)
-     */
-
-    auto message_size =
-        MessagePiece::get_header_size() + sizeof(uint32_t) + sizeof(bool) + sizeof(std::size_t);
+        MessagePiece::get_header_size() + sizeof(uint32_t) + sizeof(bool) + sizeof(std::size_t) + sizeof(write_cmd_buffer);
+    if (write_cmd_buffer)
+      message_size += sizeof(txn_command_data.size()) + txn_command_data.size();
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(HStoreMessage::RELEASE_PARTITION_LOCK_REQUEST), message_size,
         table.tableID(), table.partitionID());
@@ -124,6 +97,12 @@ public:
     encoder << this_worker_id;
     encoder << sync;
     encoder << ith_replica;
+    encoder << write_cmd_buffer;
+    if (write_cmd_buffer) {
+      encoder << txn_command_data.size();
+      if (txn_command_data.size())
+        encoder.write_n_bytes(txn_command_data.data(), txn_command_data.size());
+    }
     message.set_is_replica(ith_replica > 0);
     message.flush();
     message.set_gen_time(Time::now());

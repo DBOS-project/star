@@ -264,10 +264,9 @@ public:
     DCHECK(dest_node_id >= 0 && dest_node_id < sockets.size() &&
            dest_node_id != coordinator_id);
     //DCHECK(message->get_message_length() == message->data.length());
-
+    auto message_length = message->get_message_length();
     sockets[dest_node_id].write_n_bytes(message->get_raw_ptr(),
-                                        message->get_message_length());
-
+                                        message_length);
     network_size += message->get_message_length();
   }
 
