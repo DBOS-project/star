@@ -30,7 +30,7 @@ public:
     ended = false;
   }
   void end() {
-    auto us = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - startTime)
+    auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - startTime)
         .count();
     call_on_destructor(us);
     ended = true;

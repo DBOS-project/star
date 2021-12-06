@@ -12,8 +12,9 @@ namespace star {
 
 struct TxnCommand {
   int64_t tid; 
-  int coordinator_worker;
+  int coordinator_cluster_worker;
   std::string command_data;
+  int64_t position_in_log;
 };
 
 template <class Workload>
@@ -31,6 +32,7 @@ private:
   Percentile<int64_t> sp_round_concurrency;
   std::size_t batch_per_worker;
   std::atomic<bool> ended{false};
+  int64_t next_position_in_command_log = 0;
   uint64_t worker_commit = 0;
   uint64_t sent_sp_replication_requests = 0;
   uint64_t received_sp_replication_responses = 0;
@@ -227,13 +229,21 @@ public:
 
     auto txn_command_data = txn.serialize(0);
 
-    command_buffer.push_back({txn.transaction_id, this_cluster_worker_id, txn_command_data});
+    command_buffer.push_back({txn.transaction_id, this_cluster_worker_id, txn_command_data, next_position_in_command_log++});
 
-    ScopedTimer t([&, this](uint64_t us) {
-      txn.record_commit_write_back_time(us);
-    });
-    write_back_command_logging(txn, commit_tid, messages);
-    release_partition_locks_async(txn, messages, true);
+    {
+      ScopedTimer t([&, this](uint64_t us) {
+        txn.record_commit_write_back_time(us);
+      });
+      write_back_command_logging(txn, commit_tid, messages);
+    }
+    {
+      ScopedTimer t([&, this](uint64_t us) {
+        txn.record_commit_unlock_time(us);
+      });
+      release_partition_locks_async(txn, messages, true);
+    }
+    
     return true;
   }
 
@@ -1357,7 +1367,7 @@ public:
       if (txn_command_data_size) {
         txn_command_data = std::string(dec.bytes.data(), txn_command_data_size);
       }
-      command_buffer.push_back({inputMessage.get_transaction_id(), request_remote_worker, txn_command_data});
+      command_buffer.push_back({inputMessage.get_transaction_id(), (int)request_remote_worker, txn_command_data, next_position_in_command_log++});
     }
   
     DCHECK(this_cluster_worker_id == (int)partition_owner_cluster_worker(partition_id, ith_replica));
@@ -1475,7 +1485,7 @@ public:
       setupHandlers(*txn);
       active_txns[txn->transaction_id] = txn;
       auto ltc =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now() - txn->startTime)
           .count();
       txn->set_stall_time(ltc);
@@ -1491,7 +1501,7 @@ public:
               txn->record_commit_work_time(us);
             } else {
               auto ltc =
-              std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::duration_cast<std::chrono::microseconds>(
                   std::chrono::steady_clock::now() - txn->startTime)
                   .count();
               txn->set_stall_time(ltc);
@@ -1554,33 +1564,46 @@ public:
     }
   }
 
-  void persist_and_clear_command_buffer() {
+  void persist_and_clear_command_buffer(bool continue_process_request = false) {
     if (command_buffer.empty())
       return;
     std::string data;
     Encoder encoder(data);
     for (size_t i = 0; i < command_buffer.size(); ++i) {
       encoder << command_buffer[i].tid;
-      encoder << command_buffer[i].coordinator_worker;
+      encoder << command_buffer[i].coordinator_cluster_worker;
       encoder << command_buffer[i].command_data.size();
       encoder.write_n_bytes(command_buffer[i].command_data.data(), command_buffer[i].command_data.size());
     }
     command_buffer.clear();
-    this->logger->write(encoder.toStringPiece().data(), encoder.toStringPiece().size(), true);
+    if (continue_process_request) {
+      this->logger->write(encoder.toStringPiece().data(), encoder.toStringPiece().size(), true, [&, this](){process_request(false);});
+    } else {
+      this->logger->write(encoder.toStringPiece().data(), encoder.toStringPiece().size(), true, [&, this](){});
+    }
   }
 
   void execute_mp_transaction_batch(const std::vector<TransactionType*> & txns) {
     std::string txn_command_data_all;
     std::vector<bool> workers_need_persist_cmd_buffer(this->cluster_worker_num);
-    int64_t txn_id;
+    int64_t txn_id = 0;
     for (size_t i = 0; i < txns.size(); ++i) {
       auto txn = txns[i];
       txn_id = txn->transaction_id;
-      DCHECK(!txn->is_single_partition());
+      if (txn->is_single_partition()) {
+        if (owned_partition_locked_by[txn->get_partition(0)] == -1) {
+          owned_partition_locked_by[txn->get_partition(0)] = txn_id;
+        } else {
+          process_request(false);
+          --i;
+          continue;
+        }
+      }
+      //DCHECK(!txn->is_single_partition());
       setupHandlers(*txn);
       active_txns[txn->transaction_id] = txn;
       auto ltc =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now() - txn->startTime)
           .count();
       txn->set_stall_time(ltc);
@@ -1601,7 +1624,7 @@ public:
               txn->record_commit_work_time(us);
             } else {
               auto ltc =
-              std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::duration_cast<std::chrono::microseconds>(
                   std::chrono::steady_clock::now() - txn->startTime)
                   .count();
               txn->set_stall_time(ltc);
@@ -1618,7 +1641,6 @@ public:
             this->n_si_in_serializable.fetch_add(1);
           }
           active_txns.erase(txn->transaction_id);
-          command_buffer.push_back({txn->transaction_id, this_cluster_worker_id, txn->serialize(0)});
         } else {
           //LOG(INFO) << "Txn Execution result " << (int)result << " abort ";
           // Txns on slave replicas won't abort due to locking failure.
@@ -1650,23 +1672,30 @@ public:
       }
     }
 
-    DCHECK((int)workers_need_persist_cmd_buffer.size() == this->cluster_worker_num);
-    for (int i = 0; i < (int)workers_need_persist_cmd_buffer.size(); ++i) {
-      if (!workers_need_persist_cmd_buffer[i] || i == this_cluster_worker_id)
-        continue;
-      cluster_worker_messages[i]->set_transaction_id(txn_id);
-      MessageFactoryType::new_persist_cmd_buffer_message(*cluster_worker_messages[i], 0, this_cluster_worker_id);
-      sent_persist_cmd_buffer_requests++;
-    }
-    flush_messages();
-    persist_and_clear_command_buffer();
-    while (received_persist_cmd_buffer_response < sent_persist_cmd_buffer_requests) {
-      process_request(false);
+    uint64_t commit_persistence_us = 0;
+    {
+      ScopedTimer t([&, this](uint64_t us) {
+        commit_persistence_us = us;
+      });
+      DCHECK((int)workers_need_persist_cmd_buffer.size() == this->cluster_worker_num);
+      for (int i = 0; i < (int)workers_need_persist_cmd_buffer.size(); ++i) {
+        if (!workers_need_persist_cmd_buffer[i] || i == this_cluster_worker_id)
+          continue;
+        cluster_worker_messages[i]->set_transaction_id(txn_id);
+        MessageFactoryType::new_persist_cmd_buffer_message(*cluster_worker_messages[i], 0, this_cluster_worker_id);
+        sent_persist_cmd_buffer_requests++;
+      }
+      flush_messages();
+      persist_and_clear_command_buffer(true);
+      // while (received_persist_cmd_buffer_response < sent_persist_cmd_buffer_requests) {
+      //   process_request(false);
+      // }
     }
 
     for (size_t i = 0; i < txns.size(); ++i) {
       auto txn = txns[i];
-      DCHECK(!txn->is_single_partition());
+      txn->record_commit_persistence_time(commit_persistence_us);
+      //DCHECK(!txn->is_single_partition());
       auto latency =
           std::chrono::duration_cast<std::chrono::microseconds>(
               std::chrono::steady_clock::now() - txn->startTime)
@@ -1688,14 +1717,17 @@ public:
   void process_batch_of_mp_transactions() {
     if (pending_txns.empty())
       return;
-    std::size_t until_ith = 0;
-    for (; until_ith < pending_txns.size(); ++until_ith) {
-      if (pending_txns[until_ith]->is_single_partition()) {
-        break;
-      }
+    if (is_replica_worker == false) {
+      reorder_pending_txns();
     }
-    if (until_ith <= 0)
-      return;
+    std::size_t until_ith = pending_txns.size();
+    // for (; until_ith < pending_txns.size(); ++until_ith) {
+    //   if (pending_txns[until_ith]->is_single_partition()) {
+    //     break;
+    //   }
+    // }
+    // if (until_ith <= 0)
+    //   return;
 
     // Execution
     execute_mp_transaction_batch(std::vector<TransactionType*>(pending_txns.begin(), pending_txns.begin() + until_ith));
@@ -1812,7 +1844,7 @@ public:
     if (pending_txns.empty())
       return;
     //if (pending_txns[0]->is_single_partition()) {
-      process_batch_of_sp_transactions();
+      //process_batch_of_sp_transactions();
       process_batch_of_mp_transactions();
       return;
     //}
