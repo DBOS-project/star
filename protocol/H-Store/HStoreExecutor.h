@@ -1660,9 +1660,9 @@ public:
     }
     flush_messages();
     persist_and_clear_command_buffer();
-    // while (received_persist_cmd_buffer_response < sent_persist_cmd_buffer_requests) {
-    //   process_request(false);
-    // }
+    while (received_persist_cmd_buffer_response < sent_persist_cmd_buffer_requests) {
+      process_request(false);
+    }
 
     for (size_t i = 0; i < txns.size(); ++i) {
       auto txn = txns[i];
