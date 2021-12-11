@@ -67,8 +67,10 @@ public:
     std::size_t ith_replica;
     std::size_t partition_id;
     int32_t partition_count;
+    int64_t transaction_id;
+  
     //std::vector<int32_t> partitions;
-    decoder >> ith_replica >> seed >> partition_id >> partition_count;
+    decoder >> transaction_id >> ith_replica >> seed >> partition_id >> partition_count;
     // for (int32_t i = 0; i < partition_count; ++i){
     //   int32_t p;
     //   decoder >> p;
@@ -85,6 +87,7 @@ public:
     // for (int32_t i = 0; i < partition_count; ++i){
     //   DCHECK(partitions[i] == p->get_partition(i));
     // }
+    p->transaction_id = transaction_id;
     return p;
   }
 

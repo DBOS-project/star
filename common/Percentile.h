@@ -21,6 +21,7 @@ public:
   void add(const element_type &value) {
     isSorted_ = false;
     data_.push_back(value);
+    sum += value;
   }
 
   void add(const std::vector<element_type> &v) {
@@ -34,6 +35,10 @@ public:
   }
 
   auto size() { return data_.size(); }
+
+  element_type avg() {
+    return sum / (size() + 0.1);
+  }
 
   element_type nth(double n) {
     if (data_.size() == 0) {
@@ -90,5 +95,6 @@ private:
 private:
   bool isSorted_ = true;
   std::vector<element_type> data_;
+  element_type sum = 0;
 };
 } // namespace star

@@ -16,6 +16,18 @@
 
 namespace star {
 
+struct TxnCommand {
+  int64_t tid; 
+  int partition_id;
+  bool is_coordinator;
+  bool is_mp;
+  int initiating_cluster_worker_id;
+  std::string command_data;
+  int64_t position_in_log;
+  std::shared_ptr<star::HStoreTransaction> txn;
+  //std::vector<std::pair<int,int>> partitions;
+};
+
 enum class HStoreMessage {
   READ_LOCK_REQUEST = static_cast<int>(ControlMessage::NFIELDS),
   READ_LOCK_RESPONSE,
@@ -40,24 +52,39 @@ enum class HStoreMessage {
   COMMAND_REPLICATION_SP_RESPONSE,
   ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST,
   ACQUIRE_PARTITION_LOCK_AND_READ_RESPONSE,
-  ACQUIRE_PARTITION_LOCK_REQUEST,
-  ACQUIRE_PARTITION_LOCK_RESPONSE,
   WRITE_BACK_REQUEST,
   WRITE_BACK_RESPONSE,
   RELEASE_PARTITION_LOCK_REQUEST,
   RELEASE_PARTITION_LOCK_RESPONSE,
-  PREPARE_REQUEST,
-  PREPARE_RESPONSE,
-  PREPARE_REDO_REQUEST,
-  PREPARE_REDO_RESPONSE,
   PERSIST_CMD_BUFFER_REQUEST,
   PERSIST_CMD_BUFFER_RESPONSE,
+  GET_REPLAYED_LOG_POSITION_REQUEST,
+  GET_REPLAYED_LOG_POSITION_RESPONSE,
   NFIELDS
 };
 
 class HStoreMessageFactory {
 
 public:
+
+  static std::size_t new_get_replayed_log_posistion_message(Message &message, int ith_replica, int cluster_worker_id) {
+    /*
+     * The structure of a persist command buffer request: ()
+     */
+
+    auto message_size =
+        MessagePiece::get_header_size() + sizeof(cluster_worker_id) + sizeof(ith_replica);
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(HStoreMessage::GET_REPLAYED_LOG_POSITION_REQUEST), message_size,
+        0, 0);
+
+    Encoder encoder(message.data);
+    encoder << message_piece_header << cluster_worker_id << ith_replica;
+    message.set_is_replica(ith_replica > 0);
+    message.flush();
+    message.set_gen_time(Time::now());
+    return message_size;
+  }
 
   static std::size_t new_persist_cmd_buffer_message(Message &message, int ith_replica, int cluster_worker_id) {
     /*
@@ -78,7 +105,7 @@ public:
     return message_size;
   }
 
-  static std::size_t new_release_partition_lock_message(Message &message, ITable & table, uint32_t this_worker_id, bool sync, std::size_t ith_replica, bool write_cmd_buffer, const std::string & txn_command_data) {
+  static std::size_t new_release_partition_lock_message(Message &message, ITable & table, uint32_t this_worker_id, bool sync, std::size_t ith_replica, bool write_cmd_buffer, const TxnCommand & txn_cmd) {
 
     /*
      * The structure of a partition lock request: (remote_worker_id)
@@ -87,7 +114,7 @@ public:
     auto message_size =
         MessagePiece::get_header_size() + sizeof(uint32_t) + sizeof(bool) + sizeof(std::size_t) + sizeof(write_cmd_buffer);
     if (write_cmd_buffer)
-      message_size += sizeof(txn_command_data.size()) + txn_command_data.size();
+      message_size += sizeof(txn_cmd.is_mp) + sizeof(txn_cmd.command_data.size()) + txn_cmd.command_data.size() + sizeof(txn_cmd.tid) + sizeof(txn_cmd.partition_id);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(HStoreMessage::RELEASE_PARTITION_LOCK_REQUEST), message_size,
         table.tableID(), table.partitionID());
@@ -99,9 +126,12 @@ public:
     encoder << ith_replica;
     encoder << write_cmd_buffer;
     if (write_cmd_buffer) {
-      encoder << txn_command_data.size();
-      if (txn_command_data.size())
-        encoder.write_n_bytes(txn_command_data.data(), txn_command_data.size());
+      encoder << txn_cmd.partition_id;
+      encoder << txn_cmd.tid;
+      encoder << txn_cmd.is_mp;
+      encoder << txn_cmd.command_data.size();
+      if (txn_cmd.command_data.size())
+        encoder.write_n_bytes(txn_cmd.command_data.data(), txn_cmd.command_data.size());
     }
     message.set_is_replica(ith_replica > 0);
     message.flush();
@@ -178,62 +208,6 @@ public:
     return message_size;
   }
 
-  template<class DatabaseType>
-  static std::size_t new_prepare_and_redo_message(Message &message, const std::vector<TwoPLRWKey> & redoWriteSet, 
-                                                  DatabaseType & db, bool persist_log, std::size_t ith_replica) {
-    auto message_size = MessagePiece::get_header_size();
-    auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(HStoreMessage::PREPARE_REDO_REQUEST), message_size,
-        0, 0);
-    
-    Encoder encoder(message.data);
-    size_t start_off = encoder.size();
-    encoder << message_piece_header << persist_log << ith_replica;
-    encoder << redoWriteSet.size();
-    for (size_t i = 0; i < redoWriteSet.size(); ++i) {
-      auto writeKey = redoWriteSet[i];
-      auto tableId = writeKey.get_table_id();
-      auto partitionId = writeKey.get_partition_id();
-      auto table = db.find_table(tableId, partitionId);
-      auto key_size = table->key_size();
-      auto value_size = table->value_size();
-      auto key = writeKey.get_key();
-      auto value = writeKey.get_value();
-      encoder << tableId << partitionId << key_size;
-      encoder.write_n_bytes(key, key_size);
-      encoder << value_size;
-      encoder.write_n_bytes(value, value_size);
-    }
-
-    message_size = encoder.size() - start_off;
-    message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(HStoreMessage::PREPARE_REDO_REQUEST),
-        message_size, 0, 0);
-    encoder.replace_bytes_range(start_off, (void *)&message_piece_header, sizeof(message_piece_header));
-    message.set_is_replica(ith_replica > 0);
-    message.flush();
-    return message_size;
-  }
-
-  static std::size_t new_prepare_message(Message &message, ITable & table, uint32_t this_worker_id) {
-
-    /*
-     * The structure of a partition lock request: (remote_worker_id)
-     */
-
-    auto message_size =
-        MessagePiece::get_header_size() + sizeof(uint32_t);
-    auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(HStoreMessage::PREPARE_REQUEST), message_size,
-        table.tableID(), table.partitionID());
-
-    Encoder encoder(message.data);
-    encoder << message_piece_header;
-    encoder << this_worker_id;
-    message.flush();
-    message.set_gen_time(Time::now());
-    return message_size;
-  }
 
   static std::size_t new_acquire_partition_lock_and_read_message(Message &message, ITable &table,
                                            const void *key,
@@ -261,34 +235,6 @@ public:
     encoder.write_n_bytes(key, key_size);
     encoder << key_offset;
     encoder << this_worker_id;
-    encoder << ith_replica;
-    message.set_is_replica(ith_replica > 0);
-    message.flush();
-    message.set_gen_time(Time::now());
-    return message_size;
-  }
-
-  static std::size_t new_acquire_partition_lock_message(Message &message, std::size_t partition_id,
-                                           uint32_t source_cluster_worker_id,
-                                           uint32_t cluster_worker_id,
-                                           uint32_t owner_cluster_worker,
-                                           std::size_t ith_replica) {
-
-    /*
-     * The structure of a partition lock request: (remote_worker_id, ith_replica)
-     */
-
-    auto message_size =
-        MessagePiece::get_header_size() + sizeof(uint32_t) * 2 + sizeof(std::size_t);
-    auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(HStoreMessage::ACQUIRE_PARTITION_LOCK_REQUEST), message_size,
-        0, partition_id);
-
-    // LOG(INFO) << "source_cluster_worker_id " << source_cluster_worker_id  << " cluster_worker_id "<< cluster_worker_id << " new_acquire_partition_lock message on partition " 
-    //           << partition_id << " of " << ith_replica << " replica" << " managed by cluster worker " << owner_cluster_worker;
-    Encoder encoder(message.data);
-    encoder << message_piece_header;
-    encoder << source_cluster_worker_id << cluster_worker_id;
     encoder << ith_replica;
     message.set_is_replica(ith_replica > 0);
     message.flush();
