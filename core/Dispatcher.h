@@ -68,7 +68,11 @@ public:
           }
         } else {
           DCHECK(workerId % io_thread_num == group_id);
-          workers[workerId]->push_message(message.release());
+          if (message->get_is_replica()) {
+            workers[workerId]->push_replica_message(message.release());
+          } else {
+            workers[workerId]->push_message(message.release());
+          }
         }
         auto ltc = std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - message_get_start)
@@ -119,7 +123,11 @@ public:
           //LOG(INFO) << " message for workerId " << workerId;
           CHECK(workerId % io_thread_num == group_id);
           // release the unique ptr
-          workers[workerId]->push_message(message.release());
+          if (message->get_is_replica()) {
+            workers[workerId]->push_replica_message(message.release());
+          } else {
+            workers[workerId]->push_message(message.release());
+          }
         }
         
         auto ltc = std::chrono::duration_cast<std::chrono::microseconds>(

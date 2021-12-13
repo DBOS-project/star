@@ -41,6 +41,8 @@ public:
 
   virtual void push_message(Message *message) = 0;
 
+  virtual void push_replica_message(Message *message) = 0;
+
   virtual Message *pop_message() = 0;
 
 public:

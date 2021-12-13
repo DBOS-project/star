@@ -236,6 +236,11 @@ public:
   }
 
   void push_message(Message *message) override { in_queue.push(message); }
+  
+  void push_replica_message(Message *message) override { 
+    DCHECK(false);
+    in_queue.push(message); 
+  }
 
   Message *pop_message() override {
     if (out_queue.empty())
@@ -695,7 +700,7 @@ public:
       DCHECK(ok);
       this_transaction = transaction;
       auto ltc =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now() - transaction->startTime)
           .count();
       transaction->set_stall_time(ltc);
@@ -709,7 +714,7 @@ public:
               transaction->record_commit_work_time(us);
             } else {
               auto ltc =
-              std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::duration_cast<std::chrono::microseconds>(
                   std::chrono::steady_clock::now() - transaction->startTime)
                   .count();
               transaction->set_stall_time(ltc);

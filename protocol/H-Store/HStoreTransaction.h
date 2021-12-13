@@ -131,6 +131,7 @@ public:
     operation.clear();
     readSet.clear();
     writeSet.clear();
+    ++tries;
   }
 
   virtual int32_t get_partition_count() = 0;
@@ -322,5 +323,6 @@ public:
   bool reordered_in_the_queue = false;
   bool replicated_sp = false;
   bool being_replayed = false;
+  int64_t tries = 1;
 };
 } // namespace star

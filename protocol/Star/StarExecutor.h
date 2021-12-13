@@ -266,6 +266,11 @@ public:
 
   void push_message(Message *message) override { in_queue.push(message); }
 
+  void push_replica_message(Message *message) override { 
+    DCHECK(false);
+    in_queue.push(message); 
+  }
+
   Message *pop_message() override {
     if (out_queue.empty())
       return nullptr;

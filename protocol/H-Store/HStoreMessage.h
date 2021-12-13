@@ -26,6 +26,8 @@ struct TxnCommand {
   int64_t position_in_log;
   std::shared_ptr<star::HStoreTransaction> txn;
   //std::vector<std::pair<int,int>> partitions;
+  std::chrono::steady_clock::time_point queue_ts;
+  bool queue_head_processed = false;
 };
 
 enum class HStoreMessage {
@@ -170,14 +172,14 @@ public:
   }
 
 
-  static std::size_t new_command_replication(Message & message, std::size_t ith_replica, const std::string & data, int this_cluster_worker_id) {
+  static std::size_t new_command_replication(Message & message, std::size_t ith_replica, const std::string & data, int this_cluster_worker_id, bool persist_cmd_buffer) {
     auto message_size =
-      MessagePiece::get_header_size() + sizeof(std::size_t) + data.size() + sizeof(this_cluster_worker_id);
+      MessagePiece::get_header_size() + sizeof(std::size_t) + data.size() + sizeof(this_cluster_worker_id) + sizeof(persist_cmd_buffer);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
       static_cast<uint32_t>(HStoreMessage::COMMAND_REPLICATION_REQUEST), message_size,
       0, 0);
     Encoder encoder(message.data);
-    encoder << message_piece_header << ith_replica << this_cluster_worker_id;
+    encoder << message_piece_header << ith_replica << this_cluster_worker_id << persist_cmd_buffer;
     encoder.write_n_bytes(data.c_str(), data.size());
     message.set_is_replica(ith_replica > 0);
     message.flush();

@@ -235,6 +235,10 @@ public:
     }
   }
 
+  void push_replica_message(Message *message) override {
+    push_message(message);
+  }
+
   void push_message(Message *message) override {
 
     // message will only be of type signal, C_PHASE_ACK or S_PHASE_ACK
