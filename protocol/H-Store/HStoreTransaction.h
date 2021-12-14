@@ -127,7 +127,8 @@ public:
     local_validated = false;
     si_in_serializable = false;
     distributed_transaction = false;
-    execution_phase = true;
+    execution_phase = false;
+    synchronous = true;
     operation.clear();
     readSet.clear();
     writeSet.clear();
@@ -154,6 +155,9 @@ public:
   template <class KeyType, class ValueType>
   void search_local_index(std::size_t table_id, std::size_t partition_id,
                           const KeyType &key, ValueType &value, bool readonly) {
+    if (execution_phase) {
+      return;
+    }
     TwoPLRWKey readKey;
 
     readKey.set_table_id(table_id);
@@ -164,7 +168,7 @@ public:
     if (readonly) {
       readKey.set_local_index_read_bit();
     }
-    //readKey.set_read_lock_request_bit();
+    readKey.set_read_lock_request_bit();
 
     add_to_read_set(readKey);
   }
@@ -172,11 +176,9 @@ public:
   template <class KeyType, class ValueType>
   void search_for_read(std::size_t table_id, std::size_t partition_id,
                        const KeyType &key, ValueType &value) {
-
-    // if (!partitioner.has_master_partition(partition_id)) {
-    //   pendingResponses++;
-    // }
-
+    if (execution_phase) {
+      return;
+    }
     TwoPLRWKey readKey;
 
     readKey.set_table_id(table_id);
@@ -185,7 +187,7 @@ public:
     readKey.set_key(&key);
     readKey.set_value(&value);
 
-    //readKey.set_read_lock_request_bit();
+    readKey.set_read_lock_request_bit();
 
     add_to_read_set(readKey);
   }
@@ -193,11 +195,9 @@ public:
   template <class KeyType, class ValueType>
   void search_for_update(std::size_t table_id, std::size_t partition_id,
                          const KeyType &key, ValueType &value) {
-
-    // if (!partitioner.has_master_partition(partition_id)) {
-    //   pendingResponses++;
-    // }
-
+    if (execution_phase) {
+      return;
+    }
     TwoPLRWKey readKey;
 
     readKey.set_table_id(table_id);
@@ -206,7 +206,7 @@ public:
     readKey.set_key(&key);
     readKey.set_value(&value);
 
-    //readKey.set_write_lock_request_bit();
+    readKey.set_write_lock_request_bit();
 
     add_to_read_set(readKey);
   }
@@ -214,7 +214,9 @@ public:
   template <class KeyType, class ValueType>
   void update(std::size_t table_id, std::size_t partition_id,
               const KeyType &key, const ValueType &value) {
-
+    if (execution_phase) {
+      return;
+    }
     TwoPLRWKey writeKey;
 
     writeKey.set_table_id(table_id);
@@ -235,10 +237,10 @@ public:
 
     for (int i = int(readSet.size()) - 1; i >= 0; i--) {
       // early return
-      // if (!readSet[i].get_read_lock_request_bit() &&
-      //     !readSet[i].get_write_lock_request_bit()) {
-      //   break;
-      // }
+      if (!readSet[i].get_read_lock_request_bit() &&
+          !readSet[i].get_write_lock_request_bit()) {
+        break;
+      }
 
       const TwoPLRWKey &readKey = readSet[i];
       bool success, remote;
@@ -253,17 +255,22 @@ public:
           abort_lock = true;
         }
       }
-
+      readSet[i].clear_read_lock_request_bit();
+      readSet[i].clear_write_lock_request_bit();
     }
     t_local_work.end();
-    if (pendingResponses > 0) {
-      ScopedTimer t_remote_work([&, this](uint64_t us) {
-        this->record_remote_work_time(us);
-      });
-      message_flusher();
-      while (pendingResponses > 0) {
-        remote_request_handler();
+    if (synchronous) {
+      if (pendingResponses > 0) {
+        ScopedTimer t_remote_work([&, this](uint64_t us) {
+          this->record_remote_work_time(us);
+        });
+        message_flusher();
+        while (pendingResponses > 0) {
+          remote_request_handler();
+        }
       }
+    } else {
+      message_flusher();
     }
     return false;
   }
@@ -296,7 +303,7 @@ public:
   std::size_t network_size;
   bool abort_lock, abort_read_validation, local_validated, si_in_serializable;
   bool distributed_transaction;
-  bool execution_phase;
+  bool execution_phase = false;
 
   // table id, partition id, key, value, local_index_read?, write_lock?,
   // success?, remote?
@@ -324,5 +331,7 @@ public:
   bool replicated_sp = false;
   bool being_replayed = false;
   int64_t tries = 1;
+  bool synchronous = true;
+  bool abort_no_retry = false;
 };
 } // namespace star
