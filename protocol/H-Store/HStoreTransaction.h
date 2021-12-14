@@ -129,6 +129,8 @@ public:
     distributed_transaction = false;
     execution_phase = false;
     synchronous = true;
+    finished_commit_phase = false;
+    abort_lock_lock_released = false;
     operation.clear();
     readSet.clear();
     writeSet.clear();
@@ -333,5 +335,7 @@ public:
   int64_t tries = 1;
   bool synchronous = true;
   bool abort_no_retry = false;
+  bool finished_commit_phase = false;
+  bool abort_lock_lock_released = false;
 };
 } // namespace star

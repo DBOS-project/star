@@ -328,6 +328,7 @@ public:
         owned_partition_locked_by[partition_id] = -1;
       }
     }
+    txn.abort_lock_lock_released = true;
   }
 
   bool commit_mp(TransactionType &txn,
@@ -1396,14 +1397,6 @@ public:
       }
     } else {
       DCHECK(false); // For now, assume there is not program aborts.
-      //LOG(INFO) << "Txn Execution result " << (int)result << " abort ";
-      this->abort(*txn, cluster_worker_messages, is_replica_worker == false);
-      this->n_abort_no_retry.fetch_add(1);
-      //retry_transaction = false;
-      // Make sure it is unlocked.
-      // if (txn->is_single_partition())
-      //   DCHECK(owned_partition_locked_by[partition_id] == -1);
-      active_txns.erase(txn->transaction_id);
       return true;
     }
   }
@@ -1424,78 +1417,112 @@ public:
     }
   }
 
-  void process_commit_phase(const std::vector<TransactionType*> & txns) {
-    for (size_t i = 0; i < txns.size(); ++i) {
-      handle_requests();
-      auto txn = txns[i];
-      while (txn->pendingResponses > 0) {
-        handle_requests();
-      }
-      if (txn->abort_no_retry)
-        continue;
-      if (txn->abort_lock) {
-        if (is_replica_worker == false) {
-          // We only release locks when executing on active replica
-          abort(*txn, cluster_worker_messages);
-        }
-        active_txns.erase(txn->transaction_id);
-        this->n_abort_lock.fetch_add(1);
-        continue;
-      }
+  void process_single_txn_commit(TransactionType * txn) {
+    DCHECK(txn->pendingResponses == 0);
+    if (txn->abort_no_retry) {
+      active_txns.erase(txn->transaction_id);
+      txn->finished_commit_phase = true;
+      return;
+    }
 
-      txn->execution_phase = true;
-      txn->synchronous = false;
-
-      // initiate read requests (could be remote)
-      // fill in the writes
-      auto result = txn->execute(this->id);
-      DCHECK(txn->abort_lock == false);
-      DCHECK(result == TransactionResult::READY_TO_COMMIT);
-      bool commit;
-      {
-        ScopedTimer t([&, this](uint64_t us) {
-          if (commit) {
-            txn->record_commit_work_time(us);
-          } else {
-            auto ltc =
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                std::chrono::steady_clock::now() - txn->startTime)
-                .count();
-            txn->set_stall_time(ltc);
-          }
-        });
-        commit = this->commit_mp(*txn, cluster_worker_messages);
+    if (txn->abort_lock) {
+      if (is_replica_worker == false && txn->abort_lock_lock_released == false) {
+        // We only release locks when executing on active replica
+        abort(*txn, cluster_worker_messages);
       }
-      ////LOG(INFO) << "Txn Execution result " << (int)result << " commit " << commit;
-      this->n_network_size.fetch_add(txn->network_size);
-      if (commit) {
-        ++worker_commit;
-        this->n_commit.fetch_add(1);
-        if (txn->si_in_serializable) {
-          this->n_si_in_serializable.fetch_add(1);
-        }
-        active_txns.erase(txn->transaction_id);
-        commit_interval.add(std::chrono::duration_cast<std::chrono::microseconds>(
-              std::chrono::steady_clock::now() - last_commit)
-              .count());
-        last_commit = std::chrono::steady_clock::now();
-      } else {
-        DCHECK(false);
-        // if (is_replica_worker)
-        //   LOG(INFO) << "Txn " << txn_id << " Execution result " << (int)result << " abort by lock conflict on cluster worker " << this_cluster_worker_id;
-        // Txns on slave replicas won't abort due to locking failure.
-        if (txn->abort_lock) {
-          this->n_abort_lock.fetch_add(1);
+      active_txns.erase(txn->transaction_id);
+      this->n_abort_lock.fetch_add(1);
+      txn->finished_commit_phase = true;
+      return;
+    }
+
+    txn->execution_phase = true;
+    txn->synchronous = false;
+
+    // initiate read requests (could be remote)
+    // fill in the writes
+    auto result = txn->execute(this->id);
+    DCHECK(txn->abort_lock == false);
+    DCHECK(result == TransactionResult::READY_TO_COMMIT);
+    bool commit;
+    {
+      ScopedTimer t([&, this](uint64_t us) {
+        if (commit) {
+          txn->record_commit_work_time(us);
         } else {
-          DCHECK(txn->abort_read_validation);
-          this->n_abort_read_validation.fetch_add(1);
+          auto ltc =
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - txn->startTime)
+              .count();
+          txn->set_stall_time(ltc);
         }
-        if (this->context.sleep_on_retry) {
-          // std::this_thread::sleep_for(std::chrono::milliseconds(
-          //     this->random.uniform_dist(100, 1000)));
+      });
+      commit = this->commit_mp(*txn, cluster_worker_messages);
+    }
+    ////LOG(INFO) << "Txn Execution result " << (int)result << " commit " << commit;
+    this->n_network_size.fetch_add(txn->network_size);
+    if (commit) {
+      ++worker_commit;
+      this->n_commit.fetch_add(1);
+      if (txn->si_in_serializable) {
+        this->n_si_in_serializable.fetch_add(1);
+      }
+      active_txns.erase(txn->transaction_id);
+      commit_interval.add(std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - last_commit)
+            .count());
+      last_commit = std::chrono::steady_clock::now();
+    } else {
+      DCHECK(false);
+      // if (is_replica_worker)
+      //   LOG(INFO) << "Txn " << txn_id << " Execution result " << (int)result << " abort by lock conflict on cluster worker " << this_cluster_worker_id;
+      // Txns on slave replicas won't abort due to locking failure.
+      if (txn->abort_lock) {
+        this->n_abort_lock.fetch_add(1);
+      } else {
+        DCHECK(txn->abort_read_validation);
+        this->n_abort_read_validation.fetch_add(1);
+      }
+      if (this->context.sleep_on_retry) {
+        // std::this_thread::sleep_for(std::chrono::milliseconds(
+        //     this->random.uniform_dist(100, 1000)));
+      }
+      //retry_transaction = true;
+      active_txns.erase(txn->transaction_id);
+    }
+    txn->finished_commit_phase = true;
+  }
+
+  void process_commit_phase(const std::vector<TransactionType*> & txns) {
+    std::vector<TransactionType*> to_commit;
+    while (active_txns.size()) {
+      for (size_t i = 0; i < txns.size(); ++i) {
+        auto txn = txns[i];
+        if (txn->finished_commit_phase) {
+          DCHECK(txn->pendingResponses == 0);
+          continue;
         }
-        //retry_transaction = true;
-        active_txns.erase(txn->transaction_id);
+        if (txn->abort_lock) {
+          if (txn->abort_lock_lock_released == false && is_replica_worker == false) {
+            // send the release lock message earlier
+            abort(*txn, cluster_worker_messages);
+          }
+        }
+        if (txn->pendingResponses == 0) {
+          process_single_txn_commit(txn);
+        } else {
+          to_commit.clear();
+          handle_requests_and_collect_ready_to_commit_txns(to_commit);
+          for (size_t i = 0; i < to_commit.size(); ++i) {
+            auto txn = to_commit[i];
+            DCHECK(txn->pendingResponses == 0);
+            if (txn->finished_commit_phase) {
+              DCHECK(txn->pendingResponses == 0);
+              continue;
+            }
+            process_single_txn_commit(txn);
+          }
+        }
       }
     }
   }
@@ -2242,11 +2269,14 @@ public:
     process_blocked_acquire_lock_and_read_messages();
     return size;
   }
-
+  std::vector<TransactionType*> to_commit_dummy;
   std::size_t handle_requests(bool should_replay_commands = true) {
-    // if (is_replica_worker) {
-    //   return handle_requests_replica(should_replay_commands);
-    // }
+    auto ret = handle_requests_and_collect_ready_to_commit_txns(to_commit_dummy, should_replay_commands);
+    to_commit_dummy.clear();
+    return ret;
+  }
+
+  std::size_t handle_requests_and_collect_ready_to_commit_txns(std::vector<TransactionType*> & to_commit, bool should_replay_commands = true) {
     std::size_t size = 0;
     while (!this->in_queue.empty()) {
       ++size;
@@ -2291,6 +2321,10 @@ public:
           acquire_partition_lock_and_read_response_handler(*message, messagePiece,
                                                  *cluster_worker_messages[message->get_source_cluster_worker_id()], *table,
                                                  txn);
+          DCHECK(txn);
+          if (txn->pendingResponses == 0) {
+            to_commit.push_back(txn);
+          }
         } else if (type == (int)HStoreMessage::WRITE_BACK_REQUEST) {
           write_back_request_handler(*message, messagePiece,
                                     *cluster_worker_messages[message->get_source_cluster_worker_id()], *table,
