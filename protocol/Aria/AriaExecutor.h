@@ -350,9 +350,11 @@ public:
       }
     }
     flush_messages();
-
+    size_t concur = 0;
+    size_t effective_concur = 0;
     count = 0;
     for (auto i = id; i < transactions.size(); i += context.worker_num) {
+      ++concur;
       if (transactions[i]->abort_no_retry) {
         n_abort_no_retry.fetch_add(1);
         continue;
@@ -367,6 +369,7 @@ public:
       if (context.aria_read_only_optmization &&
           transactions[i]->is_read_only()) {
         n_commit.fetch_add(1);
+        effective_concur++;
         auto latency =
             std::chrono::duration_cast<std::chrono::microseconds>(
                 std::chrono::steady_clock::now() - transactions[i]->startTime)
@@ -383,6 +386,7 @@ public:
 
       if (context.aria_snapshot_isolation) {
         protocol.commit(*transactions[i], messages);
+        effective_concur++;
         n_commit.fetch_add(1);
         auto latency =
             std::chrono::duration_cast<std::chrono::microseconds>(
@@ -398,6 +402,7 @@ public:
       } else {
         if (context.aria_reordering_optmization) {
           if (transactions[i]->war == false || transactions[i]->raw == false) {
+            effective_concur++;
             protocol.commit(*transactions[i], messages);
             n_commit.fetch_add(1);
             auto latency =
@@ -421,6 +426,7 @@ public:
             n_abort_lock.fetch_add(1);
             protocol.abort(*transactions[i], messages);
           } else {
+            effective_concur++;
             protocol.commit(*transactions[i], messages);
             n_commit.fetch_add(1);
             auto latency =
@@ -444,6 +450,8 @@ public:
       }
     }
     flush_messages();
+    this->round_concurrency.add(concur);
+    this->effective_round_concurrency.add(effective_concur);
   }
 
   void setupHandlers(TransactionType &txn) {
@@ -493,7 +501,10 @@ public:
               << " us (99%). local txn latency: " << this->local_latency.nth(50)
               << " us (50%) " << this->local_latency.nth(75) << " us (75%) "
               << this->local_latency.nth(95) << " us (95%) " << this->local_latency.nth(99)
-              << " us (99%). \n"
+              << " us (99%)"
+              << ". batch concurrency: " << this->round_concurrency.nth(50) 
+              << ". effective batch concurrency: " << this->effective_round_concurrency.nth(50) 
+              << "\n"
               << " LOCAL txn stall " << this->local_txn_stall_time_pct.nth(50) << " us, "
               << " local_work " << this->local_txn_local_work_time_pct.nth(50) << " us, "
               << " remote_work " << this->local_txn_remote_work_time_pct.nth(50) << " us, "
@@ -640,7 +651,8 @@ private:
                          std::vector<std::unique_ptr<TransactionType>> &)>>
       messageHandlers;
   LockfreeQueue<Message *> in_queue, out_queue;
-
+  Percentile<uint64_t> round_concurrency;
+  Percentile<uint64_t> effective_round_concurrency;
   Percentile<uint64_t> local_txn_stall_time_pct, local_txn_commit_work_time_pct, local_txn_commit_persistence_time_pct, local_txn_commit_prepare_time_pct, local_txn_commit_replication_time_pct, local_txn_commit_write_back_time_pct, local_txn_commit_unlock_time_pct, local_txn_local_work_time_pct, local_txn_remote_work_time_pct;
   Percentile<uint64_t> dist_txn_stall_time_pct, dist_txn_commit_work_time_pct, 
                        dist_txn_commit_persistence_time_pct, dist_txn_commit_prepare_time_pct,
