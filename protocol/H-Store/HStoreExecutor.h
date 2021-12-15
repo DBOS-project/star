@@ -1553,7 +1553,7 @@ public:
       }
 
       size_t rounds = 0;
-      if (false) {
+      if (true) {
         process_execution_phase(mp_txns);
         handle_requests();
         process_commit_phase(mp_txns);
