@@ -132,7 +132,6 @@ public:
       enc << cmd.is_mp;
       enc << cmd.position_in_log;
       enc << cmd.partition_id;
-      enc << cmd.initiating_cluster_worker_id;
       enc << cmd.command_data.size();
       enc.write_n_bytes(cmd.command_data.data(), cmd.command_data.size());
       if (cmd.is_coordinator) {
@@ -156,7 +155,6 @@ public:
       dec >> cmd.is_mp;
       dec >> cmd.position_in_log;
       dec >> cmd.partition_id;
-      dec >> cmd.initiating_cluster_worker_id;
       std::size_t command_data_size;
       dec >> command_data_size;
       cmd.command_data = std::string(dec.get_raw_ptr(), command_data_size);
@@ -354,7 +352,6 @@ public:
       auto txn_command_data = txn.serialize(1);
       TxnCommand cmd;
       cmd.command_data = txn_command_data;
-      cmd.initiating_cluster_worker_id = this_cluster_worker_id;
       cmd.tid = txn.transaction_id;
       cmd.is_mp = txn.is_single_partition() == false;
       if (!cmd.is_mp) {
@@ -1107,7 +1104,7 @@ public:
              MessagePiece::get_header_size() + sizeof(int) + sizeof(int));
     auto table_id = inputPiece.get_table_id();
     auto partition_id = inputPiece.get_partition_id();
-    persist_and_clear_command_buffer();
+    //persist_and_clear_command_buffer();
     int cluster_worker_id, ith_replica;
     auto stringPiece = inputPiece.toStringPiece();
 
@@ -1184,7 +1181,6 @@ public:
       }
       TxnCommand participant_cmd;
       participant_cmd.command_data = "";
-      participant_cmd.initiating_cluster_worker_id = this_cluster_worker_id;
       participant_cmd.is_coordinator = false;
       participant_cmd.is_mp = is_mp;
       DCHECK(is_mp);
@@ -1310,7 +1306,6 @@ public:
     Encoder encoder(data);
     for (size_t i = 0; i < command_buffer.size(); ++i) {
       encoder << command_buffer[i].tid;
-      encoder << command_buffer[i].initiating_cluster_worker_id;
       encoder << command_buffer[i].partition_id;
       encoder << command_buffer[i].is_mp;
       encoder << command_buffer[i].position_in_log;
@@ -1638,6 +1633,9 @@ public:
         this->replication_sync_comm_rounds.add(communication_rounds);
       }
       if (cmd_buffer_flushed == false) {
+        ScopedTimer t0([&, this](uint64_t us) {
+          commit_persistence_us = us;
+        });
         persist_and_clear_command_buffer(true);
         cmd_buffer_flushed = true;
       }
@@ -2086,189 +2084,6 @@ public:
     replica_worker->push_message(message);
   }
 
-  std::unordered_set<Message*> blocked_acquire_lock_and_read_messages;
-  void add_to_blocked_acquire_lock_and_read_messages(Message * message) {
-    blocked_acquire_lock_and_read_messages.insert(message);
-  }
-
-  bool process_single_acquire_lock_and_read_message(Message* message) {
-    auto msg_cnt = message->get_message_count();
-    int msg_idx = 0;
-    bool all_acquired = false;
-    for (auto it = message->begin(); it != message->end(); it++, ++msg_idx) {
-      MessagePiece messagePiece = *it;
-      auto type = messagePiece.get_message_type();
-      //LOG(INFO) << "Message type " << type;
-
-      ITable *table = this->db.find_table(messagePiece.get_table_id(),
-                                    messagePiece.get_partition_id());
-      DCHECK(message->get_source_cluster_worker_id() < (int32_t)this->context.partition_num);
-      auto tid = message->get_transaction_id();
-      TransactionType * txn = nullptr;
-      if (active_txns.count(tid) > 0) {
-        txn = active_txns[tid];
-      }
-
-      DCHECK(type == (int)HStoreMessage::ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST);
-      if (!make_sure_partition_lock_is_acquired(*message, messagePiece, *table, txn)) {
-        all_acquired = false;
-      }
-    }
-
-    if (!all_acquired)
-      return false;
-    
-    msg_idx = 0;
-    for (auto it = message->begin(); it != message->end(); it++, ++msg_idx) {
-      MessagePiece messagePiece = *it;
-      auto type = messagePiece.get_message_type();
-      //LOG(INFO) << "Message type " << type;
-
-      ITable *table = this->db.find_table(messagePiece.get_table_id(),
-                                    messagePiece.get_partition_id());
-      DCHECK(message->get_source_cluster_worker_id() < (int32_t)this->context.partition_num);
-      auto tid = message->get_transaction_id();
-      TransactionType * txn = nullptr;
-      if (active_txns.count(tid) > 0) {
-        txn = active_txns[tid];
-      }
-
-      DCHECK(type == (int)HStoreMessage::ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST);
-      bool res = acquire_partition_lock_and_read_request_handler(*message, messagePiece,
-                                                 *cluster_worker_messages[message->get_source_cluster_worker_id()], *table,
-                                                 txn);
-      DCHECK(res);
-    }
-    flush_messages();
-    return true;
-  }
-
-  void process_blocked_acquire_lock_and_read_messages() {
-    if (blocked_acquire_lock_and_read_messages.empty())
-      return;
-    for (auto it = blocked_acquire_lock_and_read_messages.begin(); it != blocked_acquire_lock_and_read_messages.end();) {
-      if(process_single_acquire_lock_and_read_message(*it)) {
-          std::unique_ptr<Message> ptr(*it);
-          it = blocked_acquire_lock_and_read_messages.erase(it);
-      }
-      else
-          it++;
-    }
-  }
-
-  std::size_t handle_requests_replica(bool should_replay_commands) {
-    std::size_t size = 0;
-    while (!this->in_queue.empty()) {
-      ++size;
-      std::unique_ptr<Message> message(this->in_queue.front());
-      bool ok = this->in_queue.pop();
-      CHECK(ok);
-      DCHECK(message->get_worker_id() == this->id);
-      if (message->get_is_replica())
-        DCHECK(is_replica_worker);
-      else
-        DCHECK(!is_replica_worker);
-
-      auto msg_cnt = message->get_message_count();
-      int msg_idx = 0;
-      for (auto it = message->begin(); it != message->end(); it++, ++msg_idx) {
-
-        MessagePiece messagePiece = *it;
-        auto type = messagePiece.get_message_type();
-        //LOG(INFO) << "Message type " << type;
-        auto message_partition_id = messagePiece.get_partition_id();
-        // auto message_partition_owner_cluster_worker_id = partition_owner_cluster_worker(message_partition_id);
-        
-        // if (type != (int)HStoreMessage::MASTER_UNLOCK_PARTITION_RESPONSE && type != (int)HStoreMessage::MASTER_LOCK_PARTITION_RESPONSE
-        //     && type != (int)HStoreMessage::ACQUIRE_PARTITION_LOCK_AND_READ_RESPONSE && type != (int) HStoreMessage::WRITE_BACK_RESPONSE && type != (int)HStoreMessage::RELEASE_READ_LOCK_RESPONSE
-        //     && type != (int)HStoreMessage::RELEASE_PARTITION_LOCK_RESPONSE && type != (int)HStoreMessage::PREPARE_REQUEST && type != (int)HStoreMessage::PREPARE_RESPONSE && type != (int)HStoreMessage::PREPARE_REDO_REQUEST && type != (int)HStoreMessage::PREPARE_REDO_RESPONSE) {
-        //   CHECK(message_partition_owner_cluster_worker_id == this_cluster_worker_id);
-        // }
-        ITable *table = this->db.find_table(messagePiece.get_table_id(),
-                                      messagePiece.get_partition_id());
-//        DCHECK(message->get_source_cluster_worker_id() != this_cluster_worker_id);
-        DCHECK(message->get_source_cluster_worker_id() < (int32_t)this->context.partition_num);
-        auto tid = message->get_transaction_id();
-        TransactionType * txn = nullptr;
-        if (active_txns.count(tid) > 0) {
-          txn = active_txns[tid];
-        }
-        if (type == (int)HStoreMessage::ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST) {
-          acquire_partition_lock_and_read_request_handler(*message, messagePiece,
-                                                 *cluster_worker_messages[message->get_source_cluster_worker_id()], *table,
-                                                 txn);
-          add_to_blocked_acquire_lock_and_read_messages(message.release());
-          DCHECK(msg_idx == 0);
-          break;
-        } else if (type == (int)HStoreMessage::ACQUIRE_PARTITION_LOCK_AND_READ_RESPONSE) {
-          acquire_partition_lock_and_read_response_handler(*message, messagePiece,
-                                                 *cluster_worker_messages[message->get_source_cluster_worker_id()], *table,
-                                                 txn);
-        } else if (type == (int)HStoreMessage::WRITE_BACK_REQUEST) {
-          write_back_request_handler(*message, messagePiece,
-                                    *cluster_worker_messages[message->get_source_cluster_worker_id()], *table,
-                                    txn);
-        } else if (type == (int)HStoreMessage::WRITE_BACK_RESPONSE) {
-          write_back_response_handler(*message, messagePiece,
-                                      *cluster_worker_messages[message->get_source_cluster_worker_id()], *table,
-                                      txn);
-        } else if (type == (int)HStoreMessage::RELEASE_PARTITION_LOCK_REQUEST) {
-          release_partition_lock_request_handler(*message, messagePiece,
-                                                 *cluster_worker_messages[message->get_source_cluster_worker_id()], *table,
-                                                 txn);
-        } else if (type == (int)HStoreMessage::RELEASE_PARTITION_LOCK_RESPONSE) {
-          release_partition_lock_response_handler(*message, messagePiece,
-                                                 *cluster_worker_messages[message->get_source_cluster_worker_id()], *table,
-                                                 txn);
-        } else if (type == (int)HStoreMessage::COMMAND_REPLICATION_REQUEST) {
-          command_replication_request_handler(*message, messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()], 
-                                                *table, 
-                                                txn);
-        } else if (type == (int)HStoreMessage::COMMAND_REPLICATION_RESPONSE) {
-          command_replication_response_handler(*message, messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()], 
-                                                *table, 
-                                                txn);
-        } else if (type == (int)HStoreMessage::COMMAND_REPLICATION_SP_REQUEST) {
-          command_replication_sp_request_handler(*message, messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()], 
-                                                *table, 
-                                                txn);
-        } else if (type == (int)HStoreMessage::COMMAND_REPLICATION_SP_RESPONSE) {
-          command_replication_sp_response_handler(*message, messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()], 
-                                                *table, 
-                                                txn);
-        } else if (type == (int)HStoreMessage::PERSIST_CMD_BUFFER_REQUEST) {
-          persist_cmd_buffer_request_handler(*message, messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()], 
-                                                *table, 
-                                                txn);
-        } else if (type == (int)HStoreMessage::PERSIST_CMD_BUFFER_RESPONSE) {
-          persist_cmd_buffer_response_handler(*message, messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()], 
-                                                *table, 
-                                                txn);
-        } else if (type == (int)HStoreMessage::GET_REPLAYED_LOG_POSITION_REQUEST) {
-          get_replayed_log_position_request_handler(*message, messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()], 
-                                                *table, 
-                                                txn);
-        } else if (type == (int)HStoreMessage::GET_REPLAYED_LOG_POSITION_RESPONSE) {
-          get_replayed_log_position_response_handler(*message, messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()], 
-                                                *table, 
-                                                txn);
-        } else {
-          CHECK(false);
-        }
-
-        this->message_stats[type]++;
-        this->message_sizes[type] += messagePiece.get_message_length();
-      }
-
-      flush_messages();
-    }
-
-    if (should_replay_commands && this->partitioner->replica_num() > 1 && is_replica_worker) {
-      replay_commands();
-    }
-    process_blocked_acquire_lock_and_read_messages();
-    return size;
-  }
   std::vector<TransactionType*> to_commit_dummy;
   std::size_t handle_requests(bool should_replay_commands = true) {
     auto ret = handle_requests_and_collect_ready_to_commit_txns(to_commit_dummy, should_replay_commands);

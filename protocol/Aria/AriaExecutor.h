@@ -148,6 +148,7 @@ public:
     auto n_abort = total_abort.load();
     std::size_t count = 0;
     std::string txn_command_data;
+
     for (auto i = id; i < transactions.size(); i += context.worker_num) {
 
       process_request();
@@ -163,6 +164,21 @@ public:
       } else {
         transactions[i]->reset();
       }
+    }
+    uint64_t commit_persistence_time = 0;
+    {
+      ScopedTimer t2([&, this](uint64_t us) {
+        commit_persistence_time = us;
+      });
+      this->logger->write(txn_command_data.data(), txn_command_data.size(), true);
+    }
+    for (auto i = id; i < transactions.size(); i += context.worker_num) {
+      transactions[i]->record_commit_persistence_time(commit_persistence_time);
+    }
+
+    for (auto i = id; i < transactions.size(); i += context.worker_num) {
+
+      process_request();
 
       transactions[i]->set_epoch(cur_epoch);
       transactions[i]->set_id(i * context.coordinator_num + coordinator_id +
@@ -185,7 +201,6 @@ public:
       }
     }
     flush_messages();
-    this->logger->write(txn_command_data.data(), txn_command_data.size(), true);
 
     // reserve
     count = 0;
@@ -375,6 +390,7 @@ public:
                 std::chrono::steady_clock::now() - transactions[i]->startTime)
                 .count();
         percentile.add(latency);
+        record_txn_breakdown_stats(*transactions[i]);
         continue;
       }
 

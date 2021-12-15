@@ -21,7 +21,6 @@ struct TxnCommand {
   int partition_id;
   bool is_coordinator;
   bool is_mp;
-  int initiating_cluster_worker_id;
   std::string command_data;
   int64_t position_in_log;
   std::shared_ptr<star::HStoreTransaction> txn;
