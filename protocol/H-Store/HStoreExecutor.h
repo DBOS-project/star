@@ -1561,7 +1561,7 @@ public:
       } else {
         size_t mp_txn_to_process = mp_txns.size();
         size_t current_mp_txn_to_process = mp_txns.size();
-        while (current_mp_txn_to_process >= mp_txn_to_process * 0.05) {
+        while (current_mp_txn_to_process > mp_txn_to_process * 0.05) {
           process_execution_phase(mp_txns);
           handle_requests();
           process_commit_phase(mp_txns);
