@@ -1440,8 +1440,9 @@ public:
           sent_persist_cmd_buffer_requests++;
         }
         flush_messages();
-        persist_and_clear_command_buffer(true);
       }
+
+      bool cmd_buffer_flushed = false;
       if (is_replica_worker == false && this->partitioner->replica_num() > 1) {
         ScopedTimer t1([&, this](uint64_t us) {
           commit_replication_us = us;
@@ -1460,6 +1461,10 @@ public:
           flush_messages();
           get_replica_replay_log_position_requests++;
           while (get_replica_replay_log_position_responses < get_replica_replay_log_position_requests) {
+            if (cmd_buffer_flushed == false) {
+              persist_and_clear_command_buffer(true);
+              cmd_buffer_flushed = true;
+            }
             handle_requests();
           }
           DCHECK(get_replica_replay_log_position_responses == get_replica_replay_log_position_requests);
@@ -1473,6 +1478,10 @@ public:
           communication_rounds++;
         }
         this->replication_sync_comm_rounds.add(communication_rounds);
+      }
+      if (cmd_buffer_flushed == false) {
+        persist_and_clear_command_buffer(true);
+        cmd_buffer_flushed = true;
       }
     }
 
