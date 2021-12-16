@@ -39,15 +39,11 @@ public:
   std::unique_ptr<TransactionType> next_transaction(ContextType &context,
                                                     std::size_t partition_id,
                                                     std::size_t worker_id) {
-    if (context.cross_txn_workers > 0) {
-      const static uint32_t num_workers_per_node = context.partition_num / context.coordinator_num;
-      int cluster_worker_id = coordinator_id * num_workers_per_node + worker_id;
-      if (cluster_worker_id < (int)context.cross_txn_workers) {
-        context.crossPartitionProbability = 100;
-      } else {
-        context.crossPartitionProbability = 0;
-      }
-    }
+    // const static uint32_t num_workers_per_node = context.partition_num / context.coordinator_num;
+    // int cluster_worker_id = coordinator_id * num_workers_per_node + worker_id;
+    // if (cluster_worker_id == 1) {
+    //   context.crossPartitionProbability = 100;
+    // }
 
     static std::atomic<uint64_t> tid_cnt(0);
     long long transactionId = tid_cnt.fetch_add(1);

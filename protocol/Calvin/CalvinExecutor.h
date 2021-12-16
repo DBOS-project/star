@@ -126,78 +126,98 @@ public:
       } while (status != ExecutorStatus::Analysis);
 
       lock_request_done_received = 0;
+      {
+        ScopedTimer t([&, this](uint64_t us) {
+          prepare_stage_time.add(us);
+        });
 
-      if (id < n_lock_manager) {
-        //LOG(INFO) << "Analysis active transactions " << active_transactions.load();
-      }
-      clean_up_current_lock_request_batch();
-      n_started_workers.fetch_add(1);
-      generate_transactions();
-      n_complete_workers.fetch_add(1);
+        if (id < n_lock_manager) {
+          //LOG(INFO) << "Analysis active transactions " << active_transactions.load();
+        }
+        clean_up_current_lock_request_batch();
+        n_started_workers.fetch_add(1);
+        generate_transactions();
+        n_complete_workers.fetch_add(1);
 
 
-      // wait to LockRequest
-      while (static_cast<ExecutorStatus>(worker_status.load()) !=
-             ExecutorStatus::LockRequest) {
-        std::this_thread::yield();
-      }
-
-      n_started_workers.fetch_add(1);
-      // This stage is for lock manager thread only
-      if (id < n_lock_manager) {
-        // send lock requests to remote node
-        //LOG(INFO) << "LockRequest active transactions " << active_transactions.load();
-        send_lock_requests();
-        // Wait until we have recevied all the lock requests from all coordinators
-        // which is signaled by the CalvinMessage::LOCK_REQUEST_DONE message
-        while (lock_request_done_received < partitioner.total_coordinators()) {
-          process_request();
+        // wait to LockRequest
+        while (static_cast<ExecutorStatus>(worker_status.load()) !=
+              ExecutorStatus::LockRequest) {
+          std::this_thread::yield();
         }
       }
-      n_complete_workers.fetch_add(1);
 
-      // wait to LockResponse stage
-      while (static_cast<ExecutorStatus>(worker_status.load()) !=
-             ExecutorStatus::LockResponse) {
-        process_request();
+      {
+        ScopedTimer t([&, this](uint64_t us) {
+          if (id < n_lock_manager) {
+            locking_stage_time.add(us);
+          }
+        });
+
+        n_started_workers.fetch_add(1);
+        // This stage is for lock manager thread only
+        if (id < n_lock_manager) {
+          // send lock requests to remote node
+          //LOG(INFO) << "LockRequest active transactions " << active_transactions.load();
+          send_lock_requests();
+          // Wait until we have recevied all the lock requests from all coordinators
+          // which is signaled by the CalvinMessage::LOCK_REQUEST_DONE message
+          while (lock_request_done_received < partitioner.total_coordinators()) {
+            process_request();
+          }
+        }
+        n_complete_workers.fetch_add(1);
+
+        // wait to LockResponse stage
+        while (static_cast<ExecutorStatus>(worker_status.load()) !=
+              ExecutorStatus::LockResponse) {
+          process_request();
+        }
+
+        n_started_workers.fetch_add(1);
+        // This stage is for lock manager thread only
+        if (id < n_lock_manager) {
+          // grant locks to transactions
+          DCHECK(lock_requests_current_batch.size());
+          grant_locks_and_reply();
+          wait_for_all_lock_requests_processed();
+          //LOG(INFO) << "LockResponse active transactions " << active_transactions.load();
+        }
+        n_complete_workers.fetch_add(1);
+        
+        // wait to Execute
+
+        while (static_cast<ExecutorStatus>(worker_status.load()) !=
+              ExecutorStatus::Execute) {
+          std::this_thread::yield();
+        }
       }
 
-      n_started_workers.fetch_add(1);
-      // This stage is for lock manager thread only
-      if (id < n_lock_manager) {
-        // grant locks to transactions
-        DCHECK(lock_requests_current_batch.size());
-        grant_locks_and_reply();
-        wait_for_all_lock_requests_processed();
-        //LOG(INFO) << "LockResponse active transactions " << active_transactions.load();
-      }
-      n_complete_workers.fetch_add(1);
-      
-      // wait to Execute
+      {
+        ScopedTimer t([&, this](uint64_t us) {
+          if (id >= n_lock_manager) {
+            execution_stage_time.add(us);
+          }
+        });
+        n_started_workers.fetch_add(1);
+        // work as lock manager
+        if (id < n_lock_manager) {
+          // schedule transactions
+          schedule_transactions();
+          //LOG(INFO) << "Execute active transactions " << active_transactions.load();
+        } else {
+          // work as executor
+          run_transactions();
+        }
 
-      while (static_cast<ExecutorStatus>(worker_status.load()) !=
-             ExecutorStatus::Execute) {
-        std::this_thread::yield();
-      }
+        n_complete_workers.fetch_add(1);
 
-      n_started_workers.fetch_add(1);
-      // work as lock manager
-      if (id < n_lock_manager) {
-        // schedule transactions
-        schedule_transactions();
-        //LOG(INFO) << "Execute active transactions " << active_transactions.load();
-      } else {
-        // work as executor
-        run_transactions();
-      }
+        // wait to Analysis
 
-      n_complete_workers.fetch_add(1);
-
-      // wait to Analysis
-
-      while (static_cast<ExecutorStatus>(worker_status.load()) ==
-             ExecutorStatus::Execute) {
-        process_request();
+        while (static_cast<ExecutorStatus>(worker_status.load()) ==
+              ExecutorStatus::Execute) {
+          process_request();
+        }
       }
     }
   }
@@ -213,6 +233,9 @@ public:
               << " us (50%) " << this->local_latency.nth(75) << " us (75%) "
               << this->local_latency.nth(95) << " us (95%) " << this->local_latency.nth(99)
               << " us (99%). "
+              << " scheduling_prepare " << this->prepare_stage_time.nth(50) << " us(50) "
+              << " scheduling_locking " << this->locking_stage_time.nth(50) << " us(50) "
+              << " execution " << this->execution_stage_time.nth(50) << " us(50).\n "
               << " Round conurrency " << this->round_concurrency.nth(50) << ". "
               << " LOCAL txn stall " << this->local_txn_stall_time_pct.nth(50) << " us, "
               << " local_work " << this->local_txn_local_work_time_pct.nth(50) << " us, "
@@ -883,6 +906,9 @@ public:
   TransactionType * this_transaction = nullptr;
   Percentile<int64_t> percentile, dist_latency, local_latency, commit_latency; 
   Percentile<int64_t> round_concurrency;
+  Percentile<int64_t> prepare_stage_time;
+  Percentile<int64_t> locking_stage_time;
+  Percentile<int64_t> execution_stage_time;
   Percentile<uint64_t> local_txn_stall_time_pct, local_txn_commit_work_time_pct, local_txn_commit_persistence_time_pct, local_txn_commit_prepare_time_pct, local_txn_commit_replication_time_pct, local_txn_commit_write_back_time_pct, local_txn_commit_unlock_time_pct, local_txn_local_work_time_pct, local_txn_remote_work_time_pct;
   Percentile<uint64_t> dist_txn_stall_time_pct, dist_txn_commit_work_time_pct, 
                        dist_txn_commit_persistence_time_pct, dist_txn_commit_prepare_time_pct,

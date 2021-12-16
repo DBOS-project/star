@@ -98,29 +98,39 @@ public:
         }
       } while (status != ExecutorStatus::Aria_READ);
 
-      n_started_workers.fetch_add(1);
-      read_snapshot();
-      n_complete_workers.fetch_add(1);
-      // wait to Aria_READ
-      while (static_cast<ExecutorStatus>(worker_status.load()) ==
-             ExecutorStatus::Aria_READ) {
+      {
+        ScopedTimer t2([&, this](uint64_t us) {
+          this->execution_time.add(us);
+        });
+        n_started_workers.fetch_add(1);
+        read_snapshot();
+        n_complete_workers.fetch_add(1);
+        // wait to Aria_READ
+        while (static_cast<ExecutorStatus>(worker_status.load()) ==
+              ExecutorStatus::Aria_READ) {
+          process_request();
+        }
         process_request();
-      }
-      process_request();
-      n_complete_workers.fetch_add(1);
+        n_complete_workers.fetch_add(1);
 
-      // wait till Aria_COMMIT
-      while (static_cast<ExecutorStatus>(worker_status.load()) !=
-             ExecutorStatus::Aria_COMMIT) {
-        std::this_thread::yield();
+        // wait till Aria_COMMIT
+        while (static_cast<ExecutorStatus>(worker_status.load()) !=
+              ExecutorStatus::Aria_COMMIT) {
+          std::this_thread::yield();
+        }
       }
       n_started_workers.fetch_add(1);
-      commit_transactions();
-      n_complete_workers.fetch_add(1);
-      // wait to Aria_COMMIT
-      while (static_cast<ExecutorStatus>(worker_status.load()) ==
-             ExecutorStatus::Aria_COMMIT) {
-        process_request();
+      {
+        ScopedTimer t2([&, this](uint64_t us) {
+          this->commit_time.add(us);
+        });
+        commit_transactions();
+        n_complete_workers.fetch_add(1);
+        // wait to Aria_COMMIT
+        while (static_cast<ExecutorStatus>(worker_status.load()) ==
+              ExecutorStatus::Aria_COMMIT) {
+          process_request();
+        }
       }
       process_request();
       n_complete_workers.fetch_add(1);
@@ -520,6 +530,8 @@ public:
               << " us (99%)"
               << ". batch concurrency: " << this->round_concurrency.nth(50) 
               << ". effective batch concurrency: " << this->effective_round_concurrency.nth(50) 
+              << ". execution time: " << this->execution_time.nth(50) 
+              << ". commit time: " << this->commit_time.nth(50) 
               << "\n"
               << " LOCAL txn stall " << this->local_txn_stall_time_pct.nth(50) << " us, "
               << " local_work " << this->local_txn_local_work_time_pct.nth(50) << " us, "
@@ -669,6 +681,8 @@ private:
   LockfreeQueue<Message *> in_queue, out_queue;
   Percentile<uint64_t> round_concurrency;
   Percentile<uint64_t> effective_round_concurrency;
+  Percentile<uint64_t> execution_time;
+  Percentile<uint64_t> commit_time;
   Percentile<uint64_t> local_txn_stall_time_pct, local_txn_commit_work_time_pct, local_txn_commit_persistence_time_pct, local_txn_commit_prepare_time_pct, local_txn_commit_replication_time_pct, local_txn_commit_write_back_time_pct, local_txn_commit_unlock_time_pct, local_txn_local_work_time_pct, local_txn_remote_work_time_pct;
   Percentile<uint64_t> dist_txn_stall_time_pct, dist_txn_commit_work_time_pct, 
                        dist_txn_commit_persistence_time_pct, dist_txn_commit_prepare_time_pct,
