@@ -1617,6 +1617,9 @@ public:
           get_replica_replay_log_position_requests++;
           while (get_replica_replay_log_position_responses < get_replica_replay_log_position_requests) {
             if (cmd_buffer_flushed == false) {
+              ScopedTimer t0([&, this](uint64_t us) {
+                commit_persistence_us = us;
+              });
               persist_and_clear_command_buffer(true);
               cmd_buffer_flushed = true;
             }
