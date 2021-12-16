@@ -1322,6 +1322,7 @@ public:
 
   bool process_single_transaction(TransactionType * txn) {
     auto txn_id = txn->transaction_id;
+    DCHECK(txn->is_single_partition());
     if (txn->is_single_partition()) {
       if (owned_partition_locked_by[txn->get_partition(0)] == -1) {
         owned_partition_locked_by[txn->get_partition(0)] = txn_id;
@@ -1330,6 +1331,7 @@ public:
       }
     }
     setupHandlers(*txn);
+    DCHECK(txn->execution_phase == false);
     
     active_txns[txn->transaction_id] = txn;
     auto ltc =

@@ -271,6 +271,8 @@ public:
           remote_request_handler();
         }
       }
+      if (execution_phase == false)
+        execution_phase = true;
     } else {
       message_flusher();
     }
