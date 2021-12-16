@@ -1100,7 +1100,7 @@ public:
              MessagePiece::get_header_size() + sizeof(int) + sizeof(int));
     auto table_id = inputPiece.get_table_id();
     auto partition_id = inputPiece.get_partition_id();
-    persist_and_clear_command_buffer();
+    //persist_and_clear_command_buffer();
     int cluster_worker_id, ith_replica;
     auto stringPiece = inputPiece.toStringPiece();
 
@@ -1389,14 +1389,6 @@ public:
       }
     } else {
       DCHECK(false); // For now, assume there is not program aborts.
-      //LOG(INFO) << "Txn Execution result " << (int)result << " abort ";
-      this->abort(*txn, cluster_worker_messages, is_replica_worker == false);
-      this->n_abort_no_retry.fetch_add(1);
-      //retry_transaction = false;
-      // Make sure it is unlocked.
-      // if (txn->is_single_partition())
-      //   DCHECK(owned_partition_locked_by[partition_id] == -1);
-      active_txns.erase(txn->transaction_id);
       return true;
     }
   }
@@ -2089,11 +2081,14 @@ public:
     process_blocked_acquire_lock_and_read_messages();
     return size;
   }
-
+  std::vector<TransactionType*> to_commit_dummy;
   std::size_t handle_requests(bool should_replay_commands = true) {
-    // if (is_replica_worker) {
-    //   return handle_requests_replica(should_replay_commands);
-    // }
+    auto ret = handle_requests_and_collect_ready_to_commit_txns(to_commit_dummy, should_replay_commands);
+    to_commit_dummy.clear();
+    return ret;
+  }
+
+  std::size_t handle_requests_and_collect_ready_to_commit_txns(std::vector<TransactionType*> & to_commit, bool should_replay_commands = true) {
     std::size_t size = 0;
     while (!this->in_queue.empty()) {
       ++size;
@@ -2138,6 +2133,10 @@ public:
           acquire_partition_lock_and_read_response_handler(*message, messagePiece,
                                                  *cluster_worker_messages[message->get_source_cluster_worker_id()], *table,
                                                  txn);
+          DCHECK(txn);
+          if (txn->pendingResponses == 0) {
+            to_commit.push_back(txn);
+          }
         } else if (type == (int)HStoreMessage::WRITE_BACK_REQUEST) {
           write_back_request_handler(*message, messagePiece,
                                     *cluster_worker_messages[message->get_source_cluster_worker_id()], *table,
