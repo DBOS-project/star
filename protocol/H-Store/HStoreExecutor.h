@@ -1534,7 +1534,7 @@ public:
       ScopedTimer t0([&, this](uint64_t us) {
         execution_phase_time.add(us);
       });
-      
+      int cnt = 0;
       for (size_t i = 0; i < sp_txns.size(); ++i) {
         auto txn = sp_txns[i];
         txn->reset();
@@ -1542,6 +1542,10 @@ public:
         if (!process_single_transaction(txn)) {
           txn->abort_lock = true;
           this->n_abort_lock.fetch_add(1);
+        } else {
+            if (++cnt % 5 == 0&& this->partitioner->replica_num() > 1 && is_replica_worker == false) {
+              send_commands_to_replica(true);
+            }
         }
         handle_requests();
       }
@@ -2208,9 +2212,9 @@ public:
     if (should_replay_commands && this->partitioner->replica_num() > 1 && is_replica_worker) {
       replay_commands();
     }
-    if (this->partitioner->replica_num() > 1 && is_replica_worker == false) {
-      send_commands_to_replica();
-    }
+    // if (this->partitioner->replica_num() > 1 && is_replica_worker == false) {
+    //   send_commands_to_replica();
+    // }
     return size;
   }
 
