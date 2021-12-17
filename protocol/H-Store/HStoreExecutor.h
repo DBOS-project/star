@@ -1429,14 +1429,7 @@ public:
         handle_requests_and_collect_ready_to_commit_txns(to_commit);
       }
       if (to_commit.empty() == false) {
-        auto txn = to_commit.front();
-        to_commit.pop_front();
-        DCHECK(txn->pendingResponses == 0);
-        if (txn->finished_commit_phase) {
-          DCHECK(txn->pendingResponses == 0);
-          continue;
-        }
-        process_single_txn_commit(txn);
+        process_to_commit(to_commit);
       }
     }
     process_to_commit(to_commit);
