@@ -1398,7 +1398,21 @@ public:
     }
   }
 
+  void process_to_commit(std::deque<TransactionType*> & to_commit) {
+    while (!to_commit.empty()) {
+      auto txn = to_commit.front();
+      to_commit.pop_front();
+      DCHECK(txn->pendingResponses == 0);
+      if (txn->finished_commit_phase) {
+        DCHECK(txn->pendingResponses == 0);
+        continue;
+      }
+      process_single_txn_commit(txn);
+    }
+  }
   void process_execution_phase(const std::vector<TransactionType*> & txns) {
+    std::deque<TransactionType*> to_commit;
+    int cnt = 0;
     for (size_t i = 0; i < txns.size(); ++i) {
       setupHandlers(*txns[i]);
       txns[i]->reset();
@@ -1411,7 +1425,21 @@ public:
       if (res == TransactionResult::ABORT_NORETRY) {
         txns[i]->abort_no_retry = true;
       }
+      if (++cnt % 5 == 0) {
+        handle_requests_and_collect_ready_to_commit_txns(to_commit);
+      }
+      if (to_commit.empty() == false) {
+        auto txn = to_commit.front();
+        to_commit.pop_front();
+        DCHECK(txn->pendingResponses == 0);
+        if (txn->finished_commit_phase) {
+          DCHECK(txn->pendingResponses == 0);
+          continue;
+        }
+        process_single_txn_commit(txn);
+      }
     }
+    process_to_commit(to_commit);
   }
 
   void process_single_txn_commit(TransactionType * txn) {
@@ -1491,7 +1519,7 @@ public:
   }
 
   void process_commit_phase(const std::vector<TransactionType*> & txns) {
-    std::vector<TransactionType*> to_commit;
+    std::deque<TransactionType*> to_commit;
     while (active_txns.size()) {
       for (size_t i = 0; i < txns.size(); ++i) {
         auto txn = txns[i];
@@ -1510,15 +1538,7 @@ public:
         } else {
           to_commit.clear();
           handle_requests_and_collect_ready_to_commit_txns(to_commit);
-          for (size_t i = 0; i < to_commit.size(); ++i) {
-            auto txn = to_commit[i];
-            DCHECK(txn->pendingResponses == 0);
-            if (txn->finished_commit_phase) {
-              DCHECK(txn->pendingResponses == 0);
-              continue;
-            }
-            process_single_txn_commit(txn);
-          }
+          process_to_commit(to_commit);
         }
       }
     }
@@ -1879,6 +1899,7 @@ public:
         continue;
       partition_command_queue_processing[i] = true;
       while (q.empty() == false) {
+        handle_requests(false);
         auto & cmd = q.front();
         if (cmd.is_coordinator == false) {
           //DCHECK(false);
@@ -2093,14 +2114,14 @@ public:
     replica_worker->push_message(message);
   }
 
-  std::vector<TransactionType*> to_commit_dummy;
+  std::deque<TransactionType*> to_commit_dummy;
   std::size_t handle_requests(bool should_replay_commands = true) {
     auto ret = handle_requests_and_collect_ready_to_commit_txns(to_commit_dummy, should_replay_commands);
     to_commit_dummy.clear();
     return ret;
   }
 
-  std::size_t handle_requests_and_collect_ready_to_commit_txns(std::vector<TransactionType*> & to_commit, bool should_replay_commands = true) {
+  std::size_t handle_requests_and_collect_ready_to_commit_txns(std::deque<TransactionType*> & to_commit, bool should_replay_commands = true) {
     std::size_t size = 0;
     while (!this->in_queue.empty()) {
       ++size;
