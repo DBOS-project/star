@@ -131,6 +131,7 @@ public:
     synchronous = true;
     finished_commit_phase = false;
     abort_lock_lock_released = false;
+    release_lock_called = false;
     operation.clear();
     readSet.clear();
     writeSet.clear();
@@ -339,5 +340,7 @@ public:
   bool abort_no_retry = false;
   bool finished_commit_phase = false;
   bool abort_lock_lock_released = false;
+  bool release_lock_called = false;
+  int replay_queue_idx = -1;
 };
 } // namespace star
