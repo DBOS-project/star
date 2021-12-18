@@ -1715,36 +1715,36 @@ public:
         int first_account = 0;
         int communication_rounds = 0;
         auto minimum_coord_txn_written_log_position_snap = minimum_coord_txn_written_log_position;
-        while (minimum_replayed_log_position < minimum_coord_txn_written_log_position_snap) {
-          ScopedTimer t2([&, this](uint64_t us) {
-            this->replica_progress_query_latency.add(us);
-          });
-          // Keep querying the replica for its replayed log position until minimum_replayed_log_position >= minimum_coord_txn_written_log_position_snap
-          cluster_worker_messages[replica_cluster_worker_id]->set_transaction_id(txn_id);
-          MessageFactoryType::new_get_replayed_log_posistion_message(*cluster_worker_messages[replica_cluster_worker_id], minimum_coord_txn_written_log_position_snap, 1, this_cluster_worker_id);
-          flush_messages();
-          get_replica_replay_log_position_requests++;
-          while (get_replica_replay_log_position_responses < get_replica_replay_log_position_requests) {
-            if (cmd_buffer_flushed == false) {
-              ScopedTimer t0([&, this](uint64_t us) {
-                commit_persistence_us = us;
-              });
-              persist_and_clear_command_buffer(true);
-              cmd_buffer_flushed = true;
-            }
-            handle_requests();
-          }
-          DCHECK(get_replica_replay_log_position_responses == get_replica_replay_log_position_requests);
-          if (first_account == 0) {
-            //if (minimum_replayed_log_position < minimum_coord_txn_written_log_position_snap) {
-              auto gap = std::max((int64_t)0, minimum_coord_txn_written_log_position_snap - minimum_replayed_log_position);
-              this->replication_gap_after_active_replica_execution.add(gap);
-            //}
-            first_account = 1;
-          }
-          communication_rounds++;
-        }
-        this->replication_sync_comm_rounds.add(communication_rounds);
+        // while (minimum_replayed_log_position < minimum_coord_txn_written_log_position_snap) {
+        //   ScopedTimer t2([&, this](uint64_t us) {
+        //     this->replica_progress_query_latency.add(us);
+        //   });
+        //   // Keep querying the replica for its replayed log position until minimum_replayed_log_position >= minimum_coord_txn_written_log_position_snap
+        //   cluster_worker_messages[replica_cluster_worker_id]->set_transaction_id(txn_id);
+        //   MessageFactoryType::new_get_replayed_log_posistion_message(*cluster_worker_messages[replica_cluster_worker_id], minimum_coord_txn_written_log_position_snap, 1, this_cluster_worker_id);
+        //   flush_messages();
+        //   get_replica_replay_log_position_requests++;
+        //   while (get_replica_replay_log_position_responses < get_replica_replay_log_position_requests) {
+        //     if (cmd_buffer_flushed == false) {
+        //       ScopedTimer t0([&, this](uint64_t us) {
+        //         commit_persistence_us = us;
+        //       });
+        //       persist_and_clear_command_buffer(true);
+        //       cmd_buffer_flushed = true;
+        //     }
+        //     handle_requests();
+        //   }
+        //   DCHECK(get_replica_replay_log_position_responses == get_replica_replay_log_position_requests);
+        //   if (first_account == 0) {
+        //     //if (minimum_replayed_log_position < minimum_coord_txn_written_log_position_snap) {
+        //       auto gap = std::max((int64_t)0, minimum_coord_txn_written_log_position_snap - minimum_replayed_log_position);
+        //       this->replication_gap_after_active_replica_execution.add(gap);
+        //     //}
+        //     first_account = 1;
+        //   }
+        //   communication_rounds++;
+        // }
+        // this->replication_sync_comm_rounds.add(communication_rounds);
       }
       if (cmd_buffer_flushed == false) {
         ScopedTimer t0([&, this](uint64_t us) {
