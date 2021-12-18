@@ -23,7 +23,7 @@ struct TxnCommand {
   bool is_mp;
   std::string command_data;
   int64_t position_in_log;
-  std::shared_ptr<star::HStoreTransaction> txn;
+  star::HStoreTransaction * txn;
   //std::vector<std::pair<int,int>> partitions;
   std::chrono::steady_clock::time_point queue_ts;
   bool queue_head_processed = false;
@@ -68,19 +68,19 @@ class HStoreMessageFactory {
 
 public:
 
-  static std::size_t new_get_replayed_log_posistion_message(Message &message, int ith_replica, int cluster_worker_id) {
+  static std::size_t new_get_replayed_log_posistion_message(Message &message, int64_t desired_posisiton, int ith_replica,  int cluster_worker_id) {
     /*
      * The structure of a persist command buffer request: ()
      */
 
     auto message_size =
-        MessagePiece::get_header_size() + sizeof(cluster_worker_id) + sizeof(ith_replica);
+        MessagePiece::get_header_size() + sizeof(cluster_worker_id) + sizeof(ith_replica) + sizeof(desired_posisiton);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(HStoreMessage::GET_REPLAYED_LOG_POSITION_REQUEST), message_size,
         0, 0);
 
     Encoder encoder(message.data);
-    encoder << message_piece_header << cluster_worker_id << ith_replica;
+    encoder << message_piece_header << desired_posisiton << cluster_worker_id << ith_replica;
     message.set_is_replica(ith_replica > 0);
     message.flush();
     message.set_gen_time(Time::now());

@@ -31,6 +31,8 @@ public:
 
   virtual bool has_master_partition(std::size_t partition_id) const = 0;
 
+  virtual std::size_t num_coordinator_for_one_replica() const { return total_coordinators(); }
+
   virtual std::size_t master_coordinator(std::size_t partition_id) const = 0;
 
   virtual std::size_t get_ith_replica_coordinator(std::size_t partition_id, std::size_t ith) const { return 0; }
@@ -129,6 +131,65 @@ public:
     } else {
       return coordinator_id >= first_replica || coordinator_id <= last_replica;
     }
+  }
+
+  bool is_backup() const override { return false; }
+};
+
+class HStorePBPartitioner : public Partitioner {
+public:
+  HStorePBPartitioner(std::size_t coordinator_id,
+                      std::size_t coordinator_num)
+      : Partitioner(coordinator_id, coordinator_num) {
+    CHECK(total_coordinators() % 2 == 0);
+    DCHECK(total_coordinators() > 1);
+  }
+
+  size_t current_replica() const { return coordinator_id < num_coordinator_for_one_replica() ? 0 : 1; }
+  
+  std::size_t num_coordinator_for_one_replica() const override { return total_coordinators() / 2; }
+
+  ~HStorePBPartitioner() override = default;
+
+  std::size_t replica_num() const override { return 2; }
+
+  bool is_replicated() const override { return true; }
+
+  bool has_master_partition(std::size_t partition_id) const override {
+    CHECK(false);
+  }
+
+  std::size_t master_coordinator(std::size_t partition_id) const override {
+    CHECK(false);
+  }
+
+  std::size_t get_ith_replica_coordinator(std::size_t partition_id, std::size_t ith) const override {
+    DCHECK(ith < replica_num());
+    return partition_id % num_coordinator_for_one_replica() + ith * num_coordinator_for_one_replica();
+    // std::size_t first_replica = master_coordinator(partition_id);
+    // if (ith == 0)
+    //   return first_replica;
+    // std::size_t last_replica = (first_replica + N - 1) % coordinator_num;
+    // if (last_replica >= first_replica) {
+    //   return first_replica + ith;
+    // } else {
+    //   return (first_replica + ith) % coordinator_num;
+    //   // if (first_replica + ith < coordinator_num)
+    //   //   return first_replica + ith;
+    //   // else
+    //   //   return 0 + coordinator_num - first_replica - ith;
+    // }
+  }
+
+  std::vector<std::size_t> get_replica_coordinators(std::size_t partition_id) const override {
+    CHECK(false);
+  }
+
+  bool is_partition_replicated_on(std::size_t partition_id,
+                                  std::size_t coordinator_id) const override {
+    DCHECK(coordinator_id < coordinator_num);
+    return partition_id % num_coordinator_for_one_replica() == coordinator_id ||  // either on primary
+           partition_id % num_coordinator_for_one_replica() + num_coordinator_for_one_replica() == coordinator_id; // or on secondary
   }
 
   bool is_backup() const override { return false; }
@@ -353,6 +414,9 @@ public:
                                                 coordinator_num);
     } else if (part == "StarC") {
       return std::make_unique<StarCPartitioner>(coordinator_id,
+                                                coordinator_num);
+    } else if (part == "hpb") {
+      return std::make_unique<HStorePBPartitioner>(coordinator_id,
                                                 coordinator_num);
     } else {
       CHECK(false);

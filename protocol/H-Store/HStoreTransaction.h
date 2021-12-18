@@ -120,6 +120,7 @@ public:
   }
 
   void reset() {
+    abort_lock_local_read = false;
     pendingResponses = 0;
     network_size = 0;
     abort_lock = false;
@@ -342,5 +343,6 @@ public:
   bool abort_lock_lock_released = false;
   bool release_lock_called = false;
   int replay_queue_idx = -1;
+  bool abort_lock_local_read = false;
 };
 } // namespace star
