@@ -733,27 +733,27 @@ public:
         sp_txn->replay_queue_idx = partition_to_cmd_queue_index[partition];
         DCHECK(sp_txn->ith_replica > 0);
         auto & cmd = cmds[i];
-        // if (q.empty() && partition_command_queue_processing[sp_txn->replay_queue_idx] == false && owned_partition_locked_by[cmd.partition_id] == -1) {
-        //   DCHECK(sp_txn->transaction_id);
-        //   DCHECK(sp_txn);
-        //   auto res = process_single_transaction(sp_txn);
-        //   DCHECK(res);
-        //   auto latency =
-        //   std::chrono::duration_cast<std::chrono::microseconds>(
-        //       std::chrono::steady_clock::now() - sp_txn->startTime)
-        //       .count();
-        //   this->percentile.add(latency);
-        //   this->local_latency.add(latency);
-        //   this->record_txn_breakdown_stats(*sp_txn);
-        //   DCHECK(get_partition_last_replayed_position_in_log(cmd.partition_id) <= cmd.position_in_log);
-        //   get_partition_last_replayed_position_in_log(cmd.partition_id) = cmd.position_in_log;
-        //   // Make sure it is unlocked
-        //   DCHECK(owned_partition_locked_by[cmd.partition_id] == -1);
-        // } else {
+        if (q.empty() && partition_command_queue_processing[sp_txn->replay_queue_idx] == false && owned_partition_locked_by[cmd.partition_id] == -1) {
+          DCHECK(sp_txn->transaction_id);
+          DCHECK(sp_txn);
+          auto res = process_single_transaction(sp_txn);
+          DCHECK(res);
+          auto latency =
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - sp_txn->startTime)
+              .count();
+          this->percentile.add(latency);
+          this->local_latency.add(latency);
+          this->record_txn_breakdown_stats(*sp_txn);
+          DCHECK(get_partition_last_replayed_position_in_log(cmd.partition_id) <= cmd.position_in_log);
+          get_partition_last_replayed_position_in_log(cmd.partition_id) = cmd.position_in_log;
+          // Make sure it is unlocked
+          DCHECK(owned_partition_locked_by[cmd.partition_id] == -1);
+        } else {
           cmds[i].txn.reset(sp_txn);
           cmds[i].queue_ts = std::chrono::steady_clock::now();
           q.push_back(cmds[i]);
-        //}
+        }
       } else { // place into multiple partition command queues for replay
         DCHECK(cmds[i].partition_id == -1);
         auto mp_txn = this->workload.deserialize_from_raw(this->context, cmds[i].command_data).release();
@@ -1715,36 +1715,36 @@ public:
         int first_account = 0;
         int communication_rounds = 0;
         auto minimum_coord_txn_written_log_position_snap = minimum_coord_txn_written_log_position;
-        // while (minimum_replayed_log_position < minimum_coord_txn_written_log_position_snap) {
-        //   ScopedTimer t2([&, this](uint64_t us) {
-        //     this->replica_progress_query_latency.add(us);
-        //   });
-        //   // Keep querying the replica for its replayed log position until minimum_replayed_log_position >= minimum_coord_txn_written_log_position_snap
-        //   cluster_worker_messages[replica_cluster_worker_id]->set_transaction_id(txn_id);
-        //   MessageFactoryType::new_get_replayed_log_posistion_message(*cluster_worker_messages[replica_cluster_worker_id], minimum_coord_txn_written_log_position_snap, 1, this_cluster_worker_id);
-        //   flush_messages();
-        //   get_replica_replay_log_position_requests++;
-        //   while (get_replica_replay_log_position_responses < get_replica_replay_log_position_requests) {
-        //     if (cmd_buffer_flushed == false) {
-        //       ScopedTimer t0([&, this](uint64_t us) {
-        //         commit_persistence_us = us;
-        //       });
-        //       persist_and_clear_command_buffer(true);
-        //       cmd_buffer_flushed = true;
-        //     }
-        //     handle_requests();
-        //   }
-        //   DCHECK(get_replica_replay_log_position_responses == get_replica_replay_log_position_requests);
-        //   if (first_account == 0) {
-        //     //if (minimum_replayed_log_position < minimum_coord_txn_written_log_position_snap) {
-        //       auto gap = std::max((int64_t)0, minimum_coord_txn_written_log_position_snap - minimum_replayed_log_position);
-        //       this->replication_gap_after_active_replica_execution.add(gap);
-        //     //}
-        //     first_account = 1;
-        //   }
-        //   communication_rounds++;
-        // }
-        // this->replication_sync_comm_rounds.add(communication_rounds);
+        while (minimum_replayed_log_position < minimum_coord_txn_written_log_position_snap) {
+          ScopedTimer t2([&, this](uint64_t us) {
+            this->replica_progress_query_latency.add(us);
+          });
+          // Keep querying the replica for its replayed log position until minimum_replayed_log_position >= minimum_coord_txn_written_log_position_snap
+          cluster_worker_messages[replica_cluster_worker_id]->set_transaction_id(txn_id);
+          MessageFactoryType::new_get_replayed_log_posistion_message(*cluster_worker_messages[replica_cluster_worker_id], minimum_coord_txn_written_log_position_snap, 1, this_cluster_worker_id);
+          flush_messages();
+          get_replica_replay_log_position_requests++;
+          while (get_replica_replay_log_position_responses < get_replica_replay_log_position_requests) {
+            if (cmd_buffer_flushed == false) {
+              ScopedTimer t0([&, this](uint64_t us) {
+                commit_persistence_us = us;
+              });
+              persist_and_clear_command_buffer(true);
+              cmd_buffer_flushed = true;
+            }
+            handle_requests();
+          }
+          DCHECK(get_replica_replay_log_position_responses == get_replica_replay_log_position_requests);
+          if (first_account == 0) {
+            //if (minimum_replayed_log_position < minimum_coord_txn_written_log_position_snap) {
+              auto gap = std::max((int64_t)0, minimum_coord_txn_written_log_position_snap - minimum_replayed_log_position);
+              this->replication_gap_after_active_replica_execution.add(gap);
+            //}
+            first_account = 1;
+          }
+          communication_rounds++;
+        }
+        this->replication_sync_comm_rounds.add(communication_rounds);
       }
       if (cmd_buffer_flushed == false) {
         ScopedTimer t0([&, this](uint64_t us) {
