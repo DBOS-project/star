@@ -48,6 +48,7 @@ private:
   Percentile<int64_t> cmd_stall_time;
   Percentile<int64_t> execution_phase_time;
   Percentile<int64_t> execution_phase_mp_rounds;
+  Message test_msg;
 public:
   using base_type = Executor<Workload, HStore<typename Workload::DatabaseType>>;
 
@@ -269,6 +270,7 @@ public:
           }, replica_worker).detach();
         }
       }
+      init_message(&test_msg, replica_cluster_worker_id);
   }
 
   ~HStoreExecutor() = default;
@@ -2144,7 +2146,6 @@ public:
     }
   }
 
-
   void send_commands_to_replica(bool persist = false) {
     if (command_buffer_outgoing_data.empty())
       return; // Nothing to send
@@ -2166,7 +2167,7 @@ public:
     auto ret = handle_requests_and_collect_ready_to_commit_txns(async_txns_to_commit, should_replay_commands);
     return ret;
   }
-
+  
   std::size_t handle_requests_and_collect_ready_to_commit_txns(std::deque<TransactionType*> & to_commit, bool should_replay_commands = true) {
     std::size_t size = 0;
     while (!this->in_queue.empty()) {
@@ -2281,6 +2282,14 @@ public:
     }
     if (this->partitioner->replica_num() > 1 && is_replica_worker == false) {
       send_commands_to_replica();
+    } else {
+      if (command_buffer_outgoing_data.empty() == false) {
+        init_message(&test_msg, replica_cluster_worker_id);
+        MessageFactoryType::new_command_replication(
+            test_msg, 1, command_buffer_outgoing_data, this_cluster_worker_id, false);
+        flush_messages();
+        command_buffer_outgoing_data.clear();
+      }
     }
     return size;
   }
