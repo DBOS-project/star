@@ -732,9 +732,28 @@ public:
         auto sp_txn = this->workload.deserialize_from_raw(this->context, cmds[i].command_data).release();
         sp_txn->replay_queue_idx = partition_to_cmd_queue_index[partition];
         DCHECK(sp_txn->ith_replica > 0);
-        cmds[i].txn.reset(sp_txn);
-        cmds[i].queue_ts = std::chrono::steady_clock::now();
-        q.push_back(cmds[i]);
+        auto & cmd = cmds[i];
+        // if (q.empty() && partition_command_queue_processing[sp_txn->replay_queue_idx] == false && owned_partition_locked_by[cmd.partition_id] == -1) {
+        //   DCHECK(sp_txn->transaction_id);
+        //   DCHECK(sp_txn);
+        //   auto res = process_single_transaction(sp_txn);
+        //   DCHECK(res);
+        //   auto latency =
+        //   std::chrono::duration_cast<std::chrono::microseconds>(
+        //       std::chrono::steady_clock::now() - sp_txn->startTime)
+        //       .count();
+        //   this->percentile.add(latency);
+        //   this->local_latency.add(latency);
+        //   this->record_txn_breakdown_stats(*sp_txn);
+        //   DCHECK(get_partition_last_replayed_position_in_log(cmd.partition_id) <= cmd.position_in_log);
+        //   get_partition_last_replayed_position_in_log(cmd.partition_id) = cmd.position_in_log;
+        //   // Make sure it is unlocked
+        //   DCHECK(owned_partition_locked_by[cmd.partition_id] == -1);
+        // } else {
+          cmds[i].txn.reset(sp_txn);
+          cmds[i].queue_ts = std::chrono::steady_clock::now();
+          q.push_back(cmds[i]);
+        //}
       } else { // place into multiple partition command queues for replay
         DCHECK(cmds[i].partition_id == -1);
         auto mp_txn = this->workload.deserialize_from_raw(this->context, cmds[i].command_data).release();
@@ -1065,6 +1084,32 @@ public:
     //   << " pending responses " << txn->pendingResponses;
   }
 
+  static std::size_t new_get_replayed_log_posistion_response_message(Message &responseMessage, int64_t replayed_posisiton) {
+    auto message_size = MessagePiece::get_header_size() + sizeof(replayed_posisiton);
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(HStoreMessage::GET_REPLAYED_LOG_POSITION_RESPONSE), message_size,
+        0, 0);
+
+    star::Encoder encoder(responseMessage.data);
+    encoder << message_piece_header << replayed_posisiton;
+    responseMessage.set_transaction_id(0);
+    responseMessage.set_is_replica(false);
+    responseMessage.flush();
+    return message_size;
+  }
+
+  int64_t active_replica_waiting_position;
+
+  void respond_to_active_replica_with_replay_position(int64_t replayed_position) {
+    if (active_replica_waiting_position == -1)
+      return;
+    if (replayed_position < active_replica_waiting_position)
+      return;
+    new_get_replayed_log_posistion_response_message(*cluster_worker_messages[replica_cluster_worker_id], replayed_position);
+    flush_messages();
+    active_replica_waiting_position = -1;
+  }
+
   void get_replayed_log_position_request_handler(const Message & inputMessage, MessagePiece inputPiece,
                                           Message &responseMessage,
                                           ITable &table, Transaction *txn) {
@@ -1074,27 +1119,32 @@ public:
     DCHECK(inputPiece.get_message_type() ==
            static_cast<uint32_t>(HStoreMessage::GET_REPLAYED_LOG_POSITION_REQUEST));
     DCHECK(inputPiece.get_message_length() ==
-             MessagePiece::get_header_size() + sizeof(int) + sizeof(int));
+             MessagePiece::get_header_size() + sizeof(int) + sizeof(int) + sizeof(int64_t));
     DCHECK(is_replica_worker);
     int cluster_worker_id, ith_replica;
     auto stringPiece = inputPiece.toStringPiece();
-
+    DCHECK(active_replica_waiting_position == -1);
     Decoder dec(stringPiece);
-    dec >> cluster_worker_id >> ith_replica;
+    int64_t active_replica_waiting_position_tmp;
+    dec >> active_replica_waiting_position_tmp >> cluster_worker_id >> ith_replica;
     int64_t minimum_replayed_log_positition = get_minimum_replayed_log_position();
     //LOG(INFO) << "cluster_worker " << cluster_worker_id << " called persist_cmd_buffer_request_handler on cluster worker " << this_cluster_worker_id;
-    
-    auto message_size = MessagePiece::get_header_size() + sizeof(minimum_replayed_log_positition);
-    auto message_piece_header = MessagePiece::construct_message_piece_header(
+    if (minimum_replayed_log_positition >= active_replica_waiting_position_tmp) {
+      auto message_size = MessagePiece::get_header_size() + sizeof(minimum_replayed_log_positition);
+      auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(HStoreMessage::GET_REPLAYED_LOG_POSITION_RESPONSE), message_size,
         0, 0);
 
-    star::Encoder encoder(responseMessage.data);
-    encoder << message_piece_header << minimum_replayed_log_positition;
-    responseMessage.set_transaction_id(inputMessage.get_transaction_id());
-    responseMessage.set_is_replica(false);
-    responseMessage.flush();
-    responseMessage.set_gen_time(Time::now());
+      star::Encoder encoder(responseMessage.data);
+      encoder << message_piece_header << minimum_replayed_log_positition;
+      responseMessage.set_transaction_id(inputMessage.get_transaction_id());
+      responseMessage.set_is_replica(false);
+      responseMessage.flush();
+      responseMessage.set_gen_time(Time::now());
+    } else {
+      DCHECK(active_replica_waiting_position == -1);
+      active_replica_waiting_position = active_replica_waiting_position_tmp;
+    }
   }
   
   void get_replayed_log_position_response_handler(const Message & inputMessage, MessagePiece inputPiece,
@@ -1630,33 +1680,9 @@ public:
       if (this->partitioner->replica_num() > 1 && is_replica_worker == false) {
         send_commands_to_replica(true);
       }
-
-      size_t rounds = 0;
-      if (true) {
-        process_execution_phase(mp_txns);
-        handle_requests();
-        process_commit_phase(mp_txns);
-        ++rounds;
-      } else {
-        size_t mp_txn_to_process = mp_txns.size();
-        size_t current_mp_txn_to_process = mp_txns.size();
-        while (current_mp_txn_to_process > mp_txn_to_process * 0.05) {
-          process_execution_phase(mp_txns);
-          handle_requests();
-          process_commit_phase(mp_txns);
-          std::vector<TransactionType*> tmp;
-          for (size_t i = 0; i < mp_txns.size(); ++i) {
-            if (mp_txns[i]->abort_lock && mp_txns[i]->abort_no_retry == false) {
-              tmp.push_back(mp_txns[i]);
-            }
-          }
-          std::swap(tmp, mp_txns);
-          current_mp_txn_to_process = mp_txns.size();
-          ++rounds;
-        }
-      }
-      if (rounds)
-        execution_phase_mp_rounds.add(rounds);
+      process_execution_phase(mp_txns);
+      handle_requests();
+      process_commit_phase(mp_txns);
     }
     if (this->partitioner->replica_num() > 1 && is_replica_worker == false) {
       send_commands_to_replica(true);
@@ -1665,20 +1691,20 @@ public:
     uint64_t commit_persistence_us = 0;
     uint64_t commit_replication_us = 0;
     {
-      // {
-      //   ScopedTimer t0([&, this](uint64_t us) {
-      //     commit_persistence_us = us;
-      //   });
-      //   DCHECK((int)workers_need_persist_cmd_buffer.size() == this->cluster_worker_num);
-      //   for (int i = 0; i < (int)workers_need_persist_cmd_buffer.size(); ++i) {
-      //     if (!workers_need_persist_cmd_buffer[i] || i == this_cluster_worker_id)
-      //       continue;
-      //     cluster_worker_messages[i]->set_transaction_id(txn_id);
-      //     MessageFactoryType::new_persist_cmd_buffer_message(*cluster_worker_messages[i], 0, this_cluster_worker_id);
-      //     sent_persist_cmd_buffer_requests++;
-      //   }
-      //   flush_messages();
-      // }
+      {
+        ScopedTimer t0([&, this](uint64_t us) {
+          commit_persistence_us = us;
+        });
+        DCHECK((int)workers_need_persist_cmd_buffer.size() == this->cluster_worker_num);
+        for (int i = 0; i < (int)workers_need_persist_cmd_buffer.size(); ++i) {
+          if (!workers_need_persist_cmd_buffer[i] || i == this_cluster_worker_id)
+            continue;
+          cluster_worker_messages[i]->set_transaction_id(txn_id);
+          MessageFactoryType::new_persist_cmd_buffer_message(*cluster_worker_messages[i], 0, this_cluster_worker_id);
+          sent_persist_cmd_buffer_requests++;
+        }
+        flush_messages();
+      }
 
       bool cmd_buffer_flushed = false;
       if (is_replica_worker == false && this->partitioner->replica_num() > 1) {
@@ -1695,7 +1721,7 @@ public:
           });
           // Keep querying the replica for its replayed log position until minimum_replayed_log_position >= minimum_coord_txn_written_log_position_snap
           cluster_worker_messages[replica_cluster_worker_id]->set_transaction_id(txn_id);
-          MessageFactoryType::new_get_replayed_log_posistion_message(*cluster_worker_messages[replica_cluster_worker_id], 1, this_cluster_worker_id);
+          MessageFactoryType::new_get_replayed_log_posistion_message(*cluster_worker_messages[replica_cluster_worker_id], minimum_coord_txn_written_log_position_snap, 1, this_cluster_worker_id);
           flush_messages();
           get_replica_replay_log_position_requests++;
           while (get_replica_replay_log_position_responses < get_replica_replay_log_position_requests) {
@@ -1929,6 +1955,7 @@ public:
             owned_partition_locked_by[cmd.partition_id] = cmd.tid;
             DCHECK(get_partition_last_replayed_position_in_log(cmd.partition_id) <= cmd.position_in_log);
             get_partition_last_replayed_position_in_log(cmd.partition_id) = cmd.position_in_log;
+            respond_to_active_replica_with_replay_position(cmd.position_in_log);
             q.pop_front();
           } else {
             // The partition is being locked by front transaction executing, try next time.
@@ -1953,6 +1980,7 @@ public:
               this->record_txn_breakdown_stats(*sp_txn);
               DCHECK(get_partition_last_replayed_position_in_log(cmd.partition_id) <= cmd.position_in_log);
               get_partition_last_replayed_position_in_log(cmd.partition_id) = cmd.position_in_log;
+              respond_to_active_replica_with_replay_position(cmd.position_in_log);
               // Make sure it is unlocked
               DCHECK(owned_partition_locked_by[cmd.partition_id] == -1);
               q.pop_front();

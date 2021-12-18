@@ -174,11 +174,6 @@ public:
             manager->n_completed_workers, manager->n_started_workers));
       }
       workers.push_back(manager);
-      if (context.coordinator_id == 0 && context.enable_hstore_master) {
-        workers.push_back(std::make_shared<HStoreExecutor<WorkloadType>>(
-            coordinator_id, context.worker_num + 1, db, context, manager->worker_status,
-            manager->n_completed_workers, manager->n_started_workers));
-      }
     } else if (context.protocol == "Calvin") {
 
       using TransactionType = star::CalvinTransaction;
