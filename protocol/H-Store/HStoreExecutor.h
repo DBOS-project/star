@@ -36,6 +36,7 @@ private:
   Percentile<int64_t> replication_sync_comm_rounds;
   Percentile<int64_t> replication_time;
   Percentile<int64_t> txn_retries;
+  Percentile<int64_t> replay_loop_time;
   std::size_t batch_per_worker;
   std::atomic<bool> ended{false};
   uint64_t worker_commit = 0;
@@ -1832,8 +1833,8 @@ public:
   }
 
   bool processing_mp = false;
-  bool replay_sp_commands(int partition) {
-    int i = partition_to_cmd_queue_index[partition];
+  bool replay_sp_queue_commands(int queue_index) {
+    int i = queue_index;
     if (partition_command_queue_processing[i])
         return false;
     auto & q = partition_command_queues[i];
@@ -1917,6 +1918,10 @@ public:
     return true;
   }
 
+  bool replay_sp_commands(int partition) {
+    return replay_sp_queue_commands(partition_to_cmd_queue_index[partition]);
+  }
+
   void replay_all_sp_commands() {
     for (auto p : managed_partitions) {
       if (replay_sp_commands(p) == true) {
@@ -1924,7 +1929,11 @@ public:
       }
     }
   }
+
   void replay_commands_sp_then_mp_parallel() {
+    ScopedTimer t([&, this](uint64_t us) {
+      replay_loop_time.add(us);
+    });
     auto complete_mp = [&, this](TransactionType* mp_txn) {
       DCHECK(active_txns.count(mp_txn->transaction_id) == 0);
       DCHECK(mp_txn->is_single_partition() == false);
@@ -1940,10 +1949,12 @@ public:
             .count();
         this->percentile.add(latency);
         this->dist_latency.add(latency);
+        DCHECK(mp_txn->tries >= 1);
         txn_retries.add(mp_txn->tries);
         this->record_txn_breakdown_stats(*mp_txn);
         q.pop_front();
         partition_command_queue_processing[mp_txn->replay_queue_idx] = false;
+        replay_sp_queue_commands(mp_txn->replay_queue_idx);
         delete mp_txn;
       } else {
         partition_command_queue_processing[mp_txn->replay_queue_idx] = false;
@@ -1953,63 +1964,11 @@ public:
     for (size_t i = 0; i < partition_command_queues.size(); ++i) {
       if (partition_command_queue_processing[i])
         continue;
+      replay_sp_queue_commands(i);
       auto & q = partition_command_queues[i];
       if (q.empty())
         continue;
       partition_command_queue_processing[i] = true;
-      while (q.empty() == false) {
-        auto & cmd = q.front();
-        if (cmd.is_coordinator == false) {
-          DCHECK(cmd.txn == nullptr);
-          if (owned_partition_locked_by[cmd.partition_id] == -1) {
-            // The transaction owns the partition.
-            // Wait for coordinator transaction finish reading/writing and unlock the partiiton.
-            owned_partition_locked_by[cmd.partition_id] = cmd.tid;
-            DCHECK(get_partition_last_replayed_position_in_log(cmd.partition_id) <= cmd.position_in_log);
-            get_partition_last_replayed_position_in_log(cmd.partition_id) = cmd.position_in_log;
-            respond_to_active_replica_with_replay_position(cmd.position_in_log);
-            q.pop_front();
-          } else {
-            // The partition is being locked by front transaction executing, try next time.
-            break;
-          }
-        } else if (cmd.is_mp == false) {
-          DCHECK(cmd.txn != nullptr);
-          if (owned_partition_locked_by[cmd.partition_id] == -1) {
-            // The transaction owns the partition.
-            // Start executing the sp transaction.
-            auto sp_txn = cmd.txn;
-            DCHECK(sp_txn->transaction_id);
-            DCHECK(sp_txn);
-            auto res = process_single_transaction(sp_txn);
-            DCHECK(res);
-            if (res) {
-              auto latency =
-              std::chrono::duration_cast<std::chrono::microseconds>(
-                  std::chrono::steady_clock::now() - sp_txn->startTime)
-                  .count();
-              this->percentile.add(latency);
-              this->local_latency.add(latency);
-              this->record_txn_breakdown_stats(*sp_txn);
-              DCHECK(get_partition_last_replayed_position_in_log(cmd.partition_id) <= cmd.position_in_log);
-              get_partition_last_replayed_position_in_log(cmd.partition_id) = cmd.position_in_log;
-              respond_to_active_replica_with_replay_position(cmd.position_in_log);
-              // Make sure it is unlocked
-              DCHECK(owned_partition_locked_by[cmd.partition_id] == -1);
-              delete sp_txn;
-              q.pop_front();
-            } else {
-              // Make sure it is unlocked
-              DCHECK(owned_partition_locked_by[cmd.partition_id] == -1);
-            }
-          } else {
-            // The partition is being locked by front transaction executing, try next time.
-            break;
-          }
-        } else {
-          break;
-        }
-      }
 
       if (q.empty() == false && q.front().is_coordinator && q.front().is_mp) {
         auto & cmd = q.front();
@@ -2436,7 +2395,8 @@ public:
               << " replication gap " << replication_gap_after_active_replica_execution.avg() 
               << " replication sync comm rounds " << replication_sync_comm_rounds.avg() 
               << " replication time " << replication_time.avg() 
-              << " txn tries " << txn_retries.avg() 
+              << " txn tries " << txn_retries.nth(50) << " 50th " << txn_retries.nth(75) << " 75th "  << txn_retries.nth(95) << " 95th "
+              << " replay_loop_time " << replay_loop_time.avg() << "us "
               << " commit interval " << commit_interval.nth(50) 
               << " cmd queue time " << cmd_queue_time.nth(50)
               << " cmd stall time by lock " << cmd_stall_time.nth(50) 
