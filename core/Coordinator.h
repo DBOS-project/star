@@ -263,7 +263,7 @@ public:
 
     if (context.logger)
       context.logger->print_sync_stats();
-    //measure_round_trip();
+    measure_round_trip();
     close_sockets();
 
     LOG(INFO) << "Coordinator exits.";
