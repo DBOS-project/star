@@ -26,6 +26,7 @@ public:
       : coordinator_id(coordinator_id), partition_id(partition_id),
         startTime(std::chrono::steady_clock::now()), partitioner(partitioner), ith_replica(ith_replica) {
     reset();
+    tries = 0;
   }
   
   virtual ~HStoreTransaction() = default;
@@ -135,8 +136,9 @@ public:
     release_lock_called = false;
     operation.clear();
     readSet.clear();
-    writeSet.clear();
     ++tries;
+    writeSet.clear();
+    lock_request_responded = false;
   }
 
   virtual int32_t get_partition_count() = 0;
@@ -336,7 +338,7 @@ public:
   bool reordered_in_the_queue = false;
   bool replicated_sp = false;
   bool being_replayed = false;
-  int64_t tries = 1;
+  int64_t tries = 0;
   bool synchronous = true;
   bool abort_no_retry = false;
   bool finished_commit_phase = false;
@@ -344,5 +346,12 @@ public:
   bool release_lock_called = false;
   int replay_queue_partition = -1;
   bool abort_lock_local_read = false;
+  int64_t execution_done_latency = 0;
+  int64_t commit_initiated_latency = 0;
+  std::chrono::steady_clock::time_point lock_issue_time;
+  bool lock_request_responded = false;
+  int64_t first_lock_response_latency = 0;
+  int64_t first_lock_request_arrive_latency = 0;
+  int64_t first_lock_request_processed_latency = 0;
 };
 } // namespace star

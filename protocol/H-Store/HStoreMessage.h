@@ -61,12 +61,33 @@ enum class HStoreMessage {
   PERSIST_CMD_BUFFER_RESPONSE,
   GET_REPLAYED_LOG_POSITION_REQUEST,
   GET_REPLAYED_LOG_POSITION_RESPONSE,
+  RTT_REQUEST,
+  RTT_RESPONSE,
   NFIELDS
 };
 
 class HStoreMessageFactory {
 
 public:
+
+  static std::size_t new_rtt_message(Message &message, int ith_replica, int cluster_worker_id) {
+    /*
+     * The structure of a persist command buffer request: ()
+     */
+
+    auto message_size =
+        MessagePiece::get_header_size() + sizeof(cluster_worker_id) + sizeof(ith_replica);
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(HStoreMessage::RTT_REQUEST), message_size,
+        0, 0);
+
+    Encoder encoder(message.data);
+    encoder << message_piece_header << cluster_worker_id << ith_replica;
+    message.set_is_replica(ith_replica > 0);
+    message.flush();
+    message.set_gen_time(Time::now());
+    return message_size;
+  }
 
   static std::size_t new_get_replayed_log_posistion_message(Message &message, int64_t desired_posisiton, int ith_replica,  int cluster_worker_id) {
     /*
@@ -223,21 +244,23 @@ public:
     auto key_size = table.key_size();
 
     auto message_size =
-        MessagePiece::get_header_size() + key_size + sizeof(key_offset) + sizeof(uint32_t) + sizeof(std::size_t);
+        MessagePiece::get_header_size() + key_size + sizeof(key_offset) + sizeof(uint32_t) + sizeof(std::size_t) + sizeof(uint64_t);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(HStoreMessage::ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST), message_size,
         table.tableID(), table.partitionID());
 
     // LOG(INFO) << "this_cluster_worker_id "<< this_worker_id << " new_acquire_partition_lock_and_read_message message on partition " 
     //           << table.partitionID() << " of " << ith_replica << " replica";
-
+    uint64_t ts = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count();
     Encoder encoder(message.data);
     encoder << message_piece_header;
     encoder.write_n_bytes(key, key_size);
     encoder << key_offset;
     encoder << this_worker_id;
     encoder << ith_replica;
+    encoder << ts;
     message.set_is_replica(ith_replica > 0);
+    message.set_message_gen_time(ts);
     message.flush();
     message.set_gen_time(Time::now());
     return message_size;

@@ -51,6 +51,7 @@ public:
       while (out_to_in_queue.empty() == false) {
         auto message_get_start = std::chrono::steady_clock::now();
         std::unique_ptr<Message> message(out_to_in_queue.front());
+        message->set_message_recv_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
         bool ok = out_to_in_queue.pop();
         CHECK(ok);
         auto workerId = message->get_worker_id();
@@ -96,6 +97,7 @@ public:
           std::this_thread::yield();
           continue;
         }
+        message->set_message_recv_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
         //LOG(INFO) << " message";
         network_size += message->get_message_length();
 
@@ -268,6 +270,7 @@ public:
   }
 
   void sendMessage(Message *message) {
+    message->set_message_send_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
     auto dest_node_id = message->get_dest_node_id();
     DCHECK(dest_node_id >= 0 && dest_node_id < sockets.size() &&
            dest_node_id != coordinator_id);
@@ -291,6 +294,7 @@ public:
         DCHECK(raw_message->get_message_length() == raw_message->data.length());
         DCHECK(raw_message->get_dest_node_id() == this->coordinator_id);
         internal_network_size += raw_message->get_message_length();
+        raw_message->set_message_send_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
         out_to_in_queue.push(raw_message);
         internal_network_msg_cnt++;
       }
@@ -301,22 +305,31 @@ public:
     for (size_t i = 0; i < messages_by_coordinator.size(); ++i) {
       if (messages_by_coordinator[i].size() == 0)
         continue;
+      auto gen_time = messages_by_coordinator[i][0]->get_gen_time();
+      
       if (messages_by_coordinator[i].size() == 1) {
         auto t = Time::now();
         sendMessage(messages_by_coordinator[i][0]);
+        auto ltc = (Time::now() - gen_time) / 1000;
+        gen_to_sent_latency.add(ltc);
         sent_latency.add((Time::now() - t) / 1000);
         network_msg_cnt++;
         continue;
       }
+
       std::unique_ptr<GrouppedMessage> gmsg(new GrouppedMessage);
       gmsg->set_dest_node_id(i);
+      auto ts = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count();
       for (size_t j = 0; j < messages_by_coordinator[i].size(); ++j) {
+        messages_by_coordinator[i][j]->set_message_send_time(ts);
         gmsg->addMessage(messages_by_coordinator[i][j]);
       }
       auto t = Time::now();
       sendMessage(gmsg.get());
       sent_latency.add((Time::now() - t) / 1000);
       network_msg_cnt++;
+      auto ltc = (Time::now() - gen_time) / 1000;
+      gen_to_sent_latency.add(ltc);
     }
   }
 

@@ -214,6 +214,59 @@ public:
   void set_transaction_id(int64_t tid) {
     *reinterpret_cast<int64_t *>(&data[0] + sizeof(header_type) + sizeof(deadbeef_type) + sizeof(source_cluster_worker_id_type)) = tid;
   }
+
+  size_t size_as_of_transaction_id() const {
+    return sizeof(header_type) + sizeof(deadbeef_type) + sizeof(source_cluster_worker_id_type) + sizeof(transaction_id_type);
+  }
+
+  size_t size_as_of_messaeg_gen_time() const {
+    return size_as_of_transaction_id() + sizeof(uint64_t);
+  }
+
+  size_t size_as_of_messaeg_send_time() const {
+    return size_as_of_messaeg_gen_time() + sizeof(uint64_t);
+  }
+
+  size_t size_as_of_messaeg_recv_time() const {
+    return size_as_of_messaeg_send_time() + sizeof(uint64_t);
+  }
+
+  size_t size_as_of_messaeg_resp_time() const {
+    return size_as_of_messaeg_recv_time() + sizeof(uint64_t);
+  }
+
+  uint64_t get_message_gen_time() const {
+    return *reinterpret_cast<const uint64_t *>(&data[0] + size_as_of_transaction_id());
+  }
+
+  uint64_t get_message_send_time() const {
+    return *reinterpret_cast<const uint64_t *>(&data[0] + size_as_of_messaeg_gen_time());
+  }
+
+  uint64_t get_message_recv_time() const {
+    return *reinterpret_cast<const uint64_t *>(&data[0] + size_as_of_messaeg_send_time());
+  }
+
+  uint64_t get_message_resp_time() const {
+    return *reinterpret_cast<const uint64_t *>(&data[0] + size_as_of_messaeg_recv_time());
+  }
+
+  void set_message_gen_time(uint64_t t) {
+    *reinterpret_cast<uint64_t *>(&data[0] + size_as_of_transaction_id()) = t;
+  }
+
+  void set_message_send_time(uint64_t t) {
+    *reinterpret_cast<uint64_t *>(&data[0] + size_as_of_messaeg_gen_time()) = t;
+  }
+
+  void set_message_recv_time(uint64_t t) {
+    *reinterpret_cast<uint64_t *>(&data[0] + size_as_of_messaeg_send_time()) = t;
+  }
+
+  void set_message_resp_time(uint64_t t) {
+    *reinterpret_cast<uint64_t *>(&data[0] + size_as_of_messaeg_recv_time()) = t;
+  }
+
 private:
   void clear_is_replica_bit() {
     get_header_ref() &= ~(IS_REPLICA_MASK << IS_REPLICA_OFFSET);
@@ -266,7 +319,7 @@ public:
   uint64_t put_to_out_queue_time;
 public:
   static constexpr uint32_t get_prefix_size() {
-    return sizeof(header_type) + sizeof(deadbeef_type) + sizeof(source_cluster_worker_id_type) + sizeof(transaction_id_type);
+    return sizeof(header_type) + sizeof(deadbeef_type) + sizeof(source_cluster_worker_id_type) + sizeof(transaction_id_type) + sizeof(uint64_t) * 4;
   }
 
   static uint64_t get_message_length(uint64_t v) {

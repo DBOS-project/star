@@ -41,6 +41,23 @@ private:
   Percentile<int64_t> replay_mp_concurrency;
   Percentile<int64_t> round_mp_initiated;
   Percentile<int64_t> zero_mp_initiated_cost;
+  Percentile<int64_t> handle_latency;
+  Percentile<int64_t> handle_msg_cnt;
+  Percentile<int64_t> rtt_stat;
+  Percentile<uint64_t> msg_gen_latency;
+  Percentile<uint64_t> msg_send_latency;
+  Percentile<uint64_t> msg_recv_latency;
+  Percentile<uint64_t> msg_proc_latency;
+  std::vector<Percentile<int64_t>> tries_latency;
+  std::vector<Percentile<int64_t>> tries_prepare_time;
+  std::vector<Percentile<int64_t>> tries_lock_stall_time;
+  std::vector<Percentile<int64_t>> tries_execution_done_latency;
+  std::vector<Percentile<int64_t>> tries_lock_response_latency;
+  std::vector<Percentile<int64_t>> tries_commit_initiated_latency;
+  std::vector<Percentile<int64_t>> tries_first_lock_response_latency;
+  std::vector<Percentile<int64_t>> tries_first_lock_request_processed_latency;
+  std::vector<Percentile<int64_t>> tries_first_lock_request_arrive_latency;
+  std::vector<Percentile<int64_t>> message_processing_latency;
   std::size_t batch_per_worker;
   std::atomic<bool> ended{false};
   uint64_t worker_commit = 0;
@@ -50,10 +67,13 @@ private:
   uint64_t received_persist_cmd_buffer_responses = 0;
   Percentile<int64_t> commit_interval;
   std::chrono::steady_clock::time_point last_commit;
+  Percentile<int64_t> mp_arrival_interval;
+  std::chrono::steady_clock::time_point last_mp_arrival;
   Percentile<int64_t> cmd_queue_time;
   Percentile<int64_t> cmd_stall_time;
   Percentile<int64_t> execution_phase_time;
   Percentile<int64_t> execution_phase_mp_rounds;
+  int rtt_test_target_cluster_worker = -1;
 public:
   using base_type = Executor<Workload, HStore<typename Workload::DatabaseType>>;
 
@@ -197,6 +217,16 @@ public:
                 std::atomic<uint32_t> &n_started_workers)
       : base_type(coordinator_id, worker_id, db, context, worker_status,
                   n_complete_workers, n_started_workers) {
+      tries_latency.resize(10);
+      tries_prepare_time.resize(tries_latency.size());
+      tries_lock_stall_time.resize(tries_latency.size());
+      tries_execution_done_latency.resize(tries_latency.size());
+      tries_commit_initiated_latency.resize(tries_latency.size());
+      tries_lock_response_latency.resize(tries_latency.size());
+      tries_first_lock_response_latency.resize(tries_latency.size());
+      tries_first_lock_request_processed_latency.resize(tries_latency.size());
+      tries_first_lock_request_arrive_latency.resize(tries_latency.size());
+      message_processing_latency.resize((size_t)HStoreMessage::NFIELDS);
       is_replica_worker = coordinator_id < this->partitioner->num_coordinator_for_one_replica() ? false: true;
       cluster_worker_num = this->context.worker_num * this->context.coordinator_num;
       active_replica_worker_num_end = this->context.worker_num * this->partitioner->num_coordinator_for_one_replica();
@@ -220,10 +250,20 @@ public:
         }
         DCHECK(managed_partitions.empty() == false);
         managed_partitions_str.pop_back(); // Remove last ,
+        if (coordinator_id == 0) {
+          rtt_test_target_cluster_worker = this_cluster_worker_id + this->context.worker_num;
+        } else {
+          rtt_test_target_cluster_worker = this_cluster_worker_id - this->context.worker_num;
+        }
       }
       
       std::string managed_replica_partitions_str;
       if (is_replica_worker) {
+        if (coordinator_id == 2) {
+          rtt_test_target_cluster_worker = this_cluster_worker_id + this->context.worker_num;
+        } else {
+          rtt_test_target_cluster_worker = this_cluster_worker_id - this->context.worker_num;
+        }
         partition_to_cmd_queue_index.resize(this->context.partition_num, -1);
         DCHECK(managed_partitions.empty());
         size_t cmd_queue_idx = 0;
@@ -637,13 +677,14 @@ public:
     std::size_t ith_replica;
 
     DCHECK(inputPiece.get_message_length() ==
-           MessagePiece::get_header_size() + key_size + sizeof(key_offset) + sizeof(uint32_t) + sizeof(std::size_t));
+           MessagePiece::get_header_size() + key_size + sizeof(key_offset) + sizeof(uint32_t) + sizeof(std::size_t) + sizeof(uint64_t));
 
     const void *key = stringPiece.data();
-
+    uint64_t ts3 = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count();
+    uint64_t ts1;
     stringPiece.remove_prefix(key_size);
     star::Decoder dec(stringPiece);
-    dec >> key_offset >> request_remote_worker_id >> ith_replica;
+    dec >> key_offset >> request_remote_worker_id >> ith_replica >> ts1;
 
     if (ith_replica > 0)
       DCHECK(is_replica_worker);
@@ -676,10 +717,9 @@ public:
   //                 << " already locked by " << tid_to_string(owned_partition_locked_by[partition_id]) << " ith_replica" << ith_replica;
       }
     }
-    
     // prepare response message header
     auto message_size =
-        MessagePiece::get_header_size() + sizeof(bool) + sizeof(key_offset);
+        MessagePiece::get_header_size() + sizeof(bool) + sizeof(key_offset) + sizeof(uint64_t) * 3;
 
     if (success) {
       message_size += value_size;
@@ -695,16 +735,21 @@ public:
 
     star::Encoder encoder(responseMessage.data);
     encoder << message_piece_header;
-    encoder << success << key_offset;
+    encoder << success << key_offset << ts1 << ts3;
 
     if (success) {
       auto row = table.search(key);
+      uint64_t ts2 = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count();
+      encoder << ts2;
       // reserve size for read
       responseMessage.data.append(value_size, 0);
       void *dest =
           &responseMessage.data[0] + responseMessage.data.size() - value_size;
       // read to message buffer
       HStoreHelper::read(row, dest, value_size);
+    } else {
+      uint64_t ts2 = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count();
+      encoder << ts2;
     }
 
     responseMessage.set_is_replica(ith_replica > 0);
@@ -723,6 +768,7 @@ public:
         cmds[i].queue_ts = std::chrono::steady_clock::now();
         cmds[i].txn = nullptr;
         q.push_back(cmds[i]);
+        replay_candidate_partitions.push_back(cmds[i].partition_id);
       } else if (cmds[i].is_mp == false) { // place into one partition command queue for replay
         auto partition = cmds[i].partition_id;
         DCHECK(partition != -1);
@@ -734,6 +780,7 @@ public:
         cmds[i].txn = sp_txn;
         cmds[i].queue_ts = std::chrono::steady_clock::now();
         q.push_back(cmds[i]);
+        replay_candidate_partitions.push_back(partition);
       } else { // place into multiple partition command queues for replay
         DCHECK(cmds[i].partition_id == -1);
         auto mp_txn = this->workload.deserialize_from_raw(this->context, cmds[i].command_data).release();
@@ -759,16 +806,22 @@ public:
             cmd_mp.command_data = "";
             cmd_mp.txn = nullptr;
             q.push_back(cmd_mp);
+            replay_candidate_partitions.push_back(partition_id);
           }
         }
         DCHECK(first_partition_by_this_worker != -1);
         cmds[i].txn->replay_queue_partition = first_partition_by_this_worker;
         get_partition_cmd_queue(first_partition_by_this_worker).push_back(cmds[i]);
+        mp_arrival_interval.add(std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - last_mp_arrival)
+            .count());
+        last_mp_arrival = std::chrono::steady_clock::now();
       }
     }
     //LOG(INFO) << "Spread " << cmds.size() << " commands to queues";
   }
 
+  std::deque<int> replay_candidate_partitions;
   void command_replication_request_handler(const Message & inputMessage, MessagePiece inputPiece,
                                    Message &responseMessage,
                                    ITable &table, Transaction *txn) {
@@ -922,29 +975,38 @@ public:
 
     bool success;
     uint32_t key_offset;
-
+    uint64_t ts1, ts2, ts3;
     StringPiece stringPiece = inputPiece.toStringPiece();
     Decoder dec(stringPiece);
-    dec >> success >> key_offset;
+    dec >> success >> key_offset >> ts1 >> ts2 >> ts3;
 
     if (success) {
       uint32_t msg_length = inputPiece.get_message_length();
       auto header_size = MessagePiece::get_header_size() ;
       uint32_t exp_length = header_size + sizeof(success) +
-                 sizeof(key_offset) + value_size;
+                 sizeof(key_offset) + sizeof(uint64_t) * 3 + value_size;
       DCHECK(msg_length == exp_length);
 
       TwoPLRWKey &readKey = txn->readSet[key_offset];
       dec.read_n_bytes(readKey.get_value(), value_size);
     } else {
       DCHECK(inputPiece.get_message_length() ==
-             MessagePiece::get_header_size() + sizeof(success) +
+             MessagePiece::get_header_size() + sizeof(uint64_t) * 3 + sizeof(success) +
                  sizeof(key_offset));
 
       txn->abort_lock = true;
     }
     txn->pendingResponses--;
     txn->network_size += inputPiece.get_message_length();
+    if (txn->lock_request_responded == false) {
+      txn->lock_request_responded = true;
+      txn->first_lock_request_arrive_latency = ts2 - std::chrono::time_point_cast<std::chrono::microseconds>(txn->lock_issue_time).time_since_epoch().count();
+      txn->first_lock_request_processed_latency = ts3 - std::chrono::time_point_cast<std::chrono::microseconds>(txn->lock_issue_time).time_since_epoch().count();
+      
+      txn->first_lock_response_latency = std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - txn->lock_issue_time)
+              .count();
+    }
     // LOG(INFO) << "acquire_partition_lock_response for worker " << this_cluster_worker_id
     //           << " on partition " << partition_id
     //           << " partition locked acquired " << success 
@@ -1092,7 +1154,34 @@ public:
     DCHECK(0 <= replica_cluster_worker_id && replica_cluster_worker_id < cluster_worker_num);
     new_get_replayed_log_posistion_response_message(*cluster_worker_messages[replica_cluster_worker_id], replayed_position);
     flush_messages();
+    last_mp_arrival = std::chrono::steady_clock::now();
+    last_commit = std::chrono::steady_clock::now();
     active_replica_waiting_position = -1;
+  }
+
+  void rtt_test_request_handler(const Message & inputMessage, MessagePiece inputPiece,
+                                          Message &responseMessage,
+                                          ITable &table, Transaction *txn) {
+    DCHECK(inputPiece.get_message_type() ==
+           static_cast<uint32_t>(HStoreMessage::RTT_REQUEST));
+    DCHECK(inputPiece.get_message_length() ==
+             MessagePiece::get_header_size() + sizeof(int) + sizeof(int));
+    int cluster_worker_id, ith_replica;
+    auto stringPiece = inputPiece.toStringPiece();
+    Decoder dec(stringPiece);
+    dec >> cluster_worker_id >> ith_replica;
+
+    auto message_size = MessagePiece::get_header_size();
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+      static_cast<uint32_t>(HStoreMessage::RTT_RESPONSE), message_size,
+      0, 0);
+
+    star::Encoder encoder(responseMessage.data);
+    encoder << message_piece_header;
+    responseMessage.set_transaction_id(inputMessage.get_transaction_id());
+    responseMessage.set_is_replica(ith_replica > 0);
+    responseMessage.flush();
+    responseMessage.set_gen_time(Time::now());
   }
 
   void get_replayed_log_position_request_handler(const Message & inputMessage, MessagePiece inputPiece,
@@ -1261,6 +1350,9 @@ public:
       //   LOG(INFO) << "Partition " << partition_id << " unlocked by cluster worker" << request_remote_worker << " by this_cluster_worker_id " << this_cluster_worker_id << " ith_replica " << ith_replica << " txn " << tid_to_string(tid);
       owned_partition_locked_by[partition_id] = -1;
       success = true;
+    }
+    if (is_replica_worker) {
+      replay_candidate_partitions.push_back(partition_id);
     }
     // if (ith_replica > 0);
     //   DCHECK(success)
@@ -1469,7 +1561,6 @@ public:
       }
       process_single_txn_commit(txn);
       post_commit(txn);
-      handle_requests(false);
     }
   }
 
@@ -1480,10 +1571,22 @@ public:
     txn->synchronous = false;
     active_txns[txn->transaction_id] = txn;
     auto res = txn->execute(this->id);
+    txn->lock_issue_time = std::chrono::steady_clock::now();
+    auto ltc =
+    std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - txn->startTime)
+        .count();
+    txn->execution_done_latency = ltc;
     DCHECK(res != TransactionResult::ABORT_NORETRY);
     if (txn->pendingResponses == 0) {
       txn->abort_lock_local_read = true;
       async_txns_to_commit.push_back(txn);
+      if (txn->abort_lock == false) {
+        auto ltc = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - txn->startTime)
+        .count();
+        tries_lock_response_latency[std::min((int)txn->tries, (int)tries_lock_response_latency.size() - 1)].add(ltc);
+      }
     }
   }
 
@@ -1496,7 +1599,13 @@ public:
       txns[i]->synchronous = false;
       DCHECK(txns[i]->is_single_partition() == false);
       // initiate read requests (could be remote)
+      if (txns[i]->tries == 1)
+        txns[i]->lock_issue_time = std::chrono::steady_clock::now();
       active_txns[txns[i]->transaction_id] = txns[i];
+      auto ltc = std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - txns[i]->startTime)
+          .count();
+      txns[i]->set_stall_time(ltc);
       auto res = txns[i]->execute(this->id);
       if (res == TransactionResult::ABORT_NORETRY) {
         txns[i]->abort_no_retry = true;
@@ -1513,6 +1622,11 @@ public:
   }
 
   void process_single_txn_commit(TransactionType * txn) {
+    auto ltc =
+    std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - txn->startTime)
+        .count();
+    txn->commit_initiated_latency = ltc;
     DCHECK(txn->pendingResponses == 0);
     DCHECK(txn->abort_no_retry == false);
     if (txn->abort_no_retry) {
@@ -1522,11 +1636,6 @@ public:
     }
 
     if (txn->abort_lock) {
-      auto ltc =
-      std::chrono::duration_cast<std::chrono::microseconds>(
-          std::chrono::steady_clock::now() - txn->startTime)
-          .count();
-      txn->set_stall_time(ltc);
       if (is_replica_worker == false && txn->abort_lock_lock_released == false) {
         // We only release locks when executing on active replica
         abort(*txn, cluster_worker_messages);
@@ -1600,9 +1709,10 @@ public:
   }
 
   void process_commit_phase(const std::vector<TransactionType*> & txns) {
+    int cnt =0;
     while (active_txns.size()) {
-        handle_requests_and_collect_ready_to_commit_txns(async_txns_to_commit);
-        process_to_commit(async_txns_to_commit);
+      handle_requests(false);
+      process_to_commit(async_txns_to_commit);
     }
     // std::vector<TransactionType*> to_commit;
     // for (size_t i = 0; i < txns.size(); ++i) {
@@ -1654,6 +1764,7 @@ public:
   void execute_transaction_batch(const std::vector<TransactionType*> all_txns,
                                  const std::vector<TransactionType*> & sp_txns, 
                                  std::vector<TransactionType*> & mp_txns) {
+    last_commit = std::chrono::steady_clock::now();
     std::vector<bool> workers_need_persist_cmd_buffer(this->active_replica_worker_num_end, true);
     int64_t txn_id = 0;
     int cnt = 0;
@@ -1849,19 +1960,20 @@ public:
             get_partition_last_replayed_position_in_log(cmd.partition_id) = cmd.position_in_log;
             //respond_to_active_replica_with_replay_position(cmd.position_in_log);
           }
-          cmd_stall_time.add(std::chrono::duration_cast<std::chrono::microseconds>(
-              std::chrono::steady_clock::now() - cmd.queue_ts)
-              .count());
+          // cmd_stall_time.add(std::chrono::duration_cast<std::chrono::microseconds>(
+          //     std::chrono::steady_clock::now() - cmd.queue_ts)
+          //     .count());
           q.pop_front();
         } else {
-          if (cmd.queue_head_processed == false) {
-            cmd_queue_time.add(std::chrono::duration_cast<std::chrono::microseconds>(
-              std::chrono::steady_clock::now() - cmd.queue_ts)
-              .count());
-            cmd.queue_ts = std::chrono::steady_clock::now();
-            cmd.queue_head_processed = true;
-          }
+          // if (cmd.queue_head_processed == false) {
+          //   cmd_queue_time.add(std::chrono::duration_cast<std::chrono::microseconds>(
+          //     std::chrono::steady_clock::now() - cmd.queue_ts)
+          //     .count());
+          //   cmd.queue_ts = std::chrono::steady_clock::now();
+          //   cmd.queue_head_processed = true;
+          // }
           // The partition is being locked by front transaction executing, try next time.
+          //replay_candidate_partitions.push_back(cmd.partition_id);
           break;
         }
       } else if (cmd.is_mp == false) {
@@ -1903,6 +2015,7 @@ public:
             DCHECK(owned_partition_locked_by[cmd.partition_id] == -1);
           }
         } else {
+          //replay_candidate_partitions.push_back(cmd.partition_id);
           // The partition is being locked by front transaction executing, try next time.
           break;
         }
@@ -1929,7 +2042,89 @@ public:
   uint64_t cross_worker_mp_txn = 0;
   uint64_t single_worker_mp_txn = 0;
   int active_mps = 0;
-  int active_mp_limit = 300;
+  int active_mp_limit = 100000;
+  void replay_commands_in_partition(int partition) {
+    int i = partition_to_cmd_queue_index[partition];
+    if (partition_command_queue_processing[i])
+        return;
+    replay_sp_queue_commands(i);
+    auto & q = partition_command_queues[i];
+    if (q.empty())
+      return;
+    partition_command_queue_processing[i] = true;
+
+    if (active_mps < active_mp_limit && q.empty() == false && q.front().is_coordinator && q.front().is_mp) {
+      auto & cmd = q.front();
+      DCHECK(cmd.txn != nullptr);
+      DCHECK(partition_command_queue_processing[i] == true);
+      if (cmd.txn->being_replayed == false) {
+        auto queue_time =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - cmd.txn->startTime)
+            .count();
+        cmd.txn->being_replayed = true;
+        cmd.txn->startTime = std::chrono::steady_clock::now();
+        cmd.txn->record_commit_prepare_time(queue_time);
+      }
+      auto mp_txn = cmd.txn;
+      ++active_mps;
+      process_execution_async_single_mp_txn(mp_txn);
+    } else {
+      partition_command_queue_processing[i] = false;
+    }
+  }
+
+  void replay_loop() {
+    replay_commands_sp_then_mp_parallel();
+    replay_candidate_partitions.clear();
+    return;
+    auto complete_mp = [&, this](TransactionType* mp_txn) {
+      DCHECK(active_txns.count(mp_txn->transaction_id) == 0);
+      DCHECK(mp_txn->is_single_partition() == false);
+      auto mp_replay_partition = mp_txn->replay_queue_partition;
+      auto replay_queue_idx = partition_to_cmd_queue_index[mp_replay_partition];
+      auto & q = partition_command_queues[replay_queue_idx];
+      DCHECK(partition_command_queue_processing[replay_queue_idx]);
+      if (mp_txn->finished_commit_phase && (mp_txn->abort_lock == false || mp_txn->abort_no_retry)) {
+        DCHECK(mp_txn->release_lock_called);
+        auto cmd = q.front();
+        DCHECK(mp_txn == cmd.txn);
+        auto latency =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - mp_txn->startTime)
+            .count();
+        this->percentile.add(latency);
+        this->dist_latency.add(latency);
+        DCHECK(mp_txn->tries >= 1);
+        this->record_txn_breakdown_stats(*mp_txn);
+        DCHECK(get_partition_last_replayed_position_in_log(mp_replay_partition) <= cmd.position_in_log);
+        get_partition_last_replayed_position_in_log(mp_replay_partition) = cmd.position_in_log;
+        q.pop_front();
+        partition_command_queue_processing[replay_queue_idx] = false;
+        tries_latency[std::min((int)mp_txn->tries, (int)tries_latency.size() - 1)].add(latency);
+        delete mp_txn;
+      } else {
+        partition_command_queue_processing[replay_queue_idx] = false;
+      }
+      --active_mps;
+      if (q.empty() == false) {
+        replay_candidate_partitions.push_back(mp_replay_partition);
+      }
+    };
+    process_to_commit(async_txns_to_commit, complete_mp);
+    while (!replay_candidate_partitions.empty()) {
+      int partition = replay_candidate_partitions.front();
+      replay_candidate_partitions.pop_front();
+      replay_commands_in_partition(partition);
+      handle_requests(false);
+      process_to_commit(async_txns_to_commit, complete_mp);
+    }
+    if (active_mps == 0) {
+      respond_to_active_replica_with_replay_position(get_minimum_replayed_log_position());
+    }
+    replay_mp_concurrency.add(active_mps);
+  }
+
   void replay_commands_sp_then_mp_parallel() {
     int mp_initiated = 0;
     ScopedTimer t([&, this](uint64_t us) {
@@ -1944,26 +2139,6 @@ public:
       auto replay_queue_idx = partition_to_cmd_queue_index[mp_txn->replay_queue_partition];
       DCHECK(partition_command_queue_processing[replay_queue_idx]);
       if (mp_txn->finished_commit_phase && (mp_txn->abort_lock == false || mp_txn->abort_no_retry)) {
-        // int cnt_partition_local = 0;
-        // int cnt_partition_process = 0;
-        // int cnt_partition_node = 0;
-        // for (int32_t i = 0; i < mp_txn->get_partition_count(); ++i) {
-        //   int partition = mp_txn->get_partition(i);
-        //   if (partition_owner_cluster_worker(partition, mp_txn->ith_replica) == this_cluster_worker_id) {
-        //     cnt_partition_local++;
-        //   } else if (partition_owner_cluster_coordinator(partition, mp_txn->ith_replica) == this->context.coordinator_id) {
-        //     cnt_partition_process++;
-        //   } else {
-        //     cnt_partition_node++;
-        //   }
-        // }
-        // if (cnt_partition_node) {
-        //   cross_node_mp_txn++;
-        // } else if (cnt_partition_process) {
-        //   cross_worker_mp_txn++;
-        // } else {
-        //   single_worker_mp_txn++;
-        // }
         DCHECK(mp_txn->release_lock_called);
         auto & q = partition_command_queues[replay_queue_idx];
         auto cmd = q.front();
@@ -1981,9 +2156,23 @@ public:
         q.pop_front();
         partition_command_queue_processing[replay_queue_idx] = false;
         replay_sp_queue_commands(replay_queue_idx);
+        tries_latency[std::min((int)mp_txn->tries, (int)tries_latency.size() - 1)].add(latency);
+        tries_prepare_time[std::min((int)mp_txn->tries, (int)tries_prepare_time.size() - 1)].add(mp_txn->get_commit_prepare_time());
+        tries_lock_stall_time[std::min((int)mp_txn->tries, (int)tries_lock_stall_time.size() - 1)].add(mp_txn->get_stall_time());
+        tries_execution_done_latency[std::min((int)mp_txn->tries, (int)tries_execution_done_latency.size() - 1)].add(mp_txn->execution_done_latency);
+        tries_commit_initiated_latency[std::min((int)mp_txn->tries, (int)tries_commit_initiated_latency.size() - 1)].add(mp_txn->commit_initiated_latency);
+        tries_first_lock_request_arrive_latency[std::min((int)mp_txn->tries, (int)tries_first_lock_request_arrive_latency.size() - 1)].add(mp_txn->first_lock_request_arrive_latency);
+        tries_first_lock_request_processed_latency[std::min((int)mp_txn->tries, (int)tries_first_lock_request_processed_latency.size() - 1)].add(mp_txn->first_lock_request_processed_latency);
+        tries_first_lock_response_latency[std::min((int)mp_txn->tries, (int)tries_first_lock_response_latency.size() - 1)].add(mp_txn->first_lock_response_latency);
         delete mp_txn;
       } else {
         partition_command_queue_processing[replay_queue_idx] = false;
+        auto ltc =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - mp_txn->startTime)
+            .count();
+        DCHECK(ltc != 0);
+        mp_txn->set_stall_time(ltc);
       }
       --active_mps;
     };
@@ -1991,6 +2180,7 @@ public:
     int cnt = 0;
     for (size_t i = 0; i < partition_command_queues.size(); ++i) {
       handle_requests(false);
+      process_to_commit(async_txns_to_commit, complete_mp);
       if (partition_command_queue_processing[i])
         continue;
       replay_sp_queue_commands(i);
@@ -2026,7 +2216,7 @@ public:
     round_mp_initiated.add(mp_initiated);
     // this->round_concurrency.add(mp_txns.size());
     // this->effective_round_concurrency.add(good_concur);
-    if (active_mps <= 0) {
+    if (active_mps == 0) {
       respond_to_active_replica_with_replay_position(get_minimum_replayed_log_position());
     }
   }
@@ -2174,11 +2364,17 @@ public:
 
   std::deque<TransactionType*> async_txns_to_commit;
   std::size_t handle_requests(bool should_replay_commands = true) {
-    auto ret = handle_requests_and_collect_ready_to_commit_txns(async_txns_to_commit, should_replay_commands);
-    return ret;
-  }
-
-  std::size_t handle_requests_and_collect_ready_to_commit_txns(std::deque<TransactionType*> & to_commit, bool should_replay_commands = true) {
+    bool record = this->in_queue.empty() == false;
+    if (record == false)
+      return 0;
+    int msg_count = 0;
+    ScopedTimer t([&, this](uint64_t us) {
+      if (record) {
+        handle_latency.add(us);
+        handle_msg_cnt.add(msg_count);
+      }
+    });
+    record = false;
     std::size_t size = 0;
     while (!this->in_queue.empty()) {
       ++size;
@@ -2190,13 +2386,26 @@ public:
         DCHECK(is_replica_worker);
       else
         DCHECK(!is_replica_worker);
-
+      int message_type = 0;
       auto msg_cnt = message->get_message_count();
+      ScopedTimer t([&, this](uint64_t us) {
+        message_processing_latency[message_type].add(us);
+        if (message_type == (int)HStoreMessage::ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST) {
+          DCHECK(message->get_message_gen_time() != 0);
+          DCHECK(message->get_message_gen_time() <= message->get_message_send_time());
+          DCHECK(message->get_message_gen_time() <= message->get_message_recv_time());
+          msg_send_latency.add(message->get_message_send_time() - message->get_message_gen_time());
+          msg_recv_latency.add(message->get_message_recv_time() - message->get_message_gen_time());
+          msg_proc_latency.add(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count() - message->get_message_gen_time());
+        }
+      });
       int msg_idx = 0;
       for (auto it = message->begin(); it != message->end(); it++, ++msg_idx) {
-
+        record = true;
+        msg_count++;
         MessagePiece messagePiece = *it;
         auto type = messagePiece.get_message_type();
+        message_type = type;
         //LOG(INFO) << "Message type " << type;
         auto message_partition_id = messagePiece.get_partition_id();
         // auto message_partition_owner_cluster_worker_id = partition_owner_cluster_worker(message_partition_id);
@@ -2225,7 +2434,13 @@ public:
                                                  txn);
           DCHECK(txn);
           if (txn->pendingResponses == 0) {
-            to_commit.push_back(txn);
+            async_txns_to_commit.push_back(txn);
+            if (txn->abort_lock == false) {
+              auto ltc = std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - txn->lock_issue_time)
+              .count();
+              tries_lock_response_latency[std::min((int)txn->tries, (int)tries_lock_response_latency.size() - 1)].add(ltc);
+            }
           }
         } else if (type == (int)HStoreMessage::WRITE_BACK_REQUEST) {
           write_back_request_handler(*message, messagePiece,
@@ -2275,6 +2490,17 @@ public:
           get_replayed_log_position_response_handler(*message, messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()], 
                                                 *table, 
                                                 txn);
+        } else if (type == (int)HStoreMessage::RTT_REQUEST) {
+          rtt_test_request_handler(*message, messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()], 
+                                                *table, 
+                                                txn);
+        } else if (type == (int)HStoreMessage::RTT_RESPONSE) {
+          DCHECK(rtt_request_sent);
+          auto rtt = std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - rtt_request_sent_time)
+          .count(); 
+          rtt_request_sent = false;
+          rtt_stat.add(rtt);
         } else {
           CHECK(false);
         }
@@ -2287,14 +2513,23 @@ public:
       flush_messages();
     }
 
-    if (should_replay_commands && this->partitioner->replica_num() > 1 && is_replica_worker) {
-      replay_all_sp_commands();
-    }
+    // if (should_replay_commands && this->partitioner->replica_num() > 1 && is_replica_worker) {
+    //   replay_all_sp_commands();
+    // }
     if (this->partitioner->replica_num() > 1 && is_replica_worker == false) {
       send_commands_to_replica();
     }
+    if (rtt_request_sent == false) {
+      rtt_request_sent_time = std::chrono::steady_clock::now();
+      cluster_worker_messages[rtt_test_target_cluster_worker]->set_transaction_id(0);
+      HStoreMessageFactory::new_rtt_message(*cluster_worker_messages[rtt_test_target_cluster_worker], is_replica_worker, this_cluster_worker_id);
+      flush_messages();
+      rtt_request_sent = true;
+    }
     return size;
   }
+  std::chrono::steady_clock::time_point rtt_request_sent_time;
+  bool rtt_request_sent = false;
 
   void drive_event_loop(bool new_transaction = true) {
     handle_requests(false);
@@ -2303,7 +2538,7 @@ public:
     }
 
     if (this->partitioner->replica_num() > 1 && is_replica_worker) {
-      replay_commands_sp_then_mp_parallel();
+      replay_loop();
     }
   }
   
@@ -2358,6 +2593,7 @@ public:
   }
 
   void start() override {
+    last_mp_arrival = std::chrono::steady_clock::now();
     LOG(INFO) << "Executor " << (is_replica_worker ? "Replica" : "") << this->id << " starts with thread id" << gettid();
 
     last_commit = std::chrono::steady_clock::now();
@@ -2404,7 +2640,67 @@ public:
   }
 
   void onExit() override {
-
+    std::string message_processing_latency_str = "\nmessage_processing_latency_by_type\n";
+    for (size_t i = 0; i < message_processing_latency.size(); ++i) {
+      if (message_processing_latency[i].size() >= 100) {
+        message_processing_latency_str += "Message type " + std::to_string(i) + " count " + std::to_string(message_processing_latency[i].size()) + " avg " + std::to_string(message_processing_latency[i].avg()) + " 50th " + std::to_string(message_processing_latency[i].nth(50)) + " 75th " + std::to_string(message_processing_latency[i].nth(75)) + " 95th " + std::to_string(message_processing_latency[i].nth(95)) + "\n";
+      }
+    }
+    std::string tries_latency_str = "\ntries_latency_str\n";
+    for (size_t i = 0; i < tries_latency.size(); ++i) {
+      if (tries_latency[i].size() >= 100) {
+        tries_latency_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_latency[i].size()) + " avg " + std::to_string(tries_latency[i].avg()) + " 50th " + std::to_string(tries_latency[i].nth(50)) + " 75th " + std::to_string(tries_latency[i].nth(75)) + " 95th " + std::to_string(tries_latency[i].nth(95)) + "\n";
+      }
+    }
+    std::string tries_prepare_time_str = "\ntries_prepare_time_str\n";
+    for (size_t i = 0; i < tries_latency.size(); ++i) {
+      if (tries_prepare_time[i].size() >= 100) {
+        tries_prepare_time_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_prepare_time[i].size()) + " avg " + std::to_string(tries_prepare_time[i].avg()) + " 50th " + std::to_string(tries_prepare_time[i].nth(50)) + " 75th " + std::to_string(tries_prepare_time[i].nth(75)) + " 95th " + std::to_string(tries_prepare_time[i].nth(95)) + "\n";
+      }
+    }
+    std::string tries_lock_stall_time_str = "\ntries_lock_stall_time_str\n";
+    for (size_t i = 0; i < tries_latency.size(); ++i) {
+      if (tries_lock_stall_time[i].size() >= 100) {
+        tries_lock_stall_time_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_lock_stall_time[i].size()) + " avg " + std::to_string(tries_lock_stall_time[i].avg()) + " 50th " + std::to_string(tries_lock_stall_time[i].nth(50)) + " 75th " + std::to_string(tries_lock_stall_time[i].nth(75)) + " 95th " + std::to_string(tries_lock_stall_time[i].nth(95)) + "\n";
+      }
+    }
+    std::string tries_execution_done_time_str = "\ntries_execution_done_time_str\n";
+    for (size_t i = 0; i < tries_latency.size(); ++i) {
+      if (tries_execution_done_latency[i].size() >= 100) {
+        tries_execution_done_time_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_execution_done_latency[i].size()) + " avg " + std::to_string(tries_execution_done_latency[i].avg()) + " 50th " + std::to_string(tries_execution_done_latency[i].nth(50)) + " 75th " + std::to_string(tries_execution_done_latency[i].nth(75)) + " 95th " + std::to_string(tries_execution_done_latency[i].nth(95)) + "\n";
+      }
+    }
+    std::string tries_first_lock_response_latency_str = "\ntries_first_lock_response_latency_str\n";
+    for (size_t i = 0; i < tries_latency.size(); ++i) {
+      if (tries_first_lock_response_latency[i].size() >= 100) {
+        tries_first_lock_response_latency_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_first_lock_response_latency[i].size()) + " avg " + std::to_string(tries_first_lock_response_latency[i].avg()) + " 50th " + std::to_string(tries_first_lock_response_latency[i].nth(50)) + " 75th " + std::to_string(tries_first_lock_response_latency[i].nth(75)) + " 95th " + std::to_string(tries_first_lock_response_latency[i].nth(95)) + "\n";
+      }
+    }
+    std::string tries_first_lock_request_arrive_latency_str = "\ntries_first_lock_request_arrive_latency_str\n";
+    for (size_t i = 0; i < tries_latency.size(); ++i) {
+      if (tries_first_lock_request_arrive_latency[i].size() >= 100) {
+        tries_first_lock_request_arrive_latency_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_first_lock_request_arrive_latency[i].size()) + " avg " + std::to_string(tries_first_lock_request_arrive_latency[i].avg()) + " 50th " + std::to_string(tries_first_lock_request_arrive_latency[i].nth(50)) + " 75th " + std::to_string(tries_first_lock_request_arrive_latency[i].nth(75)) + " 95th " + std::to_string(tries_first_lock_request_arrive_latency[i].nth(95)) + "\n";
+      }
+    }
+    std::string tries_first_lock_request_processed_latency_str = "\ntries_first_lock_request_processed_latency_str\n";
+    for (size_t i = 0; i < tries_latency.size(); ++i) {
+      if (tries_first_lock_request_processed_latency[i].size() >= 100) {
+        tries_first_lock_request_processed_latency_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_first_lock_request_processed_latency[i].size()) + " avg " + std::to_string(tries_first_lock_request_processed_latency[i].avg()) + " 50th " + std::to_string(tries_first_lock_request_processed_latency[i].nth(50)) + " 75th " + std::to_string(tries_first_lock_request_processed_latency[i].nth(75)) + " 95th " + std::to_string(tries_first_lock_request_processed_latency[i].nth(95)) + "\n";
+      }
+    }
+    std::string tries_lock_response_latency_str = "\ntries_last_lock_response_latency_str\n";
+    for (size_t i = 0; i < tries_latency.size(); ++i) {
+      if (tries_lock_response_latency[i].size() >= 100) {
+        tries_lock_response_latency_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_lock_response_latency[i].size()) + " avg " + std::to_string(tries_lock_response_latency[i].avg()) + " 50th " + std::to_string(tries_lock_response_latency[i].nth(50)) + " 75th " + std::to_string(tries_lock_response_latency[i].nth(75)) + " 95th " + std::to_string(tries_lock_response_latency[i].nth(95)) + "\n";
+      }
+    }
+    std::string tries_commit_initiated_latency_str = "\ntries_commit_initiated_latency_str\n";
+    for (size_t i = 0; i < tries_latency.size(); ++i) {
+      if (tries_commit_initiated_latency[i].size() >= 100) {
+        tries_commit_initiated_latency_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_commit_initiated_latency[i].size()) + " avg " + std::to_string(tries_commit_initiated_latency[i].avg()) + " 50th " + std::to_string(tries_commit_initiated_latency[i].nth(50)) + " 75th " + std::to_string(tries_commit_initiated_latency[i].nth(75)) + " 95th " + std::to_string(tries_commit_initiated_latency[i].nth(95)) + "\n";
+      }
+    }
+    
     LOG(INFO) << (is_replica_worker ? "Replica" : "") << " Worker " << this->id << " commit: "<< this->worker_commit 
               << ". batch concurrency: " << this->round_concurrency.nth(50) 
               << ". effective batch concurrency: " << this->effective_round_concurrency.nth(50) 
@@ -2429,10 +2725,21 @@ public:
               << " acquire lock ltc " << acquire_lock_message_latency.nth(50) << " 50th " << acquire_lock_message_latency.nth(75) << " 75th "  << acquire_lock_message_latency.nth(95) << " 95th "
               << " single_partition_mp " << single_worker_mp_txn << " cross_worker_mp " << cross_worker_mp_txn << " cross_node_mp "  << cross_node_mp_txn
               << " replay_loop_time " << replay_loop_time.nth(50) << " " << replay_loop_time.nth(75) << " " << replay_loop_time.nth(95) << " " << replay_loop_time.avg()
-              << " replay_concurrency " << replay_mp_concurrency.nth(50) << " " << replay_mp_concurrency.nth(75) << " " << replay_mp_concurrency.nth(95)
+              << " replay_concurrency " << replay_mp_concurrency.nth(50) << " " << replay_mp_concurrency.nth(75) << " " << replay_mp_concurrency.nth(95) << " " << replay_mp_concurrency.avg()
               << " round_mp_initiated " << round_mp_initiated.nth(50) << " " << round_mp_initiated.nth(75) << " " << round_mp_initiated.nth(95)
               << " zero_mp_initiated_cost " << zero_mp_initiated_cost.avg()
-              << " commit interval " << commit_interval.avg() 
+              << " commit interval " << commit_interval.nth(50) << " " << commit_interval.nth(75) << " " << commit_interval.nth(95) << " " << commit_interval.avg()
+              << " mp_arrival_interval " << mp_arrival_interval.nth(50) << " " << mp_arrival_interval.nth(75) << " " << mp_arrival_interval.nth(95) << " " << mp_arrival_interval.avg()
+              << " handle request latency " << handle_latency.nth(50) << " " << handle_latency.nth(75) << " " << handle_latency.nth(95) << " " << handle_latency.avg()
+              << " handle message count " << handle_msg_cnt.nth(50) << " " << handle_msg_cnt.nth(75) << " " << handle_msg_cnt.nth(95) << " " << handle_msg_cnt.avg()
+              << " rtt " << rtt_stat.nth(50) << " " << rtt_stat.nth(75) << " " << rtt_stat.nth(95) << " " << rtt_stat.avg()
+              << " msg_send_latency " << msg_send_latency.nth(50) << " " << msg_send_latency.nth(75) << " " << msg_send_latency.nth(95) << " " << msg_send_latency.avg()
+              << " msg_recv_latency " << msg_recv_latency.nth(50) << " " << msg_recv_latency.nth(75) << " " << msg_recv_latency.nth(95) << " " << msg_recv_latency.avg()
+              << " msg_proc_latency " << msg_proc_latency.nth(50) << " " << msg_proc_latency.nth(75) << " " << msg_proc_latency.nth(95) << " " << msg_proc_latency.avg()
+              << message_processing_latency_str
+              << tries_latency_str << tries_prepare_time_str << tries_lock_stall_time_str << tries_execution_done_time_str 
+              << tries_first_lock_request_arrive_latency_str << tries_first_lock_request_processed_latency_str 
+              << tries_first_lock_response_latency_str << tries_lock_response_latency_str << tries_commit_initiated_latency_str
               << " cmd queue time " << cmd_queue_time.nth(50)
               << " cmd stall time by lock " << cmd_stall_time.nth(50) 
               << " execution phase time " << execution_phase_time.avg()
@@ -2447,13 +2754,13 @@ public:
               << " commit_write_back " << this->local_txn_commit_write_back_time_pct.nth(50) << " us, "
               << " commit_release_lock " << this->local_txn_commit_unlock_time_pct.nth(50) << " us \n"
               << " DIST txn stall " << this->dist_txn_stall_time_pct.nth(50) << " us, "
-              << " local_work " << this->dist_txn_local_work_time_pct.nth(50) << " us, "
-              << " remote_work " << this->dist_txn_remote_work_time_pct.nth(50) << " us, "
-              << " commit_work " << this->dist_txn_commit_work_time_pct.nth(50) << " us, "
-              << " commit_prepare " << this->dist_txn_commit_prepare_time_pct.nth(50) << " us, "
+              << " local_work " << this->dist_txn_local_work_time_pct.nth(50) << " us "  << this->dist_txn_local_work_time_pct.avg() << " us, "
+              << " remote_work " << this->dist_txn_remote_work_time_pct.nth(50) << " us " << this->dist_txn_remote_work_time_pct.avg() << " us, "
+              << " commit_work " << this->dist_txn_commit_work_time_pct.nth(50) << " us " << this->dist_txn_commit_work_time_pct.avg() << " us, "
+              << " commit_prepare " << this->dist_txn_commit_prepare_time_pct.nth(50) << " us " << this->dist_txn_commit_prepare_time_pct.avg() << " us, "
               << " commit_persistence " << this->dist_txn_commit_persistence_time_pct.nth(50) << " us, "
               << " commit_replication " << this->local_txn_commit_replication_time_pct.nth(50) << " us, "
-              << " commit_write_back " << this->dist_txn_commit_write_back_time_pct.nth(50) << " us, "
+              << " commit_write_back " << this->dist_txn_commit_write_back_time_pct.nth(50) << " us " << this->dist_txn_commit_write_back_time_pct.avg() << " us, "
               << " commit_release_lock " << this->dist_txn_commit_unlock_time_pct.nth(50) << " us \n";
 
     if (this->id == 0) {
@@ -2556,6 +2863,7 @@ protected:
     int dest_worker_id = cluster_worker_id_to_worker_id_on_a_node(dest_cluster_worker_id);
     message->set_worker_id(dest_worker_id);
     message->set_source_cluster_worker_id(this_cluster_worker_id);
+    message->set_message_gen_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
   }
 };
 } // namespace star

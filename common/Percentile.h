@@ -13,12 +13,13 @@
 // https://en.wikipedia.org/wiki/Percentile
 
 namespace star {
-
+extern bool warmed_up;
 template <class T> class Percentile {
 public:
   using element_type = T;
-
   void add(const element_type &value) {
+    if (warmed_up == false)
+      return;
     isSorted_ = false;
     data_.push_back(value);
     sum += value;

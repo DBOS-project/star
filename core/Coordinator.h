@@ -20,7 +20,7 @@
 #include <memory>
 
 namespace star {
-
+bool warmed_up = false;
 class Coordinator {
 public:
   template <class Database, class Context>
@@ -158,7 +158,7 @@ public:
     }
 
     // run timeToRun seconds
-    auto timeToRun = 30, warmup = 10, cooldown = 5;
+    auto timeToRun = 60, warmup = 20, cooldown = 0;
     auto startTime = std::chrono::steady_clock::now();
 
     uint64_t total_commit = 0, total_abort_no_retry = 0, total_abort_lock = 0,
@@ -208,6 +208,7 @@ public:
                 << ", local: " << 100.0 * n_local / n_commit << " %";
       count++;
       if (count > warmup && count <= timeToRun - cooldown) {
+        warmed_up = true;
         total_commit += n_commit;
         total_abort_no_retry += n_abort_no_retry;
         total_abort_lock += n_abort_lock;
