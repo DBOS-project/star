@@ -2566,15 +2566,15 @@ public:
     // if (should_replay_commands && this->partitioner->replica_num() > 1 && is_replica_worker) {
     //   replay_all_sp_commands();
     // }
+    // if (rtt_request_sent == false) {
+    //   rtt_request_sent_time = std::chrono::steady_clock::now();
+    //   cluster_worker_messages[rtt_test_target_cluster_worker]->set_transaction_id(0);
+    //   HStoreMessageFactory::new_rtt_message(*cluster_worker_messages[rtt_test_target_cluster_worker], is_replica_worker, this_cluster_worker_id);
+    //   flush_messages();
+    //   rtt_request_sent = true;
+    // }
     if (this->partitioner->replica_num() > 1 && is_replica_worker == false) {
       send_commands_to_replica();
-    }
-    if (rtt_request_sent == false) {
-      rtt_request_sent_time = std::chrono::steady_clock::now();
-      cluster_worker_messages[rtt_test_target_cluster_worker]->set_transaction_id(0);
-      HStoreMessageFactory::new_rtt_message(*cluster_worker_messages[rtt_test_target_cluster_worker], is_replica_worker, this_cluster_worker_id);
-      flush_messages();
-      rtt_request_sent = true;
     }
     return size;
   }
