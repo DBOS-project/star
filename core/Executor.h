@@ -42,7 +42,7 @@ public:
         n_started_workers(n_started_workers),
         partitioner(PartitionerFactory::create_partitioner(
             context.partitioner, coordinator_id, context.coordinator_num)),
-        random(this->partitioner->num_coordinator_for_one_replica() * coordinator_id + id),
+        random(reinterpret_cast<uint64_t>(this)),
         protocol(db, context, *partitioner),
         workload(coordinator_id, db, random, *partitioner),
         delay(std::make_unique<SameDelay>(

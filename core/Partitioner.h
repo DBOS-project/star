@@ -183,6 +183,7 @@ public:
 
   std::vector<std::size_t> get_replica_coordinators(std::size_t partition_id) const override {
     CHECK(false);
+    return {};
   }
 
   bool is_partition_replicated_on(std::size_t partition_id,

@@ -69,7 +69,10 @@ public:
 
     return message;
   }
-
+  
+  std::size_t get_read_call_cnt() {
+    return read_calls;
+  }
 private:
   void fetch_message() {
     DCHECK(socket != nullptr);
@@ -101,7 +104,7 @@ private:
 
     auto bytes_received =
         socket->read_async(buffer + bytes_total, BUFFER_SIZE - bytes_total);
-
+    read_calls++;
     if (bytes_received > 0) {
       // successful read
       bytes_total += bytes_received;
@@ -134,5 +137,6 @@ private:
   Socket *socket;
   char buffer[BUFFER_SIZE];
   std::size_t bytes_read, bytes_total;
+  std::size_t read_calls = 0;
 };
 } // namespace star

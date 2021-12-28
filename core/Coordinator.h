@@ -70,7 +70,7 @@ public:
         //LOG(INFO) << "Message " << i << " to";
         auto message = std::make_unique<Message>();
         init_message(message.get(), 0, 1);
-        ControlMessageFactory::new_statistics_message(*message, 0);
+        ControlMessageFactory::new_statistics_message(*message, id, 0);
         sendMessage(message.get(), outSockets[0][1]);
         while (true) {
           auto message = reader.next_message();
@@ -104,7 +104,7 @@ public:
         }
         auto message = std::make_unique<Message>();
         init_message(message.get(), 1, 0);
-        ControlMessageFactory::new_statistics_message(*message, 0);
+        ControlMessageFactory::new_statistics_message(*message, id, 0);
         sendMessage(message.get(), outSockets[0][0]);
         ++i;
       }
@@ -146,11 +146,7 @@ public:
     LOG(INFO) << "Coordinator starts to run " << workers.size() << " workers.";
 
     for (auto i = 0u; i < workers.size(); i++) {
-      if (context.enable_hstore_master && context.protocol == "HStore" && id == 0 && i == context.worker_num + 1) {
-        threads.emplace_back(&Worker::start_hstore_master, workers[i].get());
-      } else {
-        threads.emplace_back(&Worker::start, workers[i].get());
-      }
+      threads.emplace_back(&Worker::start, workers[i].get());
 
       if (context.cpu_affinity) {
         pin_thread_to_core(threads[i]);
@@ -158,7 +154,7 @@ public:
     }
 
     // run timeToRun seconds
-    auto timeToRun = 60, warmup = 20, cooldown = 0;
+    auto timeToRun = 60, warmup = 15, cooldown = 0;
     auto startTime = std::chrono::steady_clock::now();
 
     uint64_t total_commit = 0, total_abort_no_retry = 0, total_abort_lock = 0,
@@ -299,7 +295,7 @@ public:
             Listener l(addressPort[0].c_str(),
                        atoi(addressPort[1].c_str()) + listener_id, 100);
             LOG(INFO) << "Listener " << listener_id << " on coordinator " << id
-                      << " listening on " << peers[id];
+                      << " listening on " << peers[id] << " tcp_no_delay " << tcp_no_delay << " tcp_quick_ack " << tcp_quick_ack;
 
             auto n = peers.size();
 
@@ -383,6 +379,8 @@ public:
     double sum = value;
 
     if (id == 0) {
+      auto partitioner = PartitionerFactory::create_partitioner(
+            context.partitioner, id, context.coordinator_num);
       for (std::size_t i = 0; i < coordinator_num - 1; i++) {
 
         in_queue.wait_till_non_empty();
@@ -396,17 +394,25 @@ public:
         CHECK(messagePiece.get_message_type() ==
               static_cast<uint32_t>(ControlMessage::STATISTICS));
         CHECK(messagePiece.get_message_length() ==
-              MessagePiece::get_header_size() + sizeof(double));
+              MessagePiece::get_header_size() + sizeof(double) + sizeof(int));
         Decoder dec(messagePiece.toStringPiece());
+        int coordinator_id;
         double v;
-        dec >> v;
-        sum += v;
+        dec >> coordinator_id >> v;
+        if (context.partitioner == "hpb") {
+          if (coordinator_id < (int)partitioner->num_coordinator_for_one_replica()) {
+            sum += v;
+          }
+        } else {
+          sum += v;
+        }
+        
       }
 
     } else {
       auto message = std::make_unique<Message>();
       init_message(message.get(), id, 0);
-      ControlMessageFactory::new_statistics_message(*message, value);
+      ControlMessageFactory::new_statistics_message(*message, id, value);
       out_queue.push(message.release());
     }
     return sum;

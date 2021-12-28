@@ -49,7 +49,7 @@ public:
 
     auto process_internal_message_tranfer = [&, this]() {
       while (out_to_in_queue.empty() == false) {
-        auto message_get_start = std::chrono::steady_clock::now();
+        //auto message_get_start = std::chrono::steady_clock::now();
         std::unique_ptr<Message> message(out_to_in_queue.front());
         message->set_message_recv_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
         bool ok = out_to_in_queue.pop();
@@ -75,10 +75,10 @@ public:
             workers[workerId]->push_message(message.release());
           }
         }
-        auto ltc = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - message_get_start)
-                    .count();
-        internal_message_recv_latency.add(ltc);
+        // auto ltc = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        //             std::chrono::steady_clock::now() - message_get_start)
+        //             .count();
+        //internal_message_recv_latency.add(ltc);
       };
     };
     while (!stopFlag.load()) {
@@ -89,7 +89,7 @@ public:
         if (i == coord_id) {
           continue;
         }
-        auto message_get_start = std::chrono::steady_clock::now();
+        //auto message_get_start = std::chrono::steady_clock::now();
         auto message = buffered_readers[i].next_message();
 
         if (message == nullptr) {
@@ -132,20 +132,25 @@ public:
           }
         }
         
-        auto ltc = std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - message_get_start)
-                    .count();
-        socket_message_recv_latency.add(ltc);
+        // auto ltc = std::chrono::duration_cast<std::chrono::microseconds>(
+        //             std::chrono::steady_clock::now() - message_get_start)
+        //             .count();
+        //socket_message_recv_latency.add(ltc);
         DCHECK(message == nullptr);
       }
     }
 
+    std::size_t socket_read_syscalls = 0;
+    for (size_t i = 0; i < buffered_readers.size(); ++i) {
+      socket_read_syscalls += buffered_readers[i].get_read_call_cnt();
+    }
     LOG(INFO) << "Incoming Dispatcher exits, network size: " << network_size << ". socket_message_recv_latency(50th) " 
               << socket_message_recv_latency.nth(50) << " socket_message_recv_latency(75th) " << socket_message_recv_latency.nth(75)
               << " socket_message_recv_latency(95th) " << socket_message_recv_latency.nth(95)
               << " socket_message_recv_latency(99th) " << socket_message_recv_latency.nth(99)
               << " internal_message_recv_latency(50th) " << internal_message_recv_latency.nth(50) / 1000.0
               << " socket_message_recv_cnt " << socket_message_recv_latency.size()
+              << " socket_read_syscall " << socket_read_syscalls
               << " internal_message_recv_cnt " << internal_message_recv_latency.size();
   }
 
@@ -263,8 +268,11 @@ public:
               << " send_ltc(95th) " << sent_latency.nth(95)
               << " send_ltc(99th) " << sent_latency.nth(99)
               << " send_ltc(100th) " << sent_latency.nth(100)
+              << " send_ltc(avg) " << sent_latency.avg()
+              << " sendto_cnt " << sendto_cnt
               << " network_size " << network_size
               << " network_msg_cnt " << network_msg_cnt
+              << " network_msg_group_size avg " << network_msg_group_size.avg() << " 50th " << network_msg_group_size.nth(50)
               << " internal_network_size " << internal_network_size
               << " internal_network_msg_cnt " << internal_network_msg_cnt;
   }
@@ -279,6 +287,7 @@ public:
     sockets[dest_node_id].write_n_bytes(message->get_raw_ptr(),
                                         message_length);
     network_size += message->get_message_length();
+    sendto_cnt++;
   }
 
   void groupOrDispatchMessages(const std::shared_ptr<Worker> &worker, std::vector<std::vector<Message*>> & messages_by_coordinator) {
@@ -308,12 +317,13 @@ public:
       auto gen_time = messages_by_coordinator[i][0]->get_gen_time();
       
       if (messages_by_coordinator[i].size() == 1) {
-        auto t = Time::now();
+        // auto t = Time::now();
+        // auto ltc = (Time::now() - gen_time) / 1000;
+        //gen_to_sent_latency.add(ltc);
         sendMessage(messages_by_coordinator[i][0]);
-        auto ltc = (Time::now() - gen_time) / 1000;
-        gen_to_sent_latency.add(ltc);
-        sent_latency.add((Time::now() - t) / 1000);
+        //sent_latency.add((Time::now() - t) / 1000);
         network_msg_cnt++;
+        //network_msg_group_size.add(1);
         continue;
       }
 
@@ -324,12 +334,13 @@ public:
         messages_by_coordinator[i][j]->set_message_send_time(ts);
         gmsg->addMessage(messages_by_coordinator[i][j]);
       }
-      auto t = Time::now();
+      // auto t = Time::now();
+      // auto ltc = (Time::now() - gen_time) / 1000;
+      //gen_to_sent_latency.add(ltc);
       sendMessage(gmsg.get());
-      sent_latency.add((Time::now() - t) / 1000);
-      network_msg_cnt++;
-      auto ltc = (Time::now() - gen_time) / 1000;
-      gen_to_sent_latency.add(ltc);
+      //sent_latency.add((Time::now() - t) / 1000);
+      network_msg_cnt += messages_by_coordinator[i].size();
+      //network_msg_group_size.add(messages_by_coordinator[i].size());
     }
   }
 
@@ -347,12 +358,12 @@ public:
     // wrap the message with a unique pointer.
     std::unique_ptr<Message> message(raw_message);
     // send the message
-    ltc = (Time::now() - gen_time) / 1000;
-    gen_to_sent_latency.add(ltc);
+    //ltc = (Time::now() - gen_time) / 1000;
+    //gen_to_sent_latency.add(ltc);
     if (message->get_dest_node_id() != this->coordinator_id) {
-      auto t = Time::now();
+      //auto t = Time::now();
       sendMessage(message.get());
-      sent_latency.add((Time::now() - t) / 1000);
+      //sent_latency.add((Time::now() - t) / 1000);
       network_msg_cnt++;
     } else {
       // if (message->get_worker_id() >= context.worker_num) {
@@ -367,8 +378,8 @@ public:
     }
     
     
-    ltc = (put_to_out_queue_time - gen_time) / 1000;
-    gen_to_queue_latency.add(ltc);
+    //ltc = (put_to_out_queue_time - gen_time) / 1000;
+    //gen_to_queue_latency.add(ltc);
   }
 
 private:
@@ -378,6 +389,8 @@ private:
   std::size_t network_size;
   std::size_t internal_network_size = 0;
   std::size_t network_msg_cnt = 0;
+  std::size_t sendto_cnt = 0;
+  Percentile<std::size_t> network_msg_group_size;
   std::size_t internal_network_msg_cnt = 0;
   std::vector<Socket> &sockets;
   std::vector<std::shared_ptr<Worker>> workers;

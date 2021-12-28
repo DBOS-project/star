@@ -36,7 +36,7 @@ DEFINE_int32(delay, 0, "delay time in us.");
 DEFINE_string(cdf_path, "", "path to cdf");
 DEFINE_string(log_path, "", "path to disk logging.");
 DEFINE_bool(tcp_no_delay, true, "TCP Nagle algorithm, true: disable nagle");
-DEFINE_bool(tcp_quick_ack, true, "TCP quick ack mode, true: enable quick ack");
+DEFINE_bool(tcp_quick_ack, false, "TCP quick ack mode, true: enable quick ack");
 DEFINE_bool(enable_hstore_master, true, "enable hstore master for lock scheduling");
 DEFINE_bool(cpu_affinity, false, "pinning each thread to a separate core");
 DEFINE_bool(hstore_command_logging, true, "configure command logging mode for hstore");

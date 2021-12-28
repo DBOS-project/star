@@ -46,9 +46,8 @@ public:
     // }
 
     static std::atomic<uint64_t> tid_cnt(0);
-    static thread_local uint64_t random_seed_counter = 0;
     long long transactionId = tid_cnt.fetch_add(1);
-    auto random_seed = random_seed_counter++;
+    auto random_seed = Time::now();
     random.set_seed(random_seed);
     std::unique_ptr<TransactionType> p =
         std::make_unique<ReadModifyWrite<Transaction>>(
