@@ -1829,7 +1829,6 @@ public:
           this->n_abort_lock.fetch_add(1);
         }
         handle_requests();
-        flush_grouped_messages();
       }
     }
     if (this->partitioner->replica_num() > 1 && is_replica_worker == false) {
@@ -2402,6 +2401,7 @@ public:
     MessageFactoryType::new_command_replication(
             *cluster_worker_messages[replica_cluster_worker_id], 1, command_buffer_outgoing_data, this_cluster_worker_id, persist);
     flush_messages();
+    flush_grouped_messages();
     //LOG(INFO) << "This cluster worker " << this_cluster_worker_id << " sent " << command_buffer_outgoing.size() << " commands to replia worker " <<  replica_cluster_worker_id;
     command_buffer_outgoing_data.clear();
   }
