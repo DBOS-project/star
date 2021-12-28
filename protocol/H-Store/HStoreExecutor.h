@@ -1829,6 +1829,7 @@ public:
           this->n_abort_lock.fetch_add(1);
         }
         handle_requests();
+        flush_grouped_messages();
       }
     }
     if (this->partitioner->replica_num() > 1 && is_replica_worker == false) {
