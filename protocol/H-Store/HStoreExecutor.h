@@ -1829,7 +1829,7 @@ public:
           this->n_abort_lock.fetch_add(1);
         }
         handle_requests();
-        if (++cnt % 5 == 0) {
+        if (++cnt % 2 == 0) {
           flush_grouped_messages();
         }
       }
