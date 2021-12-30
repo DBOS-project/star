@@ -345,6 +345,13 @@ public:
       auto partition_id = get_partition_id();
       transactions[i] =
           workload.next_transaction(context, partition_id, this->id);
+      if (this->context.stragglers_per_batch) {
+        auto total_batch_size = this->partitioner.num_coordinator_for_one_replica() * this->context.batch_size;
+        auto v = this->random.uniform_dist(1, total_batch_size);
+        if (v <= this->context.stragglers_per_batch) {
+          transactions[i]->straggler_wait_time = this->context.stragglers_total_wait_time / this->context.stragglers_per_batch;
+        }
+      }
       active_transactions.fetch_add(1);
       txn_command_data += transactions[i]->serialize(0);
       transactions[i]->set_id(i);
