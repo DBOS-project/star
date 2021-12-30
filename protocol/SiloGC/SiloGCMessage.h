@@ -439,13 +439,13 @@ public:
       std::ostringstream ss;
       ss << success;
       auto output = ss.str();
-      lsn = txn->get_logger()->write(output.c_str(), output.size(), last_validation, [&](){ txn->remote_request_handler(); });
+      lsn = txn->get_logger()->write(output.c_str(), output.size(), last_validation, [&](){ txn->remote_request_handler(0); });
     }
 
     if (txn->get_logger() && last_validation) {
       // sync the votes
       // On recovery, the txn is considered prepared only if all votes are true // passed all validation
-      //txn->get_logger()->sync(lsn, [&](){ txn->remote_request_handler(); });
+      //txn->get_logger()->sync(lsn, [&](){ txn->remote_request_handler(0); });
     }
   }
 

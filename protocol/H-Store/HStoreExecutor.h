@@ -522,7 +522,7 @@ public:
     if (wait_response) {
       //LOG(INFO) << "Waiting for " << txn.pendingResponses << " responses";
       while (txn.pendingResponses > 0) {
-        txn.remote_request_handler();
+        txn.remote_request_handler(0);
       }
     }
   }
@@ -591,13 +591,13 @@ public:
         DCHECK(0 <= owner_cluster_worker && owner_cluster_worker < cluster_worker_num);
         cluster_worker_messages[owner_cluster_worker]->set_transaction_id(txn.transaction_id);
         txn.network_size += MessageFactoryType::new_acquire_partition_lock_and_read_message(
-              *(cluster_worker_messages[owner_cluster_worker]), *table, key, key_offset, this_cluster_worker_id, txn.ith_replica);
+              *(cluster_worker_messages[owner_cluster_worker]), *table, key, key_offset, this_cluster_worker_id, txn.ith_replica, txn.tries);
         txn.distributed_transaction = true;
         txn.pendingResponses++;
       }
     };
 
-    txn.remote_request_handler = [this]() { return this->handle_requests(); };
+    txn.remote_request_handler = [this](std::size_t) { return this->handle_requests(); };
     txn.message_flusher = [this]() { this->flush_messages(); };
     txn.get_table = [this](std::size_t tableId, std::size_t partitionId) { return this->db.find_table(tableId, partitionId); };
     txn.set_logger(this->logger);
@@ -656,9 +656,11 @@ public:
     return true;
   }
 
+  int cnt = 0;
   bool acquire_partition_lock_and_read_request_handler(const Message & inputMessage, MessagePiece inputPiece,
                                           Message &responseMessage,
                                           ITable &table, Transaction *txn) {
+    ++cnt;
     DCHECK(inputPiece.get_message_type() ==
            static_cast<uint32_t>(HStoreMessage::ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST));
     auto table_id = inputPiece.get_table_id();
@@ -668,7 +670,7 @@ public:
     auto key_size = table.key_size();
     auto value_size = table.value_size();
     int64_t tid = inputMessage.get_transaction_id();
-    
+    int64_t * p_tid = &tid;
     /*
      * The structure of a write lock request: (primary key, key offset, request_remote_worker_id, ith_replica)
      * The structure of a write lock response: (success?, key offset, value?)
@@ -694,18 +696,25 @@ public:
     DCHECK((int)partition_owner_cluster_worker(partition_id, ith_replica) == this_cluster_worker_id);
 
     DCHECK(dec.size() == 0);
-    bool success = false;
+    char success = 0;
     if (is_replica_worker) {
-      success = true;
+      success = 1;
       if (owned_partition_locked_by[partition_id] != tid) {
         //LOG(INFO) << "Transaction " << tid << " failed to lock partition " <<  partition_id << " locked by transaction " << owned_partition_locked_by[partition_id];
         replay_sp_commands(partition_id);
         if (owned_partition_locked_by[partition_id] == tid) 
         {
-          success = true;
+          success = 1;
+        } else if (owned_partition_locked_by[partition_id] == -1) {
+          success = 0;
         } else {
-          success = false;
+          success = 2;
         }
+        // if (success != 1) {
+        //   if (cnt > 100000 && ts1 > 13) {
+        //     DCHECK(false);
+        //   }
+        // }
       }
     } else {
       if (owned_partition_locked_by[partition_id] == -1 || owned_partition_locked_by[partition_id] == tid) {
@@ -713,7 +722,7 @@ public:
         // if (owned_partition_locked_by[partition_id] == -1)
         //    LOG(INFO) << "Partition " << partition_id << " locked and read by remote cluster worker " << request_remote_worker_id << " by this_cluster_worker_id " << this_cluster_worker_id << " ith_replica "  << ith_replica << " txn " << tid_to_string(tid);
         owned_partition_locked_by[partition_id] = tid;
-        success = true;
+        success = 1;
       } else {
         //  LOG(INFO) << "Partition " << partition_id << " was failed to be locked by cluster worker " << request_remote_worker_id << " and txn " << tid_to_string(tid)
   //                 << " already locked by " << tid_to_string(owned_partition_locked_by[partition_id]) << " ith_replica" << ith_replica;
@@ -721,9 +730,9 @@ public:
     }
     // prepare response message header
     auto message_size =
-        MessagePiece::get_header_size() + sizeof(bool) + sizeof(key_offset) + sizeof(uint64_t) * 3;
+        MessagePiece::get_header_size() + sizeof(success) + sizeof(key_offset) + sizeof(uint64_t) * 3;
 
-    if (success) {
+    if (success == 1) {
       message_size += value_size;
     } else{
       // LOG(INFO) << "acquire_partition_lock_request from cluster worker " << request_remote_worker_id
@@ -739,7 +748,7 @@ public:
     encoder << message_piece_header;
     encoder << success << key_offset << ts1 << ts3;
 
-    if (success) {
+    if (success == 1) {
       auto row = table.search(key);
       uint64_t ts2 = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count();
       encoder << ts2;
@@ -750,7 +759,16 @@ public:
       // read to message buffer
       HStoreHelper::read(row, dest, value_size);
     } else {
-      uint64_t ts2 = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count();
+      uint64_t ts2 = 0;
+      if (success == 2) {
+        auto & q = get_partition_cmd_queue(partition_id);
+        for (size_t i = 0; i < q.size(); ++i) {
+          if (q[i].tid == tid) {
+            ts2 = i + 1;
+            break;
+          }
+        }
+      }
       encoder << ts2;
     }
 
@@ -773,8 +791,8 @@ public:
         cmds[i].txn = nullptr;
         q.push_back(cmds[i]);
         //replay_candidate_partitions.push_back(partition);
-        if (owned_partition_locked_by[partition] == -1)
-          replay_sp_queue_commands(partition_index);
+        // if (owned_partition_locked_by[partition] == -1)
+        //   replay_sp_queue_commands(partition_index);
       } else if (cmds[i].is_mp == false) { // place into one partition command queue for replay
         auto partition = cmds[i].partition_id;
         DCHECK(partition != -1);
@@ -785,6 +803,7 @@ public:
         DCHECK(sp_txn->ith_replica > 0);
         auto & cmd = cmds[i];
         cmds[i].txn = sp_txn;
+        cmds[i].txn->no_in_group = replcia_txn_group_start_no++;
         //cmds[i].queue_ts = std::chrono::steady_clock::now();
         q.push_back(cmds[i]);
         //replay_candidate_partitions.push_back(partition);
@@ -793,8 +812,8 @@ public:
             now_time - last_mp_arrival)
             .count());
         last_mp_arrival = now_time;
-        if (owned_partition_locked_by[partition] == -1)
-          replay_sp_queue_commands(partition_index);
+        // if (owned_partition_locked_by[partition] == -1)
+        //   replay_sp_queue_commands(partition_index);
       } else { // place into multiple partition command queues for replay
         DCHECK(cmds[i].partition_id == -1);
         auto mp_txn = this->workload.deserialize_from_raw(this->context, cmds[i].command_data).release();
@@ -823,6 +842,7 @@ public:
             replay_candidate_partitions.push_back(partition_id);
           }
         }
+        cmds[i].txn->no_in_group = replcia_txn_group_start_no++;
         DCHECK(first_partition_by_this_worker != -1);
         cmds[i].txn->replay_queue_partition = first_partition_by_this_worker;
         get_partition_cmd_queue(first_partition_by_this_worker).push_back(cmds[i]);
@@ -831,6 +851,7 @@ public:
             now_time - last_mp_arrival)
             .count());
         last_mp_arrival = now_time;
+        
       }
     }
     //LOG(INFO) << "Spread " << cmds.size() << " commands to queues";
@@ -988,14 +1009,14 @@ public:
      * The structure of a read lock response: (success?, key offset, value?)
      */
 
-    bool success;
+    char success;
     uint32_t key_offset;
     uint64_t ts1, ts2, ts3;
     StringPiece stringPiece = inputPiece.toStringPiece();
     Decoder dec(stringPiece);
     dec >> success >> key_offset >> ts1 >> ts2 >> ts3;
 
-    if (success) {
+    if (success == 1) {
       uint32_t msg_length = inputPiece.get_message_length();
       auto header_size = MessagePiece::get_header_size() ;
       uint32_t exp_length = header_size + sizeof(success) +
@@ -1008,7 +1029,13 @@ public:
       DCHECK(inputPiece.get_message_length() ==
              MessagePiece::get_header_size() + sizeof(uint64_t) * 3 + sizeof(success) +
                  sizeof(key_offset));
-
+      if (success == 2) {
+        txn->abort_lock_owned_by_others++;
+        txn->abort_lock_queue_len_sum += ts3;
+      } else {
+        DCHECK(success == 0);
+        txn->abort_lock_owned_by_no_one++;
+      }
       txn->abort_lock = true;
     }
     txn->pendingResponses--;
@@ -1161,6 +1188,7 @@ public:
 
   int64_t active_replica_waiting_position = -1;
 
+  int replcia_txn_group_start_no = 0;
   void respond_to_active_replica_with_replay_position(int64_t replayed_position) {
     if (active_replica_waiting_position == -1)
       return;
@@ -1172,6 +1200,7 @@ public:
     last_mp_arrival = std::chrono::steady_clock::now();
     last_commit = std::chrono::steady_clock::now();
     active_replica_waiting_position = -1;
+    replcia_txn_group_start_no = 0;
   }
 
   void rtt_test_request_handler(const Message & inputMessage, MessagePiece inputPiece,
@@ -1900,6 +1929,9 @@ public:
               cmd_buffer_flushed = true;
             }
             handle_requests();
+            if (this->partitioner->replica_num() > 1 && is_replica_worker == false) {
+              send_commands_to_replica(false);
+            }
             flush_grouped_messages();
           }
           DCHECK(get_replica_replay_log_position_responses == get_replica_replay_log_position_requests);
@@ -2186,6 +2218,7 @@ public:
     replay_mp_concurrency.add(active_mps);
   }
 
+  std::string straggler_mp_debug_string;
   void replay_commands_sp_then_mp_parallel() {
     int mp_initiated = 0;
     // ScopedTimer t([&, this](uint64_t us) {
@@ -2215,6 +2248,9 @@ public:
         DCHECK(get_partition_last_replayed_position_in_log(mp_txn->replay_queue_partition) <= cmd.position_in_log);
         get_partition_last_replayed_position_in_log(mp_txn->replay_queue_partition) = cmd.position_in_log;
         q.pop_front();
+        if (cnt > 200000 && mp_txn->tries >= 10 && is_cross_node_mp(mp_txn)) {
+          straggler_mp_debug_string += tid_to_string(mp_txn->transaction_id) + " latency " + std::to_string(latency) + " tries " + std::to_string(mp_txn->tries) + " abort_lock_queue_len_sum " + std::to_string(mp_txn->abort_lock_queue_len_sum) + " self queue length " + std::to_string(q.size()) + " no_in_group " + std::to_string(mp_txn->no_in_group) + " abort_lock_owned_by_others "  + std::to_string(mp_txn->abort_lock_owned_by_others) + " abort_lock_owned_by_no_one "  + std::to_string(mp_txn->abort_lock_owned_by_no_one) + "\n";
+        }
         partition_command_queue_processing[replay_queue_idx] = false;
         tries_latency[std::min((int)mp_txn->tries, (int)tries_latency.size() - 1)].add(latency);
         // tries_prepare_time[std::min((int)mp_txn->tries, (int)tries_prepare_time.size() - 1)].add(mp_txn->get_commit_prepare_time());
@@ -2656,6 +2692,13 @@ public:
     } else {
       auto partition_id = managed_partitions[this->random.next() % managed_partitions.size()];
       auto txn = this->workload.next_transaction(this->context, partition_id, this->id).release();
+      auto total_batch_size = this->partitioner->num_coordinator_for_one_replica() * this->context.batch_size;
+      if (this->context.stragglers_per_batch) {
+        auto v = this->random.uniform_dist(1, total_batch_size);
+        if (v <= this->context.stragglers_per_batch) {
+          txn->straggler_wait_time = this->context.stragglers_total_wait_time / this->context.stragglers_per_batch;
+        }
+      }
       return txn;
     }
   }
@@ -2831,6 +2874,7 @@ public:
               << " commit_write_back " << this->dist_txn_commit_write_back_time_pct.nth(50) << " us " << this->dist_txn_commit_write_back_time_pct.avg() << " us, "
               << " commit_release_lock " << this->dist_txn_commit_unlock_time_pct.nth(50) << " us \n";
 
+    LOG(INFO) << "STRAGGLER DEBUG INFO:\n" << straggler_mp_debug_string;
     if (this->id == 0) {
       for (auto i = 0u; i < this->message_stats.size(); i++) {
         LOG(INFO) << "message stats, type: " << i

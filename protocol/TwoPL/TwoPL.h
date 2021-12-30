@@ -457,7 +457,7 @@ public:
     txn.message_flusher();
     if (wait_response) {
       while (txn.pendingResponses > 0) {
-        txn.remote_request_handler();
+        txn.remote_request_handler(0);
       }
     }
   }

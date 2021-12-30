@@ -272,7 +272,7 @@ public:
         });
         message_flusher();
         while (pendingResponses > 0) {
-          remote_request_handler();
+          remote_request_handler(0);
         }
       }
       if (execution_phase == false)
@@ -319,7 +319,7 @@ public:
                          void *, bool, bool, bool &, bool &)>
       lock_request_handler;
   // processed a request?
-  std::function<std::size_t(void)> remote_request_handler;
+  std::function<std::size_t(std::size_t)> remote_request_handler;
 
   std::function<void()> message_flusher;
 
@@ -353,5 +353,10 @@ public:
   int64_t first_lock_response_latency = 0;
   int64_t first_lock_request_arrive_latency = 0;
   int64_t first_lock_request_processed_latency = 0;
+  int abort_lock_owned_by_others = 0;
+  int abort_lock_owned_by_no_one = 0;
+  int abort_lock_queue_len_sum = 0;
+  int no_in_group = 0;
+  uint64_t straggler_wait_time = 0;
 };
 } // namespace star

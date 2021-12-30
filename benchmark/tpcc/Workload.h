@@ -84,7 +84,8 @@ public:
     std::size_t ith_replica;
     std::size_t partition_id;
     int64_t transaction_id;
-    decoder >> transaction_id >> txn_type >> ith_replica >> seed >> partition_id;
+    uint64_t straggler_wait_time;
+    decoder >> transaction_id >> txn_type >> straggler_wait_time >> ith_replica >> seed >> partition_id;
     RandomType random;
     random.set_seed(seed);
 
@@ -94,6 +95,7 @@ public:
              ith_replica);
       p->txn_random_seed_start = seed;
       p->transaction_id = transaction_id;
+      p->straggler_wait_time = straggler_wait_time;
       return p;
     } else {
       auto p = std::make_unique<Payment<Transaction>>(coordinator_id, partition_id,
@@ -101,6 +103,7 @@ public:
                                                    partitioner, ith_replica);
       p->txn_random_seed_start = seed;
       p->transaction_id = transaction_id;
+      p->straggler_wait_time = straggler_wait_time;
       return p;
     }
   }

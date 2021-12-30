@@ -170,6 +170,13 @@ public:
         auto partition_id = get_partition_id();
         transactions[i] =
             workload.next_transaction(context, partition_id, this->id);
+        auto total_batch_size = context.coordinator_num * context.batch_size;
+        if (context.stragglers_per_batch) {
+          auto v = random.uniform_dist(1, total_batch_size);
+          if (v <= context.stragglers_per_batch) {
+            transactions[i]->straggler_wait_time = context.stragglers_total_wait_time / context.stragglers_per_batch;
+          }
+        }
         txn_command_data += transactions[i]->serialize(0);
       } else {
         transactions[i]->reset();
@@ -513,7 +520,7 @@ public:
       }
     };
 
-    txn.remote_request_handler = [this]() { return this->process_request(); };
+    txn.remote_request_handler = [this](std::size_t) { return this->process_request(); };
     txn.message_flusher = [this]() { this->flush_messages(); };
   }
 

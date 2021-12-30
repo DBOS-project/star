@@ -235,7 +235,8 @@ public:
                                            const void *key,
                                            uint32_t key_offset,
                                            uint32_t this_worker_id,
-                                           std::size_t ith_replica) {
+                                           std::size_t ith_replica,
+                                           uint64_t tries) {
 
     /*
      * The structure of a partition lock request: (primary key, key offset, remote_worker_id)
@@ -251,16 +252,16 @@ public:
 
     // LOG(INFO) << "this_cluster_worker_id "<< this_worker_id << " new_acquire_partition_lock_and_read_message message on partition " 
     //           << table.partitionID() << " of " << ith_replica << " replica";
-    uint64_t ts = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count();
+    //uint64_t ts = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count();
     Encoder encoder(message.data);
     encoder << message_piece_header;
     encoder.write_n_bytes(key, key_size);
     encoder << key_offset;
     encoder << this_worker_id;
     encoder << ith_replica;
-    encoder << ts;
+    encoder << tries;
     message.set_is_replica(ith_replica > 0);
-    message.set_message_gen_time(ts);
+    //message.set_message_gen_time(ts);
     message.flush();
     message.set_gen_time(Time::now());
     return message_size;

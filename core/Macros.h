@@ -48,6 +48,8 @@ DEFINE_int32(wal_group_commit_size, 7, "wal group commit batch size");
 DEFINE_bool(aria_read_only, true, "aria read only optimization");
 DEFINE_bool(aria_reordering, true, "aria reordering optimization");
 DEFINE_bool(aria_si, false, "aria snapshot isolation");
+DEFINE_int32(stragglers_per_batch, 0, "# stragglers in a batch");
+DEFINE_int32(stragglers_partition, -1, "straggler partition");
 
 #define SETUP_CONTEXT(context)                                                 \
   boost::algorithm::split(context.peers, FLAGS_servers,                        \
@@ -92,4 +94,6 @@ DEFINE_bool(aria_si, false, "aria snapshot isolation");
   context.aria_read_only_optmization = FLAGS_aria_read_only;                   \
   context.aria_reordering_optmization = FLAGS_aria_reordering;                 \
   context.aria_snapshot_isolation = FLAGS_aria_si;                             \
+  context.stragglers_per_batch = FLAGS_stragglers_per_batch;                   \
+  context.stragglers_partition = FLAGS_stragglers_partition;                   \
   context.set_star_partitioner();

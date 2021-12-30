@@ -48,7 +48,7 @@ public:
   virtual const std::string serialize(std::size_t ith_replica = 0) override {
     std::string res;
     Encoder encoder(res);
-    encoder << this->transaction_id << ith_replica << this->txn_random_seed_start << partition_id;
+    encoder << this->transaction_id << this->straggler_wait_time << ith_replica << this->txn_random_seed_start << partition_id;
     encoder << get_partition_count();
     for (int32_t i = 0; i < get_partition_count(); ++i)
       encoder << get_partition(i);
@@ -117,6 +117,28 @@ public:
       if (x <= context.nop_prob) {
         for (auto i = 0u; i < context.n_nop; i++) {
           asm("nop");
+        }
+      }
+    }
+
+    if (this->execution_phase) {
+      uint64_t wait_time = 0;
+      if (this->context.stragglers_partition == -1 && this->straggler_wait_time) {
+        wait_time = this->straggler_wait_time;
+      } else if (this->context.stragglers_partition != -1) {
+        int partition_count = get_partition_count();
+        for(int i = 0; i < partition_count; ++i) {
+          if (get_partition(i) == this->context.stragglers_partition) {
+            wait_time = this->context.stragglers_total_wait_time;
+          }
+        }
+      }
+      if (wait_time) {
+        auto start_time = std::chrono::steady_clock::now();
+        while ((uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                      std::chrono::steady_clock::now() - start_time)
+                      .count() < wait_time) {
+          this->remote_request_handler(worker_id);
         }
       }
     }

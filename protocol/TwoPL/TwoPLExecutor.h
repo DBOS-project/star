@@ -93,7 +93,7 @@ public:
       }
     };
 
-    txn.remote_request_handler = [this]() { return this->process_request(); };
+    txn.remote_request_handler = [this](std::size_t) { return this->process_request(); };
     txn.message_flusher = [this]() { this->flush_messages(); };
     txn.get_table = [this](std::size_t tableId, std::size_t partitionId) { return this->db.find_table(tableId, partitionId); };
     txn.set_logger(this->logger);

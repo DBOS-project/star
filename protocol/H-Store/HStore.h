@@ -239,7 +239,7 @@ public:
     if (wait_response) {
       //LOG(INFO) << "Waiting for " << txn.pendingResponses << " responses";
       while (txn.pendingResponses > 0) {
-        txn.remote_request_handler();
+        txn.remote_request_handler(0);
       }
     }
   }

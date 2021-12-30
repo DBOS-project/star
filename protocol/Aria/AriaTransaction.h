@@ -277,7 +277,7 @@ public:
   std::function<void(AriaRWKey &, std::size_t, std::size_t)> readRequestHandler;
 
   // processed a request?
-  std::function<std::size_t(void)> remote_request_handler;
+  std::function<std::size_t(std::size_t)> remote_request_handler;
 
   std::function<void()> message_flusher;
 
@@ -288,5 +288,6 @@ public:
   uint64_t txn_random_seed_start = 0;
   int64_t transaction_id = 0;
   std::size_t ith_replica;
+  uint64_t straggler_wait_time = 0;
 };
 } // namespace aria

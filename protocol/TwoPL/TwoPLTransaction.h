@@ -270,7 +270,7 @@ public:
       });
       message_flusher();
       while (pendingResponses > 0) {
-        remote_request_handler();
+        remote_request_handler(0);
       }
     }
     return false;
@@ -312,7 +312,7 @@ public:
                          void *, bool, bool, bool &, bool &)>
       lock_request_handler;
   // processed a request?
-  std::function<std::size_t(void)> remote_request_handler;
+  std::function<std::size_t(std::size_t id)> remote_request_handler;
 
   std::function<void()> message_flusher;
 
@@ -325,5 +325,6 @@ public:
   WALLogger * logger = nullptr;
   uint64_t txn_random_seed_start = 0;
   int64_t transaction_id = 0;
+  uint64_t straggler_wait_time = 0;
 };
 } // namespace star

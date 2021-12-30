@@ -64,9 +64,10 @@ public:
     std::size_t partition_id;
     int32_t partition_count;
     int64_t transaction_id;
-  
+    uint64_t straggler_wait_time;
+
     //std::vector<int32_t> partitions;
-    decoder >> transaction_id >> ith_replica >> seed >> partition_id >> partition_count;
+    decoder >> transaction_id >> straggler_wait_time >> ith_replica >> seed >> partition_id >> partition_count;
     // for (int32_t i = 0; i < partition_count; ++i){
     //   int32_t p;
     //   decoder >> p;
@@ -84,6 +85,7 @@ public:
     //   DCHECK(partitions[i] == p->get_partition(i));
     // }
     p->transaction_id = transaction_id;
+    p->straggler_wait_time = straggler_wait_time;
     return p;
   }
 

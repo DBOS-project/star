@@ -393,5 +393,6 @@ public:
   WALLogger * logger = nullptr;
   uint64_t txn_random_seed_start = 0;
   int64_t transaction_id = 0;
+  uint64_t straggler_wait_time = 0;
 };
 } // namespace star

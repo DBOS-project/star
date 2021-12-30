@@ -331,7 +331,7 @@ private:
       return protocol.search(table_id, partition_id, key, value);
     };
 
-    txn.remote_request_handler = [this]() { return this->process_request(); };
+    txn.remote_request_handler = [this](std::size_t) { return this->process_request(); };
     txn.message_flusher = [this]() { this->flush_sync_messages(); };
   }
 
