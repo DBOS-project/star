@@ -227,6 +227,9 @@ public:
         }
         messages_by_cooridnator[i].clear();
       }
+      for (auto i = 0u; i < 40000; i++) {
+        asm("nop");
+      }
       for (auto i = group_id; i < numWorkers; i += io_thread_num) {
         groupOrDispatchMessages(workers[i], messages_by_cooridnator);
       }

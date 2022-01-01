@@ -22,7 +22,7 @@ class HStoreExecutor
 {
 private:
   std::vector<std::unique_ptr<Message>> cluster_worker_messages;
-  std::vector<std::vector<Message*>> group_cluster_worker_messages;
+  std::vector<Message*> group_cluster_worker_messages;
   int cluster_worker_num = -1;
   int active_replica_worker_num_end = -1;
   Percentile<uint64_t> txn_try_times;
@@ -295,7 +295,6 @@ public:
 
       owned_partition_locked_by.resize(this->context.partition_num, -1);
       cluster_worker_messages.resize(cluster_worker_num);
-      group_cluster_worker_messages.resize(cluster_worker_num);
       for (int i = 0; i < (int)cluster_worker_num; ++i) {
         cluster_worker_messages[i] = std::make_unique<Message>();
         init_message(cluster_worker_messages[i].get(), i);
@@ -446,6 +445,12 @@ public:
           //if (is_replica_worker)
           //  LOG(INFO) << "Commit MP release lock partition " << partitionId << " by cluster worker" << this_cluster_worker_id << " ith_replica " << txn.ith_replica << " txn " << tid_to_string(txn.transaction_id);;
           owned_partition_locked_by[partitionId] = -1; // unlock partitions
+          if (is_replica_worker) {
+            auto & q = get_partition_cmd_queue(partitionId);
+            if (q.empty() == false) {
+              replay_candidate_partitions.push_back(partitionId);
+            }
+          }
         } else {
             auto tableId = 0;
             auto table = this->db.find_table(tableId, partitionId);
@@ -470,6 +475,12 @@ public:
       //if (is_replica_worker)
       //  LOG(INFO) << "Commit release lock partition " << partition_id << " by cluster worker " << this_cluster_worker_id << " ith_replica " << txn.ith_replica << " txn " << tid_to_string(txn.transaction_id);;
       owned_partition_locked_by[partition_id] = -1;
+      if (is_replica_worker) {
+        auto & q = get_partition_cmd_queue(partition_id);
+        if (q.empty() == false) {
+          replay_candidate_partitions.push_back(partition_id);
+        }
+      }
     }
   }
 
@@ -790,9 +801,9 @@ public:
         //cmds[i].queue_ts = std::chrono::steady_clock::now();
         cmds[i].txn = nullptr;
         q.push_back(cmds[i]);
-        //replay_candidate_partitions.push_back(partition);
-        // if (owned_partition_locked_by[partition] == -1)
-        //   replay_sp_queue_commands(partition_index);
+        replay_candidate_partitions.push_back(partition);
+        if (owned_partition_locked_by[partition] == -1)
+          replay_sp_queue_commands(partition_index);
       } else if (cmds[i].is_mp == false) { // place into one partition command queue for replay
         auto partition = cmds[i].partition_id;
         DCHECK(partition != -1);
@@ -806,7 +817,7 @@ public:
         cmds[i].txn->no_in_group = replcia_txn_group_start_no++;
         //cmds[i].queue_ts = std::chrono::steady_clock::now();
         q.push_back(cmds[i]);
-        //replay_candidate_partitions.push_back(partition);
+        replay_candidate_partitions.push_back(partition);
         auto now_time = std::chrono::steady_clock::now();
         mp_arrival_interval.add(std::chrono::duration_cast<std::chrono::microseconds>(
             now_time - last_mp_arrival)
@@ -1398,7 +1409,10 @@ public:
       success = true;
     }
     if (is_replica_worker) {
-      replay_candidate_partitions.push_back(partition_id);
+      auto & q = get_partition_cmd_queue(partition_id);
+      if (q.empty() == false) {
+        replay_candidate_partitions.push_back(partition_id);
+      }
     }
     // if (ith_replica > 0);
     //   DCHECK(success)
@@ -1670,7 +1684,7 @@ public:
     process_to_commit(async_txns_to_commit);
   }
 
-  bool is_cross_node_mp(TransactionType * txn) {
+  int mp_type(TransactionType * txn) {
     int cnt_partition_local = 0;
     int cnt_partition_process = 0;
     int cnt_partition_node = 0;
@@ -1685,14 +1699,21 @@ public:
       }
     }
     if (cnt_partition_node) {
-      cross_node_mp_txn++;
-      return true;
+      return 0;
     } else if (cnt_partition_process) {
-      cross_worker_mp_txn++;
+      return 1;
     } else {
-      single_worker_mp_txn++;
+      return 2;
     }
-    return false;
+  }
+
+  int is_cross_node_mp(TransactionType * txn) {
+    auto t = mp_type(txn); 
+    return t == 0;
+  }
+  int is_cross_process_mp(TransactionType * txn) {
+    auto t = mp_type(txn); 
+    return t == 1;
   }
 
   void process_single_txn_commit(TransactionType * txn) {
@@ -1791,6 +1812,9 @@ public:
       if (++cnt % group_send_interval == 0) {
         flush_messages();
         flush_grouped_messages();
+      }
+      if (is_replica_worker == false && command_buffer_outgoing_data.empty() == false) {
+        send_commands_to_replica();
       }
     }
     // std::vector<TransactionType*> to_commit;
@@ -2168,18 +2192,23 @@ public:
   }
 
   void replay_loop() {
-    replay_commands_sp_then_mp_parallel();
-    replay_candidate_partitions.clear();
-    return;
+    // while (!replay_candidate_partitions.empty()) {
+    //   int partition = replay_candidate_partitions.front();
+    //   replay_candidate_partitions.pop_front();
+    //   replay_commands_in_partition(partition);
+    //   handle_requests(false);
+    // }
+    // replay_commands_sp_then_mp_parallel();
+    // return;
     auto complete_mp = [&, this](TransactionType* mp_txn) {
       DCHECK(active_txns.count(mp_txn->transaction_id) == 0);
       DCHECK(mp_txn->is_single_partition() == false);
-      auto mp_replay_partition = mp_txn->replay_queue_partition;
-      auto replay_queue_idx = partition_to_cmd_queue_index[mp_replay_partition];
-      auto & q = partition_command_queues[replay_queue_idx];
+      auto partition = mp_txn->replay_queue_partition;
+      auto replay_queue_idx = partition_to_cmd_queue_index[mp_txn->replay_queue_partition];
       DCHECK(partition_command_queue_processing[replay_queue_idx]);
       if (mp_txn->finished_commit_phase && (mp_txn->abort_lock == false || mp_txn->abort_no_retry)) {
         DCHECK(mp_txn->release_lock_called);
+        auto & q = partition_command_queues[replay_queue_idx];
         auto cmd = q.front();
         DCHECK(mp_txn == cmd.txn);
         auto latency =
@@ -2190,43 +2219,79 @@ public:
         this->dist_latency.add(latency);
         DCHECK(mp_txn->tries >= 1);
         this->record_txn_breakdown_stats(*mp_txn);
-        DCHECK(get_partition_last_replayed_position_in_log(mp_replay_partition) <= cmd.position_in_log);
-        get_partition_last_replayed_position_in_log(mp_replay_partition) = cmd.position_in_log;
+        DCHECK(get_partition_last_replayed_position_in_log(mp_txn->replay_queue_partition) <= cmd.position_in_log);
+        get_partition_last_replayed_position_in_log(mp_txn->replay_queue_partition) = cmd.position_in_log;
         q.pop_front();
+        auto mp_t = mp_type(mp_txn);
+        if (cnt > 200000 && mp_txn->tries >= 5 && (mp_t == 0 || mp_t == 1)) {
+          straggler_mp_debug_string += tid_to_string(mp_txn->transaction_id) + " mp_t " + std::to_string(mp_t) + " latency " + std::to_string(latency) + " tries " + std::to_string(mp_txn->tries) + " abort_lock_queue_len_sum " + std::to_string(mp_txn->abort_lock_queue_len_sum) + " self queue length " + std::to_string(q.size()) + " no_in_group " + std::to_string(mp_txn->no_in_group) + " abort_lock_owned_by_others "  + std::to_string(mp_txn->abort_lock_owned_by_others) + " abort_lock_owned_by_no_one "  + std::to_string(mp_txn->abort_lock_owned_by_no_one) + "\n";
+        }
         partition_command_queue_processing[replay_queue_idx] = false;
         tries_latency[std::min((int)mp_txn->tries, (int)tries_latency.size() - 1)].add(latency);
+        // tries_prepare_time[std::min((int)mp_txn->tries, (int)tries_prepare_time.size() - 1)].add(mp_txn->get_commit_prepare_time());
+        // tries_lock_stall_time[std::min((int)mp_txn->tries, (int)tries_lock_stall_time.size() - 1)].add(mp_txn->get_stall_time());
+        // tries_execution_done_latency[std::min((int)mp_txn->tries, (int)tries_execution_done_latency.size() - 1)].add(mp_txn->execution_done_latency);
+        // tries_commit_initiated_latency[std::min((int)mp_txn->tries, (int)tries_commit_initiated_latency.size() - 1)].add(mp_txn->commit_initiated_latency);
+        // tries_first_lock_request_arrive_latency[std::min((int)mp_txn->tries, (int)tries_first_lock_request_arrive_latency.size() - 1)].add(mp_txn->first_lock_request_arrive_latency);
+        // tries_first_lock_request_processed_latency[std::min((int)mp_txn->tries, (int)tries_first_lock_request_processed_latency.size() - 1)].add(mp_txn->first_lock_request_processed_latency);
+        // tries_first_lock_response_latency[std::min((int)mp_txn->tries, (int)tries_first_lock_response_latency.size() - 1)].add(mp_txn->first_lock_response_latency);
         delete mp_txn;
+
+        if (q.empty() == false) {
+          replay_candidate_partitions.push_back(partition);
+        }
       } else {
         partition_command_queue_processing[replay_queue_idx] = false;
+        auto ltc =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - mp_txn->startTime)
+            .count();
+        DCHECK(ltc != 0);
+        mp_txn->set_stall_time(ltc);
+        for (int i = 0; i < mp_txn->get_partition_count(); ++i) {
+          auto p = mp_txn->get_partition(i);
+          if (partition_owner_cluster_worker(p, 1) == this_cluster_worker_id) {
+            replay_candidate_partitions.push_back(p);
+          }
+        }
       }
+      
       --active_mps;
-      if (q.empty() == false) {
-        replay_candidate_partitions.push_back(mp_replay_partition);
-      }
     };
     process_to_commit(async_txns_to_commit, complete_mp);
+    int cnt = 0;
     while (!replay_candidate_partitions.empty()) {
       int partition = replay_candidate_partitions.front();
       replay_candidate_partitions.pop_front();
       replay_commands_in_partition(partition);
-      handle_requests(false);
-      process_to_commit(async_txns_to_commit, complete_mp);
+      auto sz = handle_requests(false);
+      sz += process_to_commit(async_txns_to_commit, complete_mp);
+      if (++cnt % group_send_interval == 0 || sz) {
+        flush_grouped_messages();
+      }
     }
     if (active_mps == 0) {
       respond_to_active_replica_with_replay_position(get_minimum_replayed_log_position());
     }
-    replay_mp_concurrency.add(active_mps);
+    //replay_mp_concurrency.add(active_mps);
   }
 
   std::string straggler_mp_debug_string;
   void replay_commands_sp_then_mp_parallel() {
     int mp_initiated = 0;
-    // ScopedTimer t([&, this](uint64_t us) {
-    //   replay_loop_time.add(us);
-    //   if (mp_initiated == 0) {
-    //     zero_mp_initiated_cost.add(us);
-    //   }
-    // });
+    ScopedTimer t([&, this](uint64_t us) {
+      replay_loop_time.add(us);
+      if (mp_initiated == 0) {
+        zero_mp_initiated_cost.add(us);
+      }
+    });
+    for (size_t i = 0; i < partition_command_queues.size(); ++i) {
+      if (partition_command_queue_processing[i])
+        continue;
+      replay_sp_queue_commands(i);
+      handle_requests(false);
+    }
+    
     auto complete_mp = [&, this](TransactionType* mp_txn) {
       DCHECK(active_txns.count(mp_txn->transaction_id) == 0);
       DCHECK(mp_txn->is_single_partition() == false);
@@ -2248,8 +2313,9 @@ public:
         DCHECK(get_partition_last_replayed_position_in_log(mp_txn->replay_queue_partition) <= cmd.position_in_log);
         get_partition_last_replayed_position_in_log(mp_txn->replay_queue_partition) = cmd.position_in_log;
         q.pop_front();
-        if (cnt > 200000 && mp_txn->tries >= 10 && is_cross_node_mp(mp_txn)) {
-          straggler_mp_debug_string += tid_to_string(mp_txn->transaction_id) + " latency " + std::to_string(latency) + " tries " + std::to_string(mp_txn->tries) + " abort_lock_queue_len_sum " + std::to_string(mp_txn->abort_lock_queue_len_sum) + " self queue length " + std::to_string(q.size()) + " no_in_group " + std::to_string(mp_txn->no_in_group) + " abort_lock_owned_by_others "  + std::to_string(mp_txn->abort_lock_owned_by_others) + " abort_lock_owned_by_no_one "  + std::to_string(mp_txn->abort_lock_owned_by_no_one) + "\n";
+        auto mp_t = mp_type(mp_txn);
+        if (cnt > 200000 && mp_txn->tries >= 5 && (mp_t == 0 || mp_t == 1)) {
+          straggler_mp_debug_string += tid_to_string(mp_txn->transaction_id) + " mp_t " + std::to_string(mp_t) + " latency " + std::to_string(latency) + " tries " + std::to_string(mp_txn->tries) + " abort_lock_queue_len_sum " + std::to_string(mp_txn->abort_lock_queue_len_sum) + " self queue length " + std::to_string(q.size()) + " no_in_group " + std::to_string(mp_txn->no_in_group) + " abort_lock_owned_by_others "  + std::to_string(mp_txn->abort_lock_owned_by_others) + " abort_lock_owned_by_no_one "  + std::to_string(mp_txn->abort_lock_owned_by_no_one) + "\n";
         }
         partition_command_queue_processing[replay_queue_idx] = false;
         tries_latency[std::min((int)mp_txn->tries, (int)tries_latency.size() - 1)].add(latency);
@@ -2274,12 +2340,7 @@ public:
     };
     
     int cnt = 0;
-    for (size_t i = 0; i < partition_command_queues.size(); ++i) {
-      if (partition_command_queue_processing[i])
-        continue;
-      replay_sp_queue_commands(i);
-      handle_requests(false);
-    }
+    
 
     for (size_t i = 0; i < partition_command_queues.size(); ++i) {
       if (partition_command_queue_processing[i])
@@ -2753,61 +2814,61 @@ public:
   void onExit() override {
     std::string message_processing_latency_str = "\nmessage_processing_latency_by_type\n";
     for (size_t i = 0; i < message_processing_latency.size(); ++i) {
-      if (message_processing_latency[i].size() >= 100) {
+      if (message_processing_latency[i].size() > 0) {
         message_processing_latency_str += "Message type " + std::to_string(i) + " count " + std::to_string(message_processing_latency[i].size()) + " avg " + std::to_string(message_processing_latency[i].avg()) + " 50th " + std::to_string(message_processing_latency[i].nth(50)) + " 75th " + std::to_string(message_processing_latency[i].nth(75)) + " 95th " + std::to_string(message_processing_latency[i].nth(95)) + "\n";
       }
     }
     std::string tries_latency_str = "\ntries_latency_str\n";
     for (size_t i = 0; i < tries_latency.size(); ++i) {
-      if (tries_latency[i].size() >= 100) {
+      if (tries_latency[i].size() > 0) {
         tries_latency_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_latency[i].size()) + " avg " + std::to_string(tries_latency[i].avg()) + " 50th " + std::to_string(tries_latency[i].nth(50)) + " 75th " + std::to_string(tries_latency[i].nth(75)) + " 95th " + std::to_string(tries_latency[i].nth(95)) + "\n";
       }
     }
     std::string tries_prepare_time_str = "\ntries_prepare_time_str\n";
     for (size_t i = 0; i < tries_latency.size(); ++i) {
-      if (tries_prepare_time[i].size() >= 100) {
+      if (tries_prepare_time[i].size() > 0) {
         tries_prepare_time_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_prepare_time[i].size()) + " avg " + std::to_string(tries_prepare_time[i].avg()) + " 50th " + std::to_string(tries_prepare_time[i].nth(50)) + " 75th " + std::to_string(tries_prepare_time[i].nth(75)) + " 95th " + std::to_string(tries_prepare_time[i].nth(95)) + "\n";
       }
     }
     std::string tries_lock_stall_time_str = "\ntries_lock_stall_time_str\n";
     for (size_t i = 0; i < tries_latency.size(); ++i) {
-      if (tries_lock_stall_time[i].size() >= 100) {
+      if (tries_lock_stall_time[i].size() > 0) {
         tries_lock_stall_time_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_lock_stall_time[i].size()) + " avg " + std::to_string(tries_lock_stall_time[i].avg()) + " 50th " + std::to_string(tries_lock_stall_time[i].nth(50)) + " 75th " + std::to_string(tries_lock_stall_time[i].nth(75)) + " 95th " + std::to_string(tries_lock_stall_time[i].nth(95)) + "\n";
       }
     }
     std::string tries_execution_done_time_str = "\ntries_execution_done_time_str\n";
     for (size_t i = 0; i < tries_latency.size(); ++i) {
-      if (tries_execution_done_latency[i].size() >= 100) {
+      if (tries_execution_done_latency[i].size() > 0) {
         tries_execution_done_time_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_execution_done_latency[i].size()) + " avg " + std::to_string(tries_execution_done_latency[i].avg()) + " 50th " + std::to_string(tries_execution_done_latency[i].nth(50)) + " 75th " + std::to_string(tries_execution_done_latency[i].nth(75)) + " 95th " + std::to_string(tries_execution_done_latency[i].nth(95)) + "\n";
       }
     }
     std::string tries_first_lock_response_latency_str = "\ntries_first_lock_response_latency_str\n";
     for (size_t i = 0; i < tries_latency.size(); ++i) {
-      if (tries_first_lock_response_latency[i].size() >= 100) {
+      if (tries_first_lock_response_latency[i].size() > 0) {
         tries_first_lock_response_latency_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_first_lock_response_latency[i].size()) + " avg " + std::to_string(tries_first_lock_response_latency[i].avg()) + " 50th " + std::to_string(tries_first_lock_response_latency[i].nth(50)) + " 75th " + std::to_string(tries_first_lock_response_latency[i].nth(75)) + " 95th " + std::to_string(tries_first_lock_response_latency[i].nth(95)) + "\n";
       }
     }
     std::string tries_first_lock_request_arrive_latency_str = "\ntries_first_lock_request_arrive_latency_str\n";
     for (size_t i = 0; i < tries_latency.size(); ++i) {
-      if (tries_first_lock_request_arrive_latency[i].size() >= 100) {
+      if (tries_first_lock_request_arrive_latency[i].size() > 0) {
         tries_first_lock_request_arrive_latency_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_first_lock_request_arrive_latency[i].size()) + " avg " + std::to_string(tries_first_lock_request_arrive_latency[i].avg()) + " 50th " + std::to_string(tries_first_lock_request_arrive_latency[i].nth(50)) + " 75th " + std::to_string(tries_first_lock_request_arrive_latency[i].nth(75)) + " 95th " + std::to_string(tries_first_lock_request_arrive_latency[i].nth(95)) + "\n";
       }
     }
     std::string tries_first_lock_request_processed_latency_str = "\ntries_first_lock_request_processed_latency_str\n";
     for (size_t i = 0; i < tries_latency.size(); ++i) {
-      if (tries_first_lock_request_processed_latency[i].size() >= 100) {
+      if (tries_first_lock_request_processed_latency[i].size() > 0) {
         tries_first_lock_request_processed_latency_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_first_lock_request_processed_latency[i].size()) + " avg " + std::to_string(tries_first_lock_request_processed_latency[i].avg()) + " 50th " + std::to_string(tries_first_lock_request_processed_latency[i].nth(50)) + " 75th " + std::to_string(tries_first_lock_request_processed_latency[i].nth(75)) + " 95th " + std::to_string(tries_first_lock_request_processed_latency[i].nth(95)) + "\n";
       }
     }
     std::string tries_lock_response_latency_str = "\ntries_last_lock_response_latency_str\n";
     for (size_t i = 0; i < tries_latency.size(); ++i) {
-      if (tries_lock_response_latency[i].size() >= 100) {
+      if (tries_lock_response_latency[i].size() > 0) {
         tries_lock_response_latency_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_lock_response_latency[i].size()) + " avg " + std::to_string(tries_lock_response_latency[i].avg()) + " 50th " + std::to_string(tries_lock_response_latency[i].nth(50)) + " 75th " + std::to_string(tries_lock_response_latency[i].nth(75)) + " 95th " + std::to_string(tries_lock_response_latency[i].nth(95)) + "\n";
       }
     }
     std::string tries_commit_initiated_latency_str = "\ntries_commit_initiated_latency_str\n";
     for (size_t i = 0; i < tries_latency.size(); ++i) {
-      if (tries_commit_initiated_latency[i].size() >= 100) {
+      if (tries_commit_initiated_latency[i].size() > 0) {
         tries_commit_initiated_latency_str += "Tries " + std::to_string(i) + " count " + std::to_string(tries_commit_initiated_latency[i].size()) + " avg " + std::to_string(tries_commit_initiated_latency[i].avg()) + " 50th " + std::to_string(tries_commit_initiated_latency[i].nth(50)) + " 75th " + std::to_string(tries_commit_initiated_latency[i].nth(75)) + " 95th " + std::to_string(tries_commit_initiated_latency[i].nth(95)) + "\n";
       }
     }
@@ -2818,7 +2879,7 @@ public:
               << ". latency: " << this->percentile.nth(50)
               << " us (50%) " << this->percentile.nth(75) << " us (75%) "
               << this->percentile.nth(95) << " us (95%) " << this->percentile.nth(99)
-              << " us (99%). dist txn latency: " << this->dist_latency.nth(50)
+              << " us (99%)  " << this->percentile.avg() << " us (avg). "<< "dist txn latency: " << this->dist_latency.nth(50)
               << " us (50%) " << this->dist_latency.nth(75) << " us (75%) "
               << this->dist_latency.nth(95) << " us (95%) " << this->dist_latency.nth(99)
               << " us (99%). local txn latency: " << this->local_latency.nth(50)
@@ -2839,7 +2900,7 @@ public:
               << " replay_concurrency " << replay_mp_concurrency.nth(50) << " " << replay_mp_concurrency.nth(75) << " " << replay_mp_concurrency.nth(95) << " " << replay_mp_concurrency.avg()
               << " round_mp_initiated " << round_mp_initiated.nth(50) << " " << round_mp_initiated.nth(75) << " " << round_mp_initiated.nth(95)
               << " zero_mp_initiated_cost " << zero_mp_initiated_cost.avg()
-              << " commit interval " << commit_interval.nth(50) << " " << commit_interval.nth(75) << " " << commit_interval.nth(95) << " " << commit_interval.avg()
+              << " commit interval " << commit_interval.nth(50) << " " << commit_interval.nth(75) << " " << commit_interval.nth(95) << " " << commit_interval.nth(99) << " " << commit_interval.avg()
               << " mp_arrival_interval " << mp_arrival_interval.nth(50) << " " << mp_arrival_interval.nth(75) << " " << mp_arrival_interval.nth(95) << " " << mp_arrival_interval.avg()
               << " handle request latency " << handle_latency.nth(50) << " " << handle_latency.nth(75) << " " << handle_latency.nth(95) << " " << handle_latency.avg()
               << " handle message count " << handle_msg_cnt.nth(50) << " " << handle_msg_cnt.nth(75) << " " << handle_msg_cnt.nth(95) << " " << handle_msg_cnt.avg()
@@ -2931,7 +2992,7 @@ protected:
       
       //message->set_put_to_out_queue_time(Time::now());
       //this->out_queue.push(message);
-      group_cluster_worker_messages[i].push_back(message);
+      group_cluster_worker_messages.push_back(message);
       ++group_send_cnt;
       
       cluster_worker_messages[i] = std::make_unique<Message>();
@@ -2944,18 +3005,11 @@ protected:
 
   void flush_grouped_messages() {
     for (std::size_t i = 0; i < group_cluster_worker_messages.size(); i++) {
-      if (group_cluster_worker_messages[i].empty()) {
-        continue;
-      }
-
-      for (std::size_t j = 0; j < group_cluster_worker_messages[i].size(); ++j) {
-        auto message = group_cluster_worker_messages[i][j];
-        //message->set_put_to_out_queue_time(Time::now());
-        this->out_queue.push(message);
-      }
-
-      group_cluster_worker_messages[i].clear();
+      auto message = group_cluster_worker_messages[i];
+      //message->set_put_to_out_queue_time(Time::now());
+      this->out_queue.push(message);
     }
+    group_cluster_worker_messages.clear();
     group_send_cnt = 0;
   }
 
