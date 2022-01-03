@@ -850,7 +850,10 @@ public:
         last_mp_arrival = now_time;
         // if (owned_partition_locked_by[partition] == -1)
         //   replay_sp_queue_commands(partition_index);
-        replay_candidate_partitions.push_back(partition);
+        if (owned_partition_locked_by[partition] == -1 && q.size() == 1)
+          replay_sp_queue_commands(partition_index);
+        else
+          replay_candidate_partitions.push_back(partition);
       } else { // place into multiple partition command queues for replay
         DCHECK(cmds[i].partition_id == -1);
         auto mp_txn = this->workload.deserialize_from_raw(this->context, cmds[i].command_data).release();
@@ -2801,13 +2804,13 @@ public:
     // if (should_replay_commands && this->partitioner->replica_num() > 1 && is_replica_worker) {
     //   replay_all_sp_commands();
     // }
-    if (rtt_request_sent == false) {
-      rtt_request_sent_time = std::chrono::steady_clock::now();
-      cluster_worker_messages[rtt_test_target_cluster_worker]->set_transaction_id(0);
-      HStoreMessageFactory::new_rtt_message(*cluster_worker_messages[rtt_test_target_cluster_worker], is_replica_worker, this_cluster_worker_id);
-      flush_messages();
-      rtt_request_sent = true;
-    }
+    // if (rtt_request_sent == false) {
+    //   rtt_request_sent_time = std::chrono::steady_clock::now();
+    //   cluster_worker_messages[rtt_test_target_cluster_worker]->set_transaction_id(0);
+    //   HStoreMessageFactory::new_rtt_message(*cluster_worker_messages[rtt_test_target_cluster_worker], is_replica_worker, this_cluster_worker_id);
+    //   flush_messages();
+    //   rtt_request_sent = true;
+    // }
     if (this->partitioner->replica_num() > 1 && is_replica_worker == false) {
       send_commands_to_replica();
     }
