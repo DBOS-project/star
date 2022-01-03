@@ -127,6 +127,13 @@ public:
     get_deadbeef_ref() = DEADBEEF;
   }
 
+  void clear_message_pieces() {
+    data.resize(get_prefix_size());
+    set_message_length(data.size());
+    set_message_count(0);
+    get_deadbeef_ref() = DEADBEEF;
+  }
+
   void flush() {
     auto message_count = get_message_count();
     set_message_count(message_count + 1);
