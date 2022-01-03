@@ -83,5 +83,6 @@ public:
   int stragglers_per_batch = 0;
   int stragglers_total_wait_time = 20000;
   int stragglers_partition = -1;
+  int sender_group_nop_count = 40000;
 };
 } // namespace star
