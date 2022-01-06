@@ -249,10 +249,11 @@ public:
     }
 
     LOG(INFO) << "Outgoing Dispatcher exits, network size: " << network_size
-              // << ". msg_send_latency(50th) " << message_send_latency.nth(50) 
-              // << " msg_send_latency(75th) " << message_send_latency.nth(75)
-              // << " msg_send_latency(95th) " << message_send_latency.nth(95)
-              // << " msg_send_latency(99th) " << message_send_latency.nth(99)
+              << ". msg_send_latency(50th) " << message_send_latency.nth(50) 
+              << " msg_send_latency(75th) " << message_send_latency.nth(75)
+              << " msg_send_latency(95th) " << message_send_latency.nth(95)
+              << " msg_send_latency(99th) " << message_send_latency.nth(99)
+              << " msg_send_latency(avg) " << message_send_latency.avg()
               << " msg_gen_to_sent_latency(50th) " << gen_to_sent_latency.nth(50) 
               << " msg_gen_to_sent_latency(75th) " << gen_to_sent_latency.nth(75)
               << " msg_gen_to_sent_latency(95th) " << gen_to_sent_latency.nth(95)
@@ -281,7 +282,7 @@ public:
   }
 
   void sendMessage(Message *message) {
-    message->set_message_send_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
+    //message->set_message_send_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
     auto dest_node_id = message->get_dest_node_id();
     DCHECK(dest_node_id >= 0 && dest_node_id < sockets.size() &&
            dest_node_id != coordinator_id);
@@ -289,6 +290,8 @@ public:
     auto message_length = message->get_message_length();
     sockets[dest_node_id].write_n_bytes(message->get_raw_ptr(),
                                         message_length);
+    if (message->get_message_gen_time())
+      message_send_latency.add(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count() - message->get_message_gen_time());
     network_size += message->get_message_length();
     sendto_cnt++;
   }
@@ -321,9 +324,9 @@ public:
       
       if (messages_by_coordinator[i].size() == 1) {
         auto t = Time::now();
+        sendMessage(messages_by_coordinator[i][0]);
         auto ltc = (Time::now() - gen_time) / 1000;
         gen_to_sent_latency.add(ltc);
-        sendMessage(messages_by_coordinator[i][0]);
         sent_latency.add((Time::now() - t) / 1000);
         network_msg_cnt++;
         network_msg_group_size.add(1);
@@ -338,9 +341,9 @@ public:
         gmsg->addMessage(messages_by_coordinator[i][j]);
       }
       auto t = Time::now();
+      sendMessage(gmsg.get());
       auto ltc = (Time::now() - gen_time) / 1000;
       gen_to_sent_latency.add(ltc);
-      sendMessage(gmsg.get());
       sent_latency.add((Time::now() - t) / 1000);
       network_msg_cnt += messages_by_coordinator[i].size();
       network_msg_group_size.add(messages_by_coordinator[i].size());
@@ -357,7 +360,6 @@ public:
     auto gen_time = raw_message->get_gen_time();
     auto put_to_out_queue_time = raw_message->get_put_to_out_queue_time();
     ltc = (Time::now() - message_get_start) / 1000;
-    message_send_latency.add(ltc);
     // wrap the message with a unique pointer.
     std::unique_ptr<Message> message(raw_message);
     // send the message

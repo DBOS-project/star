@@ -33,6 +33,8 @@ public:
   std::uint64_t received_lock_responses = 0;
   std::uint64_t received_net_lock_responses = 0;
   std::uint64_t lock_request_done_received = 0;
+  std::vector<int> transaction_lengths;
+  std::vector<int> transaction_lengths_count;
   static_assert(std::is_same<typename WorkloadType::TransactionType,
                              TransactionType>::value,
                 "Transaction types do not match.");
@@ -75,7 +77,12 @@ public:
         delay(std::make_unique<SameDelay>(
             coordinator_id, context.coordinator_num, context.delay_time)),
         active_transactions(active_txns) {
-
+    transaction_lengths.resize(context.straggler_num_txn_len);
+    transaction_lengths_count.resize(context.straggler_num_txn_len);
+    transaction_lengths[0] = 10; 
+    for (size_t i = 1; i < context.straggler_num_txn_len; ++i) {
+      transaction_lengths[i] = std::min(context.stragglers_total_wait_time, transaction_lengths[i - 1] * 2);
+    }
     for (auto i = 0u; i < context.coordinator_num; i++) {
       messages.emplace_back(std::make_unique<Message>());
       init_message(messages[i].get(), i);
@@ -351,6 +358,11 @@ public:
         if (v <= this->context.stragglers_per_batch) {
           transactions[i]->straggler_wait_time = this->context.stragglers_total_wait_time / this->context.stragglers_per_batch;
         }
+      }
+      if (context.straggler_zipf_factor > 0) {
+        int length_type = star::Zipf::globalZipfForStraggler().value(random.next_double());
+        transactions[i]->straggler_wait_time = transaction_lengths[length_type];
+        transaction_lengths_count[length_type]++;
       }
       active_transactions.fetch_add(1);
       txn_command_data += transactions[i]->serialize(0);

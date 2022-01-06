@@ -42,6 +42,11 @@ public:
     return z;
   }
 
+  static Zipf &globalZipfForStraggler() {
+    static Zipf z;
+    return z;
+  }
+
 private:
   double zeta(int n) {
     DCHECK(hasInit);

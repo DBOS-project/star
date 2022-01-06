@@ -39,6 +39,10 @@ int main(int argc, char *argv[]) {
     star::Zipf::globalZipf().init(context.keysPerPartition, FLAGS_zipf);
   }
 
+  if (FLAGS_stragglers_zipf_factor > 0) {
+    star::Zipf::globalZipfForStraggler().init(context.straggler_num_txn_len, FLAGS_stragglers_zipf_factor);
+  }
+
   if (context.log_path != "" && context.wal_group_commit_time != 0) {
     std::string redo_filename =
           context.log_path + "_group_commit.txt";

@@ -39,7 +39,8 @@ public:
   using MessageType = AriaMessage;
   using MessageFactoryType = AriaMessageFactory;
   using MessageHandlerType = AriaMessageHandler;
-
+  std::vector<int> transaction_lengths;
+  std::vector<int> transaction_lengths_count;
   AriaExecutor(std::size_t coordinator_id, std::size_t id, DatabaseType &db,
                const ContextType &context,
                std::vector<std::unique_ptr<TransactionType>> &transactions,
@@ -60,7 +61,12 @@ public:
         protocol(db, context, *partitioner),
         delay(std::make_unique<SameDelay>(
             coordinator_id, context.coordinator_num, context.delay_time)) {
-
+    transaction_lengths.resize(context.straggler_num_txn_len);
+    transaction_lengths_count.resize(context.straggler_num_txn_len);
+    transaction_lengths[0] = 10; 
+    for (size_t i = 1; i < context.straggler_num_txn_len; ++i) {
+      transaction_lengths[i] = std::min(context.stragglers_total_wait_time, transaction_lengths[i - 1] * 2);
+    }
     for (auto i = 0u; i < context.coordinator_num; i++) {
       messages.emplace_back(std::make_unique<Message>());
       init_message(messages[i].get(), i);
@@ -176,6 +182,11 @@ public:
           if (v <= context.stragglers_per_batch) {
             transactions[i]->straggler_wait_time = context.stragglers_total_wait_time / context.stragglers_per_batch;
           }
+        }
+        if (context.straggler_zipf_factor > 0) {
+          int length_type = star::Zipf::globalZipfForStraggler().value(random.next_double());
+          transactions[i]->straggler_wait_time = transaction_lengths[length_type];
+          transaction_lengths_count[length_type]++;
         }
         txn_command_data += transactions[i]->serialize(0);
       } else {
@@ -525,6 +536,11 @@ public:
   }
 
   void onExit() override {
+    std::string transaction_len_str;
+    for (size_t i = 0; i < context.straggler_num_txn_len; ++i) {
+      transaction_len_str += "wait time " + std::to_string(transaction_lengths[i]) + "us, count " + std::to_string(transaction_lengths_count[i]) + "\n";
+    }
+    LOG(INFO) << "Transaction Length Info:\n" << transaction_len_str;
     LOG(INFO) << "Worker " << id << " latency: " << percentile.nth(50)
               << " us (50%) " << percentile.nth(75) << " us (75%) "
               << percentile.nth(95) << " us (95%) " << percentile.nth(99)

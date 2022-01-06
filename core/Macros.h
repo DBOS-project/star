@@ -49,7 +49,10 @@ DEFINE_bool(aria_read_only, true, "aria read only optimization");
 DEFINE_bool(aria_reordering, true, "aria reordering optimization");
 DEFINE_bool(aria_si, false, "aria snapshot isolation");
 DEFINE_int32(stragglers_per_batch, 0, "# stragglers in a batch");
+DEFINE_int32(stragglers_num_txn_len, 10, "# straggler transaction length types"); 
 DEFINE_int32(stragglers_partition, -1, "straggler partition");
+
+DEFINE_double(stragglers_zipf_factor, 0, "straggler zipfian factor");
 DEFINE_int32(sender_group_nop_count, 40000, "# nop insts to executes during TCP sender message grouping");
 
 #define SETUP_CONTEXT(context)                                                 \
@@ -98,4 +101,6 @@ DEFINE_int32(sender_group_nop_count, 40000, "# nop insts to executes during TCP 
   context.stragglers_per_batch = FLAGS_stragglers_per_batch;                   \
   context.stragglers_partition = FLAGS_stragglers_partition;                   \
   context.sender_group_nop_count = FLAGS_sender_group_nop_count;               \
+  context.straggler_zipf_factor = FLAGS_stragglers_zipf_factor;                \
+  context.straggler_num_txn_len = FLAGS_stragglers_num_txn_len;                \
   context.set_star_partitioner();
