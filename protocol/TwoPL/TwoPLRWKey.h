@@ -107,7 +107,7 @@ public:
   // partition id
 
   void set_partition_id(uint64_t partition_id) {
-    DCHECK(partition_id < (1ULL << 32));
+    DCHECK(partition_id < (1ULL << 20));
     clear_partition_id();
     bitvec |= partition_id << PARTITION_ID_OFFSET;
   }
@@ -118,6 +118,21 @@ public:
 
   uint64_t get_partition_id() const {
     return (bitvec >> PARTITION_ID_OFFSET) & PARTITION_ID_MASK;
+  }
+
+  // granule
+  void set_granule_id(uint64_t granule_id) {
+    DCHECK(granule_id < (1ULL << 12));
+    clear_granule_id();
+    bitvec |= granule_id << GRANULE_ID_OFFSET;
+  }
+
+  void clear_granule_id() {
+    bitvec &= ~(GRANULE_ID_MASK << GRANULE_ID_OFFSET);
+  }
+
+  uint64_t get_granule_id() const {
+    return (bitvec >> GRANULE_ID_OFFSET) & GRANULE_ID_MASK;
   }
 
   // tid
@@ -158,9 +173,12 @@ private:
 
 public:
   static constexpr uint64_t TABLE_ID_MASK = 0x1f;
-  static constexpr uint64_t TABLE_ID_OFFSET = 27+24;
+  static constexpr uint64_t TABLE_ID_OFFSET = 51;
 
-  static constexpr uint64_t PARTITION_ID_MASK = 0xffffffff;
+  static constexpr uint64_t GRANULE_ID_MASK = 0xfff;
+  static constexpr uint64_t GRANULE_ID_OFFSET = 39;
+
+  static constexpr uint64_t PARTITION_ID_MASK = 0xfffff;
   static constexpr uint64_t PARTITION_ID_OFFSET = 19;
 
   static constexpr uint64_t WRITE_LOCK_REQUEST_BIT_MASK = 0x1;

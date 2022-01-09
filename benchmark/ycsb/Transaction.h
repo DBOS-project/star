@@ -28,19 +28,23 @@ public:
 
   static constexpr std::size_t keys_num = 10;
 
-  ReadModifyWrite(std::size_t coordinator_id, std::size_t partition_id,
+  ReadModifyWrite(std::size_t coordinator_id, std::size_t partition_id, std::size_t granule_id,
                   DatabaseType &db, const ContextType &context,
                   RandomType &random, Partitioner &partitioner,
                   std::size_t ith_replica = 0)
       : Transaction(coordinator_id, partition_id, partitioner, ith_replica), db(db),
         context(context), random(random),
-        partition_id(partition_id),
-        query(makeYCSBQuery<keys_num>()(context, partition_id, random, partitioner)) {}
+        partition_id(partition_id), granule_id(granule_id),
+        query(makeYCSBQuery<keys_num>()(context, partition_id, granule_id, random, partitioner)) {}
 
   virtual int32_t get_partition_count() override { return query.number_of_parts(); }
 
   virtual int32_t get_partition(int i) override { return query.get_part(i); }
-  
+
+  virtual int32_t get_partition_granule_count(int i) override { return 1; }
+  // A ycsb transaction accesses only one granule per partition.
+  virtual int32_t get_granule(int ith_partition, int j) override { return query.get_granule(ith_partition); }
+
   virtual bool is_single_partition() override { return query.number_of_parts() == 1; }
 
   virtual ~ReadModifyWrite() override = default;
@@ -48,7 +52,7 @@ public:
   virtual const std::string serialize(std::size_t ith_replica = 0) override {
     std::string res;
     Encoder encoder(res);
-    encoder << this->transaction_id << this->straggler_wait_time << ith_replica << this->txn_random_seed_start << partition_id;
+    encoder << this->transaction_id << this->straggler_wait_time << ith_replica << this->txn_random_seed_start << partition_id << granule_id;
     encoder << get_partition_count();
     for (int32_t i = 0; i < get_partition_count(); ++i)
       encoder << get_partition(i);
@@ -68,10 +72,12 @@ public:
       storage.ycsb_keys[i].Y_KEY = key;
       if (query.UPDATE[i]) {
         this->search_for_update(ycsbTableID, context.getPartitionID(key),
-                                storage.ycsb_keys[i], storage.ycsb_values[i]);
+                                storage.ycsb_keys[i], storage.ycsb_values[i],
+                                context.getGranule(key));
       } else {
         this->search_for_read(ycsbTableID, context.getPartitionID(key),
-                              storage.ycsb_keys[i], storage.ycsb_values[i]);
+                              storage.ycsb_keys[i], storage.ycsb_values[i],
+                              context.getGranule(key));
       }
     }
 
@@ -108,7 +114,8 @@ public:
         }
 
         this->update(ycsbTableID, context.getPartitionID(key),
-                     storage.ycsb_keys[i], storage.ycsb_values[i]);
+                     storage.ycsb_keys[i], storage.ycsb_values[i],
+                                context.getGranule(key));
       }
     }
 
@@ -147,7 +154,7 @@ public:
   }
 
   void reset_query() override {
-    query = makeYCSBQuery<keys_num>()(context, partition_id, random, this->partitioner);
+    query = makeYCSBQuery<keys_num>()(context, partition_id, granule_id, random, this->partitioner);
   }
 
 private:
@@ -155,7 +162,7 @@ private:
   const ContextType &context;
   RandomType random;
   Storage storage;
-  std::size_t partition_id;
+  std::size_t partition_id, granule_id;
   YCSBQuery<keys_num> query;
 };
 } // namespace ycsb

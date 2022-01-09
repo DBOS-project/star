@@ -34,6 +34,12 @@ int main(int argc, char *argv[]) {
   context.nop_prob = FLAGS_nop_prob;
   context.n_nop = FLAGS_n_nop;
 
+  context.granules_per_partition = FLAGS_granule_count;
+  context.keysPerGranule = context.keysPerPartition / context.granules_per_partition;
+
+  LOG(INFO) << "granules_per_partition " << context.granules_per_partition;
+  LOG(INFO) << "keysPerGranule " << context.keysPerGranule;
+  star::ycsb::Context::unit_testing(&context);
   if (FLAGS_zipf > 0) {
     context.isUniform = false;
     star::Zipf::globalZipf().init(context.keysPerPartition, FLAGS_zipf);

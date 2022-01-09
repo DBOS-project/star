@@ -38,7 +38,8 @@ public:
 
   std::unique_ptr<TransactionType> next_transaction(ContextType &context,
                                                     std::size_t partition_id,
-                                                    std::size_t worker_id) {
+                                                    std::size_t worker_id,
+                                                    std::size_t granule_id = 0) {
     // const static uint32_t num_workers_per_node = context.partition_num / context.coordinator_num;
     // int cluster_worker_id = coordinator_id * num_workers_per_node + worker_id;
     // if (cluster_worker_id == 1) {
@@ -51,7 +52,7 @@ public:
     random.set_seed(random_seed);
     std::unique_ptr<TransactionType> p =
         std::make_unique<ReadModifyWrite<Transaction>>(
-            coordinator_id, partition_id, db, context, random, partitioner);
+            coordinator_id, partition_id, granule_id, db, context, random, partitioner);
     p->txn_random_seed_start = random_seed;
     p->transaction_id = next_transaction_id(coordinator_id);
     return p;
@@ -62,12 +63,13 @@ public:
     uint64_t seed;
     std::size_t ith_replica;
     std::size_t partition_id;
+    std::size_t granule_id;
     int32_t partition_count;
     int64_t transaction_id;
     uint64_t straggler_wait_time;
 
     //std::vector<int32_t> partitions;
-    decoder >> transaction_id >> straggler_wait_time >> ith_replica >> seed >> partition_id >> partition_count;
+    decoder >> transaction_id >> straggler_wait_time >> ith_replica >> seed >> partition_id >> granule_id >> partition_count;
     // for (int32_t i = 0; i < partition_count; ++i){
     //   int32_t p;
     //   decoder >> p;
@@ -78,7 +80,7 @@ public:
  
     std::unique_ptr<TransactionType> p =
         std::make_unique<ReadModifyWrite<Transaction>>(
-            coordinator_id, partition_id, db, context, random, partitioner, ith_replica);
+            coordinator_id, partition_id, granule_id, db, context, random, partitioner, ith_replica);
     p->txn_random_seed_start = seed;
     DCHECK(p->get_partition_count() == partition_count);
     // for (int32_t i = 0; i < partition_count; ++i){

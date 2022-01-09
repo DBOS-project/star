@@ -85,6 +85,7 @@ public:
   int stragglers_partition = -1;
   int sender_group_nop_count = 40000;
   double straggler_zipf_factor = 0;
-  int straggler_num_txn_len = 10;
+  std::size_t straggler_num_txn_len = 10;
+  std::size_t granules_per_partition = 128;
 };
 } // namespace star

@@ -38,7 +38,8 @@ public:
 
   std::unique_ptr<TransactionType> next_transaction(ContextType &context,
                                                     std::size_t partition_id,
-                                                    std::size_t worker_id) {
+                                                    std::size_t worker_id,
+                                                    std::size_t granule_id = 0) {
 
     int x = random.uniform_dist(1, 100);
     std::unique_ptr<TransactionType> p;

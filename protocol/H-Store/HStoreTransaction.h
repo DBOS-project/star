@@ -145,6 +145,10 @@ public:
 
   virtual int32_t get_partition(int i) = 0;
 
+  virtual int32_t get_partition_granule_count(int i) = 0;
+
+  virtual int32_t get_granule(int partition_id, int j) = 0;
+
   virtual bool is_single_partition() = 0;
 
   // Which replica this txn runs on
@@ -160,7 +164,8 @@ public:
 
   template <class KeyType, class ValueType>
   void search_local_index(std::size_t table_id, std::size_t partition_id,
-                          const KeyType &key, ValueType &value, bool readonly) {
+                          const KeyType &key, ValueType &value, bool readonly,
+                          std::size_t granule_id = 0) {
     if (execution_phase) {
       return;
     }
@@ -168,6 +173,7 @@ public:
 
     readKey.set_table_id(table_id);
     readKey.set_partition_id(partition_id);
+    readKey.set_granule_id(granule_id);
 
     readKey.set_key(&key);
     readKey.set_value(&value);
@@ -181,7 +187,8 @@ public:
 
   template <class KeyType, class ValueType>
   void search_for_read(std::size_t table_id, std::size_t partition_id,
-                       const KeyType &key, ValueType &value) {
+                       const KeyType &key, ValueType &value,
+                       std::size_t granule_id = 0) {
     if (execution_phase) {
       return;
     }
@@ -189,6 +196,7 @@ public:
 
     readKey.set_table_id(table_id);
     readKey.set_partition_id(partition_id);
+    readKey.set_granule_id(granule_id);
 
     readKey.set_key(&key);
     readKey.set_value(&value);
@@ -200,7 +208,8 @@ public:
 
   template <class KeyType, class ValueType>
   void search_for_update(std::size_t table_id, std::size_t partition_id,
-                         const KeyType &key, ValueType &value) {
+                         const KeyType &key, ValueType &value,
+                         std::size_t granule_id = 0) {
     if (execution_phase) {
       return;
     }
@@ -208,6 +217,7 @@ public:
 
     readKey.set_table_id(table_id);
     readKey.set_partition_id(partition_id);
+    readKey.set_granule_id(granule_id);
 
     readKey.set_key(&key);
     readKey.set_value(&value);
@@ -219,7 +229,8 @@ public:
 
   template <class KeyType, class ValueType>
   void update(std::size_t table_id, std::size_t partition_id,
-              const KeyType &key, const ValueType &value) {
+              const KeyType &key, const ValueType &value,
+                         std::size_t granule_id = 0) {
     if (execution_phase) {
       return;
     }
@@ -227,6 +238,7 @@ public:
 
     writeKey.set_table_id(table_id);
     writeKey.set_partition_id(partition_id);
+    writeKey.set_granule_id(granule_id);
 
     writeKey.set_key(&key);
     // the object pointed by value will not be updated
@@ -251,7 +263,7 @@ public:
       const TwoPLRWKey &readKey = readSet[i];
       bool success, remote;
       lock_request_handler(
-          readKey.get_table_id(), readKey.get_partition_id(), i,
+          readKey.get_table_id(), readKey.get_partition_id(), readKey.get_granule_id(), i,
           readKey.get_key(), readKey.get_value(),
           readSet[i].get_local_index_read_bit(),
           readSet[i].get_write_lock_request_bit(), success, remote);
@@ -315,7 +327,7 @@ public:
 
   // table id, partition id, key, value, local_index_read?, write_lock?,
   // success?, remote?
-  std::function<void(std::size_t, std::size_t, uint32_t, const void *,
+  std::function<void(std::size_t, std::size_t, std::size_t, uint32_t, const void *,
                          void *, bool, bool, bool &, bool &)>
       lock_request_handler;
   // processed a request?
@@ -344,7 +356,7 @@ public:
   bool finished_commit_phase = false;
   bool abort_lock_lock_released = false;
   bool release_lock_called = false;
-  int replay_queue_partition = -1;
+  int replay_queue_lock_id = -1;
   bool abort_lock_local_read = false;
   int64_t execution_done_latency = 0;
   int64_t commit_initiated_latency = 0;

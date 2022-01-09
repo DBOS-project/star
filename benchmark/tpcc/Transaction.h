@@ -37,7 +37,11 @@ public:
   virtual int32_t get_partition_count() override { return query.number_of_parts(); }
 
   virtual int32_t get_partition(int i) override { return query.get_part(i); }
-  
+
+  virtual int32_t get_partition_granule_count(int i) override { return 1; }
+
+  virtual int32_t get_granule(int partition_id, int j) override { CHECK(false); return 0; }
+
   virtual bool is_single_partition() override { return query.number_of_parts() == 1; }
 
   virtual ~NewOrder() override = default;
@@ -309,6 +313,10 @@ public:
   virtual int32_t get_partition_count() override { return query.number_of_parts(); }
 
   virtual int32_t get_partition(int i) override { return query.get_part(i); }
+  
+  virtual int32_t get_partition_granule_count(int i) override { return 1; }
+
+  virtual int32_t get_granule(int partition_id, int j) override { CHECK(false); return 0; }
   
   virtual bool is_single_partition() override { return query.number_of_parts() == 1; }
   

@@ -355,7 +355,7 @@ public:
       if (this->context.stragglers_per_batch) {
         auto total_batch_size = this->partitioner.num_coordinator_for_one_replica() * this->context.batch_size;
         auto v = this->random.uniform_dist(1, total_batch_size);
-        if (v <= this->context.stragglers_per_batch) {
+        if (v <= (uint64_t)this->context.stragglers_per_batch) {
           transactions[i]->straggler_wait_time = this->context.stragglers_total_wait_time / this->context.stragglers_per_batch;
         }
       }

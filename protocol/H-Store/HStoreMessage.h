@@ -19,6 +19,7 @@ namespace star {
 struct TxnCommand {
   int64_t tid; 
   int partition_id;
+  int granule_id = 0;
   bool is_coordinator;
   bool is_mp;
   std::string command_data;
@@ -127,23 +128,26 @@ public:
     return message_size;
   }
 
-  static std::size_t new_release_partition_lock_message(Message &message, ITable & table, uint32_t this_worker_id, bool sync, std::size_t ith_replica, bool write_cmd_buffer, const TxnCommand & txn_cmd) {
+  static std::size_t new_release_partition_lock_message(Message &message, ITable & table, uint32_t this_worker_id,
+                                                        uint32_t granule_id, bool sync, std::size_t ith_replica, 
+                                                        bool write_cmd_buffer, const TxnCommand & txn_cmd) {
 
     /*
      * The structure of a partition lock request: (remote_worker_id)
      */
 
     auto message_size =
-        MessagePiece::get_header_size() + sizeof(uint32_t) + sizeof(bool) + sizeof(std::size_t) + sizeof(write_cmd_buffer);
+        MessagePiece::get_header_size() + sizeof(granule_id) + sizeof(uint32_t) + sizeof(bool) + sizeof(std::size_t) + sizeof(write_cmd_buffer);
     if (write_cmd_buffer)
       message_size += sizeof(txn_cmd.is_mp) + sizeof(txn_cmd.command_data.size()) + txn_cmd.command_data.size() + sizeof(txn_cmd.tid) + sizeof(txn_cmd.partition_id);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(HStoreMessage::RELEASE_PARTITION_LOCK_REQUEST), message_size,
-        table.tableID(), table.partitionID());
+        table.tableID(), table.partitionID(), granule_id);
 
     Encoder encoder(message.data);
     encoder << message_piece_header;
     encoder << this_worker_id;
+    encoder << granule_id;
     encoder << sync;
     encoder << ith_replica;
     encoder << write_cmd_buffer;
@@ -235,6 +239,7 @@ public:
                                            const void *key,
                                            uint32_t key_offset,
                                            uint32_t this_worker_id,
+                                           uint32_t granule_id,
                                            std::size_t ith_replica,
                                            uint64_t tries) {
 
@@ -245,10 +250,10 @@ public:
     auto key_size = table.key_size();
 
     auto message_size =
-        MessagePiece::get_header_size() + key_size + sizeof(key_offset) + sizeof(uint32_t) + sizeof(std::size_t) + sizeof(uint64_t);
+        MessagePiece::get_header_size() + key_size + sizeof(key_offset) + sizeof(granule_id) + sizeof(uint32_t) + sizeof(std::size_t) + sizeof(uint64_t);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(HStoreMessage::ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST), message_size,
-        table.tableID(), table.partitionID());
+        table.tableID(), table.partitionID(), granule_id);
 
     // LOG(INFO) << "this_cluster_worker_id "<< this_worker_id << " new_acquire_partition_lock_and_read_message message on partition " 
     //           << table.partitionID() << " of " << ith_replica << " replica";
@@ -258,6 +263,7 @@ public:
     encoder.write_n_bytes(key, key_size);
     encoder << key_offset;
     encoder << this_worker_id;
+    encoder << granule_id;
     encoder << ith_replica;
     encoder << tries;
     message.set_is_replica(ith_replica > 0);
@@ -268,7 +274,7 @@ public:
   }
 
   static std::size_t new_write_back_message(Message &message, ITable &table,
-                                       const void *key, const void *value, uint32_t this_worker_id, 
+                                       const void *key, const void *value, uint32_t this_worker_id, uint32_t granule_id,
                                        uint64_t commit_tid, std::size_t ith_replica,
                                        bool persist_commit_record = false) {
 
@@ -279,14 +285,15 @@ public:
     auto key_size = table.key_size();
     auto field_size = table.field_size();
 
-    auto message_size = MessagePiece::get_header_size() + sizeof(uint32_t) + sizeof(std::size_t) + key_size + field_size  + sizeof(commit_tid) + sizeof(persist_commit_record);
+    auto message_size = MessagePiece::get_header_size() + sizeof(granule_id) + sizeof(uint32_t) + sizeof(std::size_t) + key_size + field_size  + sizeof(commit_tid) + sizeof(persist_commit_record);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(HStoreMessage::WRITE_BACK_REQUEST), message_size,
-        table.tableID(), table.partitionID());
+        table.tableID(), table.partitionID(), granule_id);
 
     Encoder encoder(message.data);
     encoder << message_piece_header << commit_tid << persist_commit_record;
     encoder << this_worker_id;
+    encoder << granule_id;
     encoder << ith_replica;
     encoder.write_n_bytes(key, key_size);
     table.serialize_value(encoder, value);

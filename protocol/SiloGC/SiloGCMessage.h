@@ -433,13 +433,13 @@ public:
 
     responseMessage.flush();
 
-    std::size_t lsn = 0;
+    //std::size_t lsn = 0;
     if (txn->get_logger()) {
       // write a vote for a key
       std::ostringstream ss;
       ss << success;
       auto output = ss.str();
-      lsn = txn->get_logger()->write(output.c_str(), output.size(), last_validation, [&](){ txn->remote_request_handler(0); });
+      txn->get_logger()->write(output.c_str(), output.size(), last_validation, [&](){ txn->remote_request_handler(0); });
     }
 
     if (txn->get_logger() && last_validation) {

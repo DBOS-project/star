@@ -143,6 +143,10 @@ public:
 
   virtual int32_t get_partition(int i) = 0;
 
+  virtual int32_t get_partition_granule_count(int i) = 0;
+
+  virtual int32_t get_granule(int partition_id, int j) = 0;
+
   virtual bool is_single_partition() = 0;
 
   virtual const std::string serialize(std::size_t ith_replica=0) = 0;
@@ -174,7 +178,8 @@ public:
 
   template <class KeyType, class ValueType>
   void search_local_index(std::size_t table_id, std::size_t partition_id,
-                          const KeyType &key, ValueType &value, bool readonly) {
+                          const KeyType &key, ValueType &value, bool readonly,
+                          std::size_t granule_id = 0) {
 
     if (execution_phase) {
       return;
@@ -195,7 +200,8 @@ public:
 
   template <class KeyType, class ValueType>
   void search_for_read(std::size_t table_id, std::size_t partition_id,
-                       const KeyType &key, ValueType &value) {
+                       const KeyType &key, ValueType &value,
+                       std::size_t granule_id = 0) {
 
     if (execution_phase) {
       return;
@@ -216,7 +222,8 @@ public:
 
   template <class KeyType, class ValueType>
   void search_for_update(std::size_t table_id, std::size_t partition_id,
-                         const KeyType &key, ValueType &value) {
+                         const KeyType &key, ValueType &value,
+                         std::size_t granule_id = 0) {
     if (execution_phase) {
       return;
     }
@@ -236,7 +243,8 @@ public:
 
   template <class KeyType, class ValueType>
   void update(std::size_t table_id, std::size_t partition_id,
-              const KeyType &key, const ValueType &value) {
+              const KeyType &key, const ValueType &value,
+                         std::size_t granule_id = 0) {
 
     if (execution_phase) {
       return;

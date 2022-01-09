@@ -179,7 +179,7 @@ public:
         auto total_batch_size = context.coordinator_num * context.batch_size;
         if (context.stragglers_per_batch) {
           auto v = random.uniform_dist(1, total_batch_size);
-          if (v <= context.stragglers_per_batch) {
+          if (v <= (uint64_t)context.stragglers_per_batch) {
             transactions[i]->straggler_wait_time = context.stragglers_total_wait_time / context.stragglers_per_batch;
           }
         }

@@ -699,13 +699,13 @@ public:
     encoder << success;
 
     responseMessage.flush();
-    std::size_t lsn = 0;
+    //std::size_t lsn = 0;
     if (txn->get_logger()) {
       // write the vote
       std::ostringstream ss;
       ss << success;
       auto output = ss.str();
-      lsn = txn->get_logger()->write(output.c_str(), output.size(), true);
+      txn->get_logger()->write(output.c_str(), output.size(), true);
     }
 
     if (txn->get_logger()) {
@@ -798,12 +798,12 @@ public:
     table.deserialize_value(key, valueStringPiece);
     TwoPLHelper::write_lock_release(tid, commit_tid);
 
-    uint64_t lsn = 0;
+    //uint64_t lsn = 0;
     if (txn->get_logger()) {
       std::ostringstream ss;
       ss << commit_tid << std::string((const char *)key, key_size) << std::string(valueStringPiece.data(), field_size);
       auto output = ss.str();
-      lsn = txn->get_logger()->write(output.c_str(), output.size(), sync_redo);
+      txn->get_logger()->write(output.c_str(), output.size(), sync_redo);
     }
 
     // if (txn->get_logger() && sync_redo) {

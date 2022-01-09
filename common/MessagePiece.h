@@ -43,6 +43,10 @@ public:
     return (get_header() >> PARTITION_ID_OFFSET) & PARTITION_ID_MASK;
   }
 
+  uint32_t get_granule_id() const {
+    return (get_header() >> GRANULE_ID_OFFSET) & GRANULE_ID_MASK;
+  }
+
   StringPiece toStringPiece() {
     return StringPiece(stringPiece.data() + get_header_size(),
                        get_message_length() - get_header_size());
@@ -70,15 +74,18 @@ public:
   static header_type construct_message_piece_header(uint32_t message_type,
                                                  uint32_t message_length,
                                                  std::size_t table_id,
-                                                 std::size_t partition_id) {
+                                                 std::size_t partition_id,
+                                                 std::size_t granule_id = 0) {
     DCHECK(message_type < (1ull << 7));
     DCHECK(message_length < (1ull << 24));
     DCHECK(table_id < (1ull << 5));
-    DCHECK(partition_id < (1ull << 32));
+    DCHECK(granule_id < (1ull << 12));
+    DCHECK(partition_id < (1ull << 20));
 
     return (((uint64_t)message_type) << MESSAGE_TYPE_OFFSET) +
            (((uint64_t)message_length) << MESSAGE_LENGTH_OFFSET) +
            (((uint64_t)table_id) << TABLE_ID_OFFSET) +
+           (((uint64_t)granule_id) << GRANULE_ID_OFFSET) +
            (((uint64_t)partition_id) << PARTITION_ID_OFFSET);
   }
 
@@ -93,7 +100,9 @@ public:
   static constexpr uint64_t MESSAGE_LENGTH_OFFSET = 13+24;
   static constexpr uint64_t TABLE_ID_MASK = 0x1f;
   static constexpr uint64_t TABLE_ID_OFFSET = 32;
-  static constexpr uint64_t PARTITION_ID_MASK = 0xffffffff;
+  static constexpr uint64_t GRANULE_ID_MASK = 0xfff;
+  static constexpr uint64_t GRANULE_ID_OFFSET = 20;
+  static constexpr uint64_t PARTITION_ID_MASK = 0xfffff;
   static constexpr uint64_t PARTITION_ID_OFFSET = 0;
 };
 } // namespace star
