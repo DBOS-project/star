@@ -159,17 +159,17 @@ public:
   uint64_t get_replica_replay_log_position_responses = 0;
 
   // For standby replica
-  std::vector<std::deque<TxnCommand>> partition_command_queues; // Commands against individual partition
-  std::vector<bool> partition_command_queue_processing;
-  std::vector<int> partition_to_cmd_queue_index;
+  std::vector<std::deque<TxnCommand>> granule_command_queues; // Commands against individual partition
+  std::vector<bool> granule_command_queue_processing;
+  std::vector<int> granule_to_cmd_queue_index;
   // Records the last command's position_in_log (TxnCommand.position_in_log) that got replayed
-  std::vector<int64_t> partition_replayed_log_index; 
-  std::vector<std::deque<Message*>> partition_lock_request_queues;
-  std::deque<int> partition_lock_reqeust_candidates;
+  std::vector<int64_t> granule_replayed_log_index; 
+  std::vector<std::deque<Message*>> granule_lock_request_queues;
+  std::deque<int> granule_lock_reqeust_candidates;
   std::size_t replica_num;
   int64_t get_minimum_replayed_log_position() {
-    int64_t minv = partition_replayed_log_index[0];
-    for (auto v : partition_replayed_log_index) {
+    int64_t minv = granule_replayed_log_index[0];
+    for (auto v : granule_replayed_log_index) {
       minv = std::max(minv, v);
     }
     return minv;
@@ -222,26 +222,26 @@ public:
 
   std::deque<TxnCommand> & get_partition_cmd_queue(int partition) {
     DCHECK(is_replica_worker);
-    DCHECK(partition_to_cmd_queue_index[partition] != -1);
-    DCHECK(partition_to_cmd_queue_index[partition] >= 0);
-    DCHECK(partition_to_cmd_queue_index[partition] < (int)partition_command_queues.size());
-    return partition_command_queues[partition_to_cmd_queue_index[partition]];
+    DCHECK(granule_to_cmd_queue_index[partition] != -1);
+    DCHECK(granule_to_cmd_queue_index[partition] >= 0);
+    DCHECK(granule_to_cmd_queue_index[partition] < (int)granule_command_queues.size());
+    return granule_command_queues[granule_to_cmd_queue_index[partition]];
   }
 
-  std::deque<Message*> & get_partition_lock_request_queue(int partition) {
+  std::deque<Message*> & get_granule_lock_request_queue(int partition) {
     DCHECK(is_replica_worker);
-    DCHECK(partition_to_cmd_queue_index[partition] != -1);
-    DCHECK(partition_to_cmd_queue_index[partition] >= 0);
-    DCHECK(partition_to_cmd_queue_index[partition] < (int)partition_lock_request_queues.size());
-    return partition_lock_request_queues[partition_to_cmd_queue_index[partition]];
+    DCHECK(granule_to_cmd_queue_index[partition] != -1);
+    DCHECK(granule_to_cmd_queue_index[partition] >= 0);
+    DCHECK(granule_to_cmd_queue_index[partition] < (int)granule_lock_request_queues.size());
+    return granule_lock_request_queues[granule_to_cmd_queue_index[partition]];
   }
 
   int64_t & get_partition_last_replayed_position_in_log(int partition) {
     DCHECK(is_replica_worker);
-    DCHECK(partition_to_cmd_queue_index[partition] != -1);
-    DCHECK(partition_to_cmd_queue_index[partition] >= 0);
-    DCHECK(partition_to_cmd_queue_index[partition] < (int)partition_command_queues.size());
-    return partition_replayed_log_index[partition_to_cmd_queue_index[partition]];
+    DCHECK(granule_to_cmd_queue_index[partition] != -1);
+    DCHECK(granule_to_cmd_queue_index[partition] >= 0);
+    DCHECK(granule_to_cmd_queue_index[partition] < (int)granule_command_queues.size());
+    return granule_replayed_log_index[granule_to_cmd_queue_index[partition]];
   }
 
   HStoreExecutor(std::size_t coordinator_id, std::size_t worker_id, DatabaseType &db,
@@ -308,7 +308,7 @@ public:
         } else {
           rtt_test_target_cluster_worker = this_cluster_worker_id - this->context.worker_num;
         }
-        partition_to_cmd_queue_index.resize(this->context.partition_num * this->context.granules_per_partition, -1);
+        granule_to_cmd_queue_index.resize(this->context.partition_num * this->context.granules_per_partition, -1);
         DCHECK(managed_partitions.empty());
         size_t cmd_queue_idx = 0;
         for (int p = 0; p < (int)this->context.partition_num; ++p) {
@@ -317,13 +317,13 @@ public:
               managed_partitions.push_back(p);
               for (size_t j = 0; j < this->context.granules_per_partition; ++j) {
                 auto lock_id = to_lock_id(p, j);
-                partition_command_queues.push_back(std::deque<TxnCommand>());
-                partition_lock_request_queues.push_back(std::deque<Message*>());
-                partition_command_queue_processing.push_back(false);
-                partition_replayed_log_index.push_back(-1);
-                partition_to_cmd_queue_index[lock_id] = cmd_queue_idx++;
-                DCHECK(cmd_queue_idx == partition_command_queues.size());
-                DCHECK(cmd_queue_idx == partition_replayed_log_index.size());
+                granule_command_queues.push_back(std::deque<TxnCommand>());
+                granule_lock_request_queues.push_back(std::deque<Message*>());
+                granule_command_queue_processing.push_back(false);
+                granule_replayed_log_index.push_back(-1);
+                granule_to_cmd_queue_index[lock_id] = cmd_queue_idx++;
+                DCHECK(cmd_queue_idx == granule_command_queues.size());
+                DCHECK(cmd_queue_idx == granule_replayed_log_index.size());
                 auto active_replica_cluster_worker_id = partition_owner_cluster_worker(p, 0);
                 DCHECK(replica_cluster_worker_id == -1 || active_replica_cluster_worker_id == replica_cluster_worker_id);
                 replica_cluster_worker_id = active_replica_cluster_worker_id;
@@ -513,11 +513,11 @@ public:
             if (is_replica_worker) {
               auto & q = get_partition_cmd_queue(lock_id);
               if (q.empty() == false) {
-                replay_candidate_partitions.push_back(lock_id);
+                replay_candidate_granules.push_back(lock_id);
               }
-              auto & q2 = get_partition_lock_request_queue(lock_id);
+              auto & q2 = get_granule_lock_request_queue(lock_id);
               if (q2.empty() == false) {
-                partition_lock_reqeust_candidates.push_back(lock_id);
+                granule_lock_reqeust_candidates.push_back(lock_id);
               }
             }
           } else {
@@ -553,11 +553,11 @@ public:
         if (is_replica_worker) {
           auto & q = get_partition_cmd_queue(lock_id);
           if (q.empty() == false) {
-            replay_candidate_partitions.push_back(lock_id);
+            replay_candidate_granules.push_back(lock_id);
           }
-          auto & q2 = get_partition_lock_request_queue(lock_id);
+          auto & q2 = get_granule_lock_request_queue(lock_id);
           if (q2.empty() == false) {
-            partition_lock_reqeust_candidates.push_back(lock_id);
+            granule_lock_reqeust_candidates.push_back(lock_id);
           }
         }
       }
@@ -814,8 +814,8 @@ public:
         DCHECK(granule_id >= 0 && granule_id < (int)this->context.granules_per_partition);
         auto lock_id = to_lock_id(partition, granule_id);
         DCHECK(partition != -1);
-        auto lock_index = partition_to_cmd_queue_index[lock_id];
-        auto & q = partition_command_queues[lock_index];
+        auto lock_index = granule_to_cmd_queue_index[lock_id];
+        auto & q = granule_command_queues[lock_index];
         //cmds[i].queue_ts = std::chrono::steady_clock::now();
         cmds[i].txn = nullptr;
         q.push_back(cmds[i]);
@@ -824,10 +824,10 @@ public:
         if (lock_buckets[lock_id] == -1 && q.size() == 1)
           replay_sp_queue_commands(lock_index);
         else
-          replay_candidate_partitions.push_back(lock_id);
-        auto & q2 = get_partition_lock_request_queue(lock_id);
+          replay_candidate_granules.push_back(lock_id);
+        auto & q2 = get_granule_lock_request_queue(lock_id);
         if (q2.empty() == false) {
-          partition_lock_reqeust_candidates.push_back(lock_id);
+          granule_lock_reqeust_candidates.push_back(lock_id);
         }
       } else if (cmds[i].is_mp == false) { // place into one partition command queue for replay
         auto partition = cmds[i].partition_id;
@@ -835,8 +835,8 @@ public:
         DCHECK(granule_id >= 0 && granule_id < (int)this->context.granules_per_partition);
         auto lock_id = to_lock_id(partition, granule_id);
         DCHECK(partition != -1);
-        auto lock_index = partition_to_cmd_queue_index[lock_id];
-        auto & q = partition_command_queues[lock_index];
+        auto lock_index = granule_to_cmd_queue_index[lock_id];
+        auto & q = granule_command_queues[lock_index];
         auto sp_txn = this->workload.deserialize_from_raw(this->context, cmds[i].command_data).release();
         sp_txn->replay_queue_lock_id = lock_id;
         DCHECK(sp_txn->ith_replica > 0);
@@ -845,7 +845,7 @@ public:
         cmds[i].txn->no_in_group = replcia_txn_group_start_no++;
         //cmds[i].queue_ts = std::chrono::steady_clock::now();
         q.push_back(cmds[i]);
-        replay_candidate_partitions.push_back(lock_id);
+        replay_candidate_granules.push_back(lock_id);
         //auto now_time = std::chrono::steady_clock::now();
         // mp_arrival_interval.add(std::chrono::duration_cast<std::chrono::microseconds>(
         //     now_time - last_mp_arrival)
@@ -856,7 +856,7 @@ public:
         if (lock_buckets[lock_id] == -1 && q.size() == 1)
           replay_sp_queue_commands(lock_index);
         else
-          replay_candidate_partitions.push_back(lock_id);
+          replay_candidate_granules.push_back(lock_id);
       } else { // place into multiple partition command queues for replay
         DCHECK(cmds[i].partition_id == -1);
         auto mp_txn = this->workload.deserialize_from_raw(this->context, cmds[i].command_data).release();
@@ -888,7 +888,7 @@ public:
               cmd_mp.command_data = "";
               cmd_mp.txn = nullptr;
               q.push_back(cmd_mp);
-              replay_candidate_partitions.push_back(lock_id);
+              replay_candidate_granules.push_back(lock_id);
             }
           }
         }
@@ -907,7 +907,7 @@ public:
     //LOG(INFO) << "Spread " << cmds.size() << " commands to queues";
   }
 
-  std::deque<int> replay_candidate_partitions;
+  std::deque<int> replay_candidate_granules;
   void command_replication_request_handler(const Message & inputMessage, MessagePiece inputPiece,
                                    Message &responseMessage,
                                    ITable &table, Transaction *txn) {
@@ -1458,11 +1458,11 @@ public:
     if (is_replica_worker) {
       auto & q = get_partition_cmd_queue(lock_id);
       if (q.empty() == false) {
-        replay_candidate_partitions.push_back(lock_id);
+        replay_candidate_granules.push_back(lock_id);
       }
-      auto & q2 = get_partition_lock_request_queue(lock_id);
+      auto & q2 = get_granule_lock_request_queue(lock_id);
       if (q2.empty() == false) {
-        partition_lock_reqeust_candidates.push_back(lock_id);
+        granule_lock_reqeust_candidates.push_back(lock_id);
       }
     }
     // if (ith_replica > 0);
@@ -2100,12 +2100,12 @@ public:
   bool processing_mp = false;
   bool replay_sp_queue_commands(int queue_index) {
     int i = queue_index;
-    if (partition_command_queue_processing[i])
+    if (granule_command_queue_processing[i])
         return false;
-    auto & q = partition_command_queues[i];
+    auto & q = granule_command_queues[i];
     if (q.empty())
       return false;
-    partition_command_queue_processing[i] = true;
+    granule_command_queue_processing[i] = true;
     while (q.empty() == false) {
       auto & cmd = q.front();
       if (cmd.is_coordinator == false) {
@@ -2136,7 +2136,7 @@ public:
           //   cmd.queue_head_processed = true;
           // }
           // The partition is being locked by front transaction executing, try next time.
-          //replay_candidate_partitions.push_back(lock_id);
+          //replay_candidate_granules.push_back(lock_id);
           break;
         }
       } else if (cmd.is_mp == false) {
@@ -2181,7 +2181,7 @@ public:
             DCHECK(lock_buckets[lock_id] == -1);
           }
         } else {
-          //replay_candidate_partitions.push_back(lock_id);
+          //replay_candidate_granules.push_back(lock_id);
           // The partition is being locked by front transaction executing, try next time.
           break;
         }
@@ -2189,12 +2189,12 @@ public:
         break;
       }
     }
-    partition_command_queue_processing[i] = false;
+    granule_command_queue_processing[i] = false;
     return true;
   }
 
   bool replay_sp_commands(int partition) {
-    return replay_sp_queue_commands(partition_to_cmd_queue_index[partition]);
+    return replay_sp_queue_commands(granule_to_cmd_queue_index[partition]);
   }
 
   void replay_all_sp_commands() {
@@ -2210,19 +2210,19 @@ public:
   int active_mps = 0;
   int active_mp_limit = 100000;
   void replay_commands_in_partition(int partition) {
-    int i = partition_to_cmd_queue_index[partition];
-    if (partition_command_queue_processing[i])
+    int i = granule_to_cmd_queue_index[partition];
+    if (granule_command_queue_processing[i])
         return;
     replay_sp_queue_commands(i);
-    auto & q = partition_command_queues[i];
+    auto & q = granule_command_queues[i];
     if (q.empty())
       return;
-    partition_command_queue_processing[i] = true;
+    granule_command_queue_processing[i] = true;
 
     if (active_mps < active_mp_limit && q.front().is_coordinator && q.front().is_mp) {
       auto & cmd = q.front();
       DCHECK(cmd.txn != nullptr);
-      DCHECK(partition_command_queue_processing[i] == true);
+      DCHECK(granule_command_queue_processing[i] == true);
       // if (cmd.txn->being_replayed == false) {
       //   auto queue_time =
       //   std::chrono::duration_cast<std::chrono::microseconds>(
@@ -2236,7 +2236,7 @@ public:
       ++active_mps;
       process_execution_async_single_mp_txn(mp_txn);
     } else {
-      partition_command_queue_processing[i] = false;
+      granule_command_queue_processing[i] = false;
     }
   }
 
@@ -2245,11 +2245,11 @@ public:
       DCHECK(active_txns.count(mp_txn->transaction_id) == 0);
       DCHECK(mp_txn->is_single_partition() == false);
       auto lock_id = mp_txn->replay_queue_lock_id;
-      auto replay_queue_idx = partition_to_cmd_queue_index[mp_txn->replay_queue_lock_id];
-      DCHECK(partition_command_queue_processing[replay_queue_idx]);
+      auto replay_queue_idx = granule_to_cmd_queue_index[mp_txn->replay_queue_lock_id];
+      DCHECK(granule_command_queue_processing[replay_queue_idx]);
       if (mp_txn->finished_commit_phase && (mp_txn->abort_lock == false || mp_txn->abort_no_retry)) {
         DCHECK(mp_txn->release_lock_called);
-        auto & q = partition_command_queues[replay_queue_idx];
+        auto & q = granule_command_queues[replay_queue_idx];
         auto cmd = q.front();
         DCHECK(mp_txn == cmd.txn);
         auto latency =
@@ -2268,7 +2268,7 @@ public:
         //   straggler_count++;
         //   straggler_mp_debug_string += tid_to_string(mp_txn->transaction_id) + " mp_t " + std::to_string(mp_t) + " latency " + std::to_string(latency) + " tries " + std::to_string(mp_txn->tries) + " abort_lock_queue_len_sum " + std::to_string(mp_txn->abort_lock_queue_len_sum) + " self queue length " + std::to_string(q.size()) + " no_in_group " + std::to_string(mp_txn->no_in_group) + " abort_lock_owned_by_others "  + std::to_string(mp_txn->abort_lock_owned_by_others) + " abort_lock_owned_by_no_one "  + std::to_string(mp_txn->abort_lock_owned_by_no_one) + "\n";
         // }
-        partition_command_queue_processing[replay_queue_idx] = false;
+        granule_command_queue_processing[replay_queue_idx] = false;
         tries_latency[std::min((int)mp_txn->tries, (int)tries_latency.size() - 1)].add(latency);
         // tries_prepare_time[std::min((int)mp_txn->tries, (int)tries_prepare_time.size() - 1)].add(mp_txn->get_commit_prepare_time());
         // tries_lock_stall_time[std::min((int)mp_txn->tries, (int)tries_lock_stall_time.size() - 1)].add(mp_txn->get_stall_time());
@@ -2280,15 +2280,15 @@ public:
         delete mp_txn;
 
         if (q.empty() == false) {
-          replay_candidate_partitions.push_back(lock_id);
+          replay_candidate_granules.push_back(lock_id);
         }
 
-        auto & q2 = get_partition_lock_request_queue(lock_id);
+        auto & q2 = get_granule_lock_request_queue(lock_id);
         if (q2.empty() == false) {
-          partition_lock_reqeust_candidates.push_back(lock_id);
+          granule_lock_reqeust_candidates.push_back(lock_id);
         }
       } else {
-        partition_command_queue_processing[replay_queue_idx] = false;
+        granule_command_queue_processing[replay_queue_idx] = false;
         auto ltc =
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - mp_txn->startTime)
@@ -2302,7 +2302,7 @@ public:
             for (int j = 0; j < granule_count; ++j) {
               auto granule_id = mp_txn->get_granule(i, j);
               auto lock_id = to_lock_id(p, granule_id);
-              replay_candidate_partitions.push_back(lock_id);
+              replay_candidate_granules.push_back(lock_id);
             }
           }
         }
@@ -2312,9 +2312,9 @@ public:
     };
     process_to_commit(async_txns_to_commit, complete_mp);
     int cnt = 0;
-    while (!replay_candidate_partitions.empty()) {
-      int partition = replay_candidate_partitions.front();
-      replay_candidate_partitions.pop_front();
+    while (!replay_candidate_granules.empty()) {
+      int partition = replay_candidate_granules.front();
+      replay_candidate_granules.pop_front();
       replay_commands_in_partition(partition);
       auto sz = handle_requests(false);
       sz += process_to_commit(async_txns_to_commit, complete_mp);
@@ -2353,7 +2353,7 @@ public:
   std::deque<TransactionType*> async_txns_to_commit;
 
   void process_queue_partition_lock_request(int lock_id) {
-    auto & q = get_partition_lock_request_queue(lock_id);
+    auto & q = get_granule_lock_request_queue(lock_id);
     bool reorg = false;
     for (std::size_t i = 0; i < q.size(); ++i) {
       auto message = q[i];
@@ -2405,18 +2405,18 @@ public:
   }
 
   void process_queued_lock_requests() {
-    if (partition_lock_reqeust_candidates.empty())
+    if (granule_lock_reqeust_candidates.empty())
       return;
     // ScopedTimer t([&, this](uint64_t us) {
     //   handle_latency.add(us);
     // });
-    auto sz = partition_lock_reqeust_candidates.size();
+    auto sz = granule_lock_reqeust_candidates.size();
     for (size_t i = 0; i < sz; ++i) {
-      auto lock_id = partition_lock_reqeust_candidates[i];
+      auto lock_id = granule_lock_reqeust_candidates[i];
       process_queue_partition_lock_request(lock_id);
     }
     while (sz--) {
-      partition_lock_reqeust_candidates.pop_front();
+      granule_lock_reqeust_candidates.pop_front();
     }
   }
 
@@ -2580,7 +2580,7 @@ public:
         cluster_worker_messages[message->get_source_cluster_worker_id()]->clear_message_pieces();
         DCHECK(message_lock_id != -1);
         // Save the requests for now
-        get_partition_lock_request_queue(message_lock_id).push_back(message.release());
+        get_granule_lock_request_queue(message_lock_id).push_back(message.release());
       } else {
         size += message->get_message_count();
         flush_messages();
