@@ -12,7 +12,17 @@ DEFINE_int32(payment_dist, 15, "payment distributed.");
 bool do_tid_check = false;
 
 int main(int argc, char *argv[]) {
-
+  star::tpcc::Random r;
+  std::vector<int> cnt(100, 0);
+  for (size_t i = 0; i < 1000000; ++i) {
+    auto x = r.non_uniform_distribution(8191, 1, 100000) % 1500;
+    if (x <= cnt.size()) {
+      cnt[x]++;
+    }
+  }
+  for (size_t i = 1; i < cnt.size(); ++i) {
+    LOG(INFO) << "i " << i << " " << cnt[i];
+  }
   google::InitGoogleLogging(argv[0]);
   google::InstallFailureSignalHandler();
   google::ParseCommandLineFlags(&argc, &argv, true);
@@ -21,6 +31,8 @@ int main(int argc, char *argv[]) {
   SETUP_CONTEXT(context);
 
   context.operation_replication = FLAGS_operation_replication;
+
+  context.granules_per_partition = FLAGS_granule_count;
 
   if (FLAGS_query == "mixed") {
     context.workloadType = star::tpcc::TPCCWorkloadType::MIXED;

@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #define gettid() syscall(SYS_gettid)
 #include <unordered_set>
+#include <set>
 namespace star {
 
 template <class Workload>
@@ -334,6 +335,7 @@ public:
         }
         managed_replica_granules_str.pop_back(); // Remove last ,
       }
+      managed_granules_str = managed_replica_granules_str = "";
       LOG(INFO) << "Cluster worker id " << this_cluster_worker_id << " node worker id "<< worker_id
                 << " granules managed [" << managed_granules_str 
                 << "], replica granules maanged [" << managed_replica_granules_str << "]" 
@@ -425,7 +427,36 @@ public:
         }
       }
     }
-    //txn.abort_lock_lock_released = true;
+    txn.abort_lock_lock_released = true;
+  }
+
+  void write_command(TransactionType &txn) {
+    if (is_replica_worker == false && txn.command_written == false) {
+      auto txn_command_data = txn.serialize(1);
+      int64_t tid = txn.transaction_id;
+      bool is_mp = txn.is_single_partition() == false || txn.get_partition_granule_count(0) > 1;
+      int partition_id = is_mp ? -1 : txn.get_partition(0);
+      int granule_id = is_mp ? -1 : txn.get_granule(0, 0);
+      bool is_coordinator = true;
+      int64_t position_in_log = next_position_in_command_log++;
+      minimum_coord_txn_written_log_position = position_in_log;
+
+      size_t command_buffer_data_size = command_buffer_data.size();
+      Encoder enc(command_buffer_data);
+      enc << tid;
+      enc << is_coordinator;
+      enc << is_mp;
+      enc << position_in_log;
+      enc << partition_id;
+      enc << granule_id;
+      enc << txn_command_data.size();
+      enc.write_n_bytes(txn_command_data.data(), txn_command_data.size());
+      
+      command_buffer_outgoing_data.insert(command_buffer_outgoing_data.end(), command_buffer_data.begin() + command_buffer_data_size, command_buffer_data.end());
+      //command_buffer.push_back(cmd);
+      //command_buffer_outgoing.push_back(cmd);
+      txn.command_written = true;
+    }
   }
 
   bool commit_mp(TransactionType &txn,
@@ -447,31 +478,7 @@ public:
     uint64_t commit_tid = generate_tid(txn);
     DCHECK(txn.get_logger());
 
-    if (is_replica_worker == false) {
-      auto txn_command_data = txn.serialize(1);
-      int64_t tid = txn.transaction_id;
-      bool is_mp = txn.is_single_partition() == false;
-      int partition_id = is_mp ? -1 : txn.get_partition(0);
-      int granule_id = is_mp ? -1 : txn.get_granule(0, 0);
-      bool is_coordinator = true;
-      int64_t position_in_log = next_position_in_command_log++;
-      minimum_coord_txn_written_log_position = position_in_log;
-
-      size_t command_buffer_data_size = command_buffer_data.size();
-      Encoder enc(command_buffer_data);
-      enc << tid;
-      enc << is_coordinator;
-      enc << is_mp;
-      enc << position_in_log;
-      enc << partition_id;
-      enc << granule_id;
-      enc << txn_command_data.size();
-      enc.write_n_bytes(txn_command_data.data(), txn_command_data.size());
-      
-      command_buffer_outgoing_data.insert(command_buffer_outgoing_data.end(), command_buffer_data.begin() + command_buffer_data_size, command_buffer_data.end());
-      //command_buffer.push_back(cmd);
-      //command_buffer_outgoing.push_back(cmd);
-    }
+    write_command(txn);
 
     {
       ScopedTimer t([&, this](uint64_t us) {
@@ -864,7 +871,6 @@ public:
         cmds[i].txn = mp_txn;
         //cmds[i].queue_ts = std::chrono::steady_clock::now();
         DCHECK(mp_txn->ith_replica > 0);
-        DCHECK(partition_count > 1);
 
         bool mp_queued = false;
         int first_lock_id_by_this_worker = -1;
@@ -1598,8 +1604,8 @@ public:
     txn->set_stall_time(ltc);
 
     auto result = txn->execute(this->id);
-
     if (result == TransactionResult::READY_TO_COMMIT) {
+      DCHECK(check_granule_set(txn));
       bool commit;
       {
         ScopedTimer t([&, this](uint64_t us) {
@@ -1650,9 +1656,17 @@ public:
         return false;
       }
     } else {
-      DCHECK(false); // For now, assume there is not program aborts.
-      return true;
+      if (is_replica_worker == false && txn->abort_lock_lock_released == false) {
+        // We only release locks when executing on active replica
+        abort(*txn, cluster_worker_messages);
+      }
+      DCHECK(result == TransactionResult::ABORT_NORETRY);
+      txn->abort_no_retry = true;
+      txn->finished_commit_phase = true;
+      active_txns.erase(txn->transaction_id);
+      return false;
     }
+    return true;
   }
 
   std::size_t process_to_commit(std::deque<TransactionType*> & to_commit, std::function<void(TransactionType*)> post_commit = [](TransactionType*){}) {
@@ -1718,6 +1732,8 @@ public:
       auto res = txns[i]->execute(this->id);
       if (res == TransactionResult::ABORT_NORETRY) {
         txns[i]->abort_no_retry = true;
+      } else {
+        DCHECK(check_granule_set(txns[i]));
       }
       if (txns[i]->pendingResponses == 0) {
         async_txns_to_commit.push_back(txns[i]);
@@ -1769,13 +1785,17 @@ public:
     //     .count();
     // txn->commit_initiated_latency = ltc;
     DCHECK(txn->pendingResponses == 0);
-    DCHECK(txn->abort_no_retry == false);
     if (txn->abort_no_retry) {
+      if (is_replica_worker == false && txn->abort_lock_lock_released == false) {
+        // We only release locks when executing on active replica
+        abort(*txn, cluster_worker_messages);
+      }
       active_txns.erase(txn->transaction_id);
       txn->finished_commit_phase = true;
       return;
     }
 
+    DCHECK(check_granule_set(txn));
     if (txn->abort_lock) {
       if (is_replica_worker == false && txn->abort_lock_lock_released == false) {
         // We only release locks when executing on active replica
@@ -1796,6 +1816,11 @@ public:
     txn->synchronous = false;
 
     // fill in the writes
+    if (txn->abort_lock == false) {
+      write_command(*txn);
+      send_commands_to_replica();
+    }
+  
     auto result = txn->execute(this->id);
     DCHECK(txn->abort_lock == false);
     DCHECK(result == TransactionResult::READY_TO_COMMIT);
@@ -1817,6 +1842,7 @@ public:
     ////LOG(INFO) << "Txn Execution result " << (int)result << " commit " << commit;
     this->n_network_size.fetch_add(txn->network_size);
     if (commit) {
+      DCHECK(check_granule_set(txn));
       // if (is_cross_node_mp(txn))
       //   txn_retries.add(txn->tries);
       ++worker_commit;
@@ -1908,6 +1934,46 @@ public:
     //     }
     //   }
     // }
+  }
+  std::set<int> get_granule_set_from_query(TransactionType* txn) {
+    std::set<int> lock_ids1;
+    int partition_count = txn->get_partition_count();
+    for (int i = 0; i < partition_count; ++i) {
+      int partition_id = txn->get_partition(i);
+      int granules_count = txn->get_partition_granule_count(i);
+      for (int j = 0; j < granules_count; ++j) {
+        int granule_id = txn->get_granule(i, j);
+        int lock_id = to_lock_id(partition_id, granule_id);
+        lock_ids1.insert(lock_id);
+      }
+    }
+    return lock_ids1;
+  }
+
+  std::set<int> get_granule_set_from_rwset(TransactionType* txn) {
+    std::set<int> lock_ids2;
+    for (auto & key : txn->readSet) {
+      if (key.get_local_index_read_bit())
+        continue;
+      auto lock_id = to_lock_id(key.get_partition_id(), key.get_granule_id());
+      lock_ids2.insert(lock_id);
+    }
+
+    for (auto & key : txn->writeSet) {
+      if (key.get_local_index_read_bit())
+        continue;
+      auto lock_id = to_lock_id(key.get_partition_id(), key.get_granule_id());
+      lock_ids2.insert(lock_id);
+    }
+    return lock_ids2;
+  }
+
+  bool check_granule_set(TransactionType* txn) {
+    auto s1 = get_granule_set_from_query(txn);
+    auto s2 = get_granule_set_from_rwset(txn);
+    bool res = s1 == s2;
+    DCHECK(res);
+    return res;
   }
 
   void execute_transaction_batch(const std::vector<TransactionType*> all_txns,
@@ -2071,10 +2137,11 @@ public:
       }
     }
     execute_transaction_batch(txns, sp_txns, mp_txns);
-
+    DCHECK(active_txns.empty());
     DCHECK(until_ith <= pending_txns.size());
     for (std::size_t i = 0; i < until_ith; ++i) {
       if (pending_txns.front()->abort_lock == false || pending_txns.front()->abort_no_retry) {
+        DCHECK(active_txns.count(pending_txns.front()->transaction_id) == 0);
         std::unique_ptr<TransactionType> txn(pending_txns.front());
         pending_txns.pop_front();
       } else {
@@ -2243,7 +2310,7 @@ public:
   void replay_loop() {
     auto complete_mp = [&, this](TransactionType* mp_txn) {
       DCHECK(active_txns.count(mp_txn->transaction_id) == 0);
-      DCHECK(mp_txn->is_single_partition() == false);
+      //DCHECK(mp_txn->is_single_partition() == false);
       auto lock_id = mp_txn->replay_queue_lock_id;
       auto replay_queue_idx = granule_to_cmd_queue_index[mp_txn->replay_queue_lock_id];
       DCHECK(granule_command_queue_processing[replay_queue_idx]);
@@ -2838,7 +2905,7 @@ public:
               << " cmd stall time by lock " << cmd_stall_time.nth(50) 
               << " execution phase time " << execution_phase_time.avg()
               << " execution phase mp rounds " << execution_phase_mp_rounds.avg() << ". \n"
-              << " LOCAL txn stall " << this->local_txn_stall_time_pct.nth(50) << " us, "
+              << " LOCAL count " << this->local_txn_stall_time_pct.size() << " txn stall " << this->local_txn_stall_time_pct.nth(50) << " us, "
               << " local_work " << this->local_txn_local_work_time_pct.nth(50) << " us, " 
               << " remote_work " << this->local_txn_remote_work_time_pct.nth(50) << " us, "
               << " commit_work " << this->local_txn_commit_work_time_pct.nth(50) << " us, "
@@ -2847,7 +2914,7 @@ public:
               << " commit_replication " << this->local_txn_commit_replication_time_pct.nth(50) << " us, "
               << " commit_write_back " << this->local_txn_commit_write_back_time_pct.nth(50) << " us, "
               << " commit_release_lock " << this->local_txn_commit_unlock_time_pct.nth(50) << " us \n"
-              << " DIST txn stall " << this->dist_txn_stall_time_pct.nth(50) << " us, "
+              << " DIST count " << this->dist_txn_stall_time_pct.size() << " txn stall " << this->dist_txn_stall_time_pct.nth(50) << " us, "
               << " local_work " << this->dist_txn_local_work_time_pct.nth(50) << " us "  << this->dist_txn_local_work_time_pct.avg() << " us, "
               << " remote_work " << this->dist_txn_remote_work_time_pct.nth(50) << " us " << this->dist_txn_remote_work_time_pct.avg() << " us, "
               << " commit_work " << this->dist_txn_commit_work_time_pct.nth(50) << " us " << this->dist_txn_commit_work_time_pct.avg() << " us, "

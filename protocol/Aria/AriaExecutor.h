@@ -556,7 +556,7 @@ public:
               << ". execution time: " << this->execution_time.nth(50) 
               << ". commit time: " << this->commit_time.nth(50) 
               << "\n"
-              << " LOCAL txn stall " << this->local_txn_stall_time_pct.nth(50) << " us, "
+              << " LOCAL count " << this->local_txn_stall_time_pct.size() << " txn stall " << this->local_txn_stall_time_pct.nth(50) << " us, "
               << " local_work " << this->local_txn_local_work_time_pct.nth(50) << " us, "
               << " remote_work " << this->local_txn_remote_work_time_pct.nth(50) << " us, "
               << " commit_work " << this->local_txn_commit_work_time_pct.nth(50) << " us, "
@@ -565,7 +565,7 @@ public:
               << " commit_replication " << this->local_txn_commit_replication_time_pct.nth(50) << " us, "
               << " commit_write_back " << this->local_txn_commit_write_back_time_pct.nth(50) << " us, "
               << " commit_release_lock " << this->local_txn_commit_unlock_time_pct.nth(50) << " us \n"
-              << " DIST txn stall " << this->dist_txn_stall_time_pct.nth(50) << " us, "
+              << " DIST count " << this->dist_txn_stall_time_pct.size() << " txn stall " << this->dist_txn_stall_time_pct.nth(50) << " us, "
               << " local_work " << this->dist_txn_local_work_time_pct.nth(50) << " us, "
               << " remote_work " << this->dist_txn_remote_work_time_pct.nth(50) << " us, "
               << " commit_work " << this->dist_txn_commit_work_time_pct.nth(50) << " us, "

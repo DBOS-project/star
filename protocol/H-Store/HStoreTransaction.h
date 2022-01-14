@@ -139,6 +139,7 @@ public:
     ++tries;
     writeSet.clear();
     lock_request_responded = false;
+    command_written = false;
   }
 
   virtual int32_t get_partition_count() = 0;
@@ -370,5 +371,6 @@ public:
   int abort_lock_queue_len_sum = 0;
   int no_in_group = 0;
   uint64_t straggler_wait_time = 0;
+  bool command_written = false;
 };
 } // namespace star

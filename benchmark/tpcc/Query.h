@@ -15,12 +15,7 @@ namespace tpcc {
 
 struct NewOrderQuery {
   bool isRemote() {
-    for (auto i = 0; i < O_OL_CNT; i++) {
-      if (INFO[i].OL_SUPPLY_W_ID != W_ID) {
-        return true;
-      }
-    }
-    return false;
+    return num_parts == 2;
   }
 
   int32_t W_ID;
@@ -36,12 +31,24 @@ struct NewOrderQuery {
 
   NewOrderQueryInfo INFO[15];
 
-  int32_t parts[5];
+  int32_t parts[2];
+  int32_t granules[2][15];
+  int32_t part_granule_count[2];
   int num_parts = 0;
 
   int32_t get_part(int i) {
     DCHECK(i < num_parts);
     return parts[i];
+  }
+
+  int32_t get_part_granule_count(int i) {
+    DCHECK(i < num_parts);
+    return part_granule_count[i];
+  }
+
+  int32_t get_part_granule(int i, int j) {
+    DCHECK(i < num_parts);
+    return granules[i][j];
   }
 
   int number_of_parts() {
@@ -60,7 +67,7 @@ public:
     query.num_parts = 1;
 
     query.parts[0] = W_ID - 1;
-
+    query.part_granule_count[0] = query.part_granule_count[1] = 0;
     // The district number (D_ID) is randomly selected within [1 .. 10] from the
     // home warehouse (D_W_ID = W_ID).
     query.D_ID = random.uniform_dist(1, 10);
@@ -105,7 +112,7 @@ public:
       // The first supplying warehouse number (OL_SUPPLY_W_ID) is selected as
       // the home warehouse 90% of the time and as a remote warehouse 10% of the
       // time.
-
+      int part_idx = query.num_parts == 2 ? 1: 0;
       if (i == 0) {
         int x = random.uniform_dist(1, 100);
         if (x <= context.newOrderCrossPartitionProbability &&
@@ -121,12 +128,40 @@ public:
         } else {
           query.INFO[i].OL_SUPPLY_W_ID = W_ID;
         }
+        part_idx = 0;
       } else {
         query.INFO[i].OL_SUPPLY_W_ID = W_ID;
       }
+
       query.INFO[i].OL_QUANTITY = random.uniform_dist(1, 10);
+
+      auto g = query.INFO[i].OL_I_ID % context.granules_per_partition;
+      bool exist = false;
+
+      for (auto k = 0; k < query.part_granule_count[part_idx]; ++k) {
+        if ((int)g == query.granules[part_idx][k]) {
+          exist = true;
+          break;
+        }
+      }
+      if (exist == false) {
+        query.granules[part_idx][query.part_granule_count[part_idx]++] = g;
+      }
     }
 
+    int part_idx = query.num_parts == 2 ? 1: 0;
+    auto g = query.D_ID % context.granules_per_partition;
+    bool exist = false;
+
+    for (auto k = 0; k < query.part_granule_count[part_idx]; ++k) {
+      if ((int)g == query.granules[part_idx][k]) {
+        exist = true;
+        break;
+      }
+    }
+    if (exist == false) {
+      query.granules[part_idx][query.part_granule_count[part_idx]++] = g;
+    }
     return query;
   }
 };
@@ -139,10 +174,12 @@ struct PaymentQuery {
   FixedString<16> C_LAST;
   int32_t C_D_ID;
   int32_t C_W_ID;
+
   float H_AMOUNT;
   int parts[5];
   int num_parts = 0;
-
+  int32_t granules[2][10];
+  int32_t part_granule_count[2];
   int32_t get_part(int i) {
     DCHECK(i < num_parts);
     return parts[i];
@@ -164,6 +201,7 @@ public:
     query.W_ID = W_ID;
 
     query.parts[0] = W_ID - 1;
+    query.part_granule_count[0] = query.part_granule_count[1] = 0;
     query.num_parts = 1;
 
     // The district number (D_ID) is randomly selected within [1 ..10] from the

@@ -80,12 +80,20 @@ public:
                               context.getGranule(key));
       }
     }
-
+    for (auto i = 0u; i < keys_num; i++) {
+      auto key = query.Y_KEY[i];
+      if (query.UPDATE[i]) {
+        this->update(ycsbTableID, context.getPartitionID(key),
+                     storage.ycsb_keys[i], storage.ycsb_values[i],
+                                context.getGranule(key));
+      }
+    }
     t_local_work.end();
     if (this->process_requests(worker_id)) {
       return TransactionResult::ABORT;
     }
     t_local_work.reset();
+    
     for (auto i = 0u; i < keys_num; i++) {
       auto key = query.Y_KEY[i];
       if (query.UPDATE[i]) {
@@ -113,9 +121,9 @@ public:
               random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
         }
 
-        this->update(ycsbTableID, context.getPartitionID(key),
-                     storage.ycsb_keys[i], storage.ycsb_values[i],
-                                context.getGranule(key));
+        // this->update(ycsbTableID, context.getPartitionID(key),
+        //              storage.ycsb_keys[i], storage.ycsb_values[i],
+        //                         context.getGranule(key));
       }
     }
 
