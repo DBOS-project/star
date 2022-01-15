@@ -166,7 +166,7 @@ public:
   template <class KeyType, class ValueType>
   void search_local_index(std::size_t table_id, std::size_t partition_id,
                           const KeyType &key, ValueType &value, bool readonly,
-                          std::size_t granule_id = 0) {
+                          int granule_id = 0) {
     if (execution_phase) {
       return;
     }
@@ -189,7 +189,7 @@ public:
   template <class KeyType, class ValueType>
   void search_for_read(std::size_t table_id, std::size_t partition_id,
                        const KeyType &key, ValueType &value,
-                       std::size_t granule_id = 0) {
+                       int granule_id = 0) {
     if (execution_phase) {
       return;
     }
@@ -210,7 +210,7 @@ public:
   template <class KeyType, class ValueType>
   void search_for_update(std::size_t table_id, std::size_t partition_id,
                          const KeyType &key, ValueType &value,
-                         std::size_t granule_id = 0) {
+                         int granule_id = 0) {
     if (execution_phase) {
       return;
     }
@@ -231,7 +231,7 @@ public:
   template <class KeyType, class ValueType>
   void update(std::size_t table_id, std::size_t partition_id,
               const KeyType &key, const ValueType &value,
-                         std::size_t granule_id = 0) {
+                         int granule_id = 0) {
     if (execution_phase) {
       return;
     }
@@ -248,7 +248,7 @@ public:
     add_to_write_set(writeKey);
   }
 
-  bool process_requests(std::size_t worker_id) {
+  bool process_requests(std::size_t worker_id, bool last_call_in_transaction = true) {
     // cannot use unsigned type in reverse iteration
     ScopedTimer t_local_work([&, this](uint64_t us) {
       this->record_local_work_time(us);
@@ -288,7 +288,7 @@ public:
           remote_request_handler(0);
         }
       }
-      if (execution_phase == false)
+      if (execution_phase == false && last_call_in_transaction)
         execution_phase = true;
     } else {
       message_flusher();

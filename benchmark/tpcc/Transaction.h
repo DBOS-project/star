@@ -27,6 +27,7 @@ Storage* get_storage() {
     return new Storage();
   }
   Storage * last = storage_cache.back();
+  storage_cache.pop_back();
   return last;
 }
 
@@ -351,9 +352,9 @@ public:
 
   virtual int32_t get_partition(int i) override { return query.get_part(i); }
   
-  virtual int32_t get_partition_granule_count(int i) override { return 1; }
+  virtual int32_t get_partition_granule_count(int i) override { return query.get_part_granule_count(i); }
 
-  virtual int32_t get_granule(int partition_id, int j) override { CHECK(false); return 0; }
+  virtual int32_t get_granule(int partition_id, int j) override { return query.get_part_granule(partition_id, j); }
   
   virtual bool is_single_partition() override { return query.number_of_parts() == 1; }
 
@@ -403,23 +404,30 @@ public:
     // retrieved.
 
     auto customerNameIdxTableID = customer_name_idx::tableID;
-
+    
+    this->update(warehouseTableID, W_ID - 1, storage->warehouse_key,
+                 storage->warehouse_value, W_ID % context.granules_per_partition);
+    this->update(districtTableID, W_ID - 1, storage->district_key,
+                 storage->district_value, D_ID % context.granules_per_partition);
     if (C_ID == 0) {
       storage->customer_name_idx_key =
           customer_name_idx::key(C_W_ID, C_D_ID, query.C_LAST);
       this->search_local_index(customerNameIdxTableID, C_W_ID - 1,
                                storage->customer_name_idx_key,
-                               storage->customer_name_idx_value, false);
+                               storage->customer_name_idx_value, true);
       t_local_work.end();
-      this->process_requests(worker_id);
+      this->process_requests(worker_id, false);
       t_local_work.reset();
       C_ID = storage->customer_name_idx_value.C_ID;
     }
-
+  
     auto customerTableID = customer::tableID;
     storage->customer_key = customer::key(C_W_ID, C_D_ID, C_ID);
     this->search_for_update(customerTableID, C_W_ID - 1, storage->customer_key,
                             storage->customer_value, C_D_ID % context.granules_per_partition);
+    this->update(customerTableID, C_W_ID - 1, storage->customer_key,
+              storage->customer_value, C_D_ID % context.granules_per_partition);
+
     t_local_work.end();
     if (this->process_requests(worker_id)) {
       return TransactionResult::ABORT;
@@ -430,8 +438,8 @@ public:
 
     // the warehouse's year-to-date balance, is increased by H_ AMOUNT.
     storage->warehouse_value.W_YTD += H_AMOUNT;
-    this->update(warehouseTableID, W_ID - 1, storage->warehouse_key,
-                 storage->warehouse_value);
+    // this->update(warehouseTableID, W_ID - 1, storage->warehouse_key,
+    //              storage->warehouse_value, ALL_GRANULES);
 
     if (context.operation_replication) {
       this->operation.partition_id = this->partition_id;
@@ -442,8 +450,8 @@ public:
 
     // the district's year-to-date balance, is increased by H_AMOUNT.
     storage->district_value.D_YTD += H_AMOUNT;
-    this->update(districtTableID, W_ID - 1, storage->district_key,
-                 storage->district_value, D_ID % context.granules_per_partition);
+    // this->update(districtTableID, W_ID - 1, storage->district_key,
+    //              storage->district_value, D_ID % context.granules_per_partition);
 
     if (context.operation_replication) {
       Encoder encoder(this->operation.data);
@@ -488,8 +496,8 @@ public:
       storage->customer_value.C_PAYMENT_CNT += 1;
     }
 
-    this->update(customerTableID, C_W_ID - 1, storage->customer_key,
-                 storage->customer_value);
+    // this->update(customerTableID, C_W_ID - 1, storage->customer_key,
+    //              storage->customer_value, C_D_ID % context.granules_per_partition);
 
     if (context.operation_replication) {
       Encoder encoder(this->operation.data);

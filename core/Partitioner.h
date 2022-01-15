@@ -8,7 +8,7 @@
 #include <memory>
 #include <numeric>
 #include <string>
-
+#define ALL_GRANULES ((1<<12) - 1)
 namespace star {
 
 class Partitioner {

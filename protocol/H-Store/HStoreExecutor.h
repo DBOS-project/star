@@ -2399,7 +2399,7 @@ public:
   int straggler_count = 0;
 
   void send_commands_to_replica(bool persist = false) {
-    if (command_buffer_outgoing_data.empty())
+    if (replica_num <= 1 || command_buffer_outgoing_data.empty())
       return; // Nothing to send
     //auto data = serialize_commands(command_buffer_outgoing.begin(), command_buffer_outgoing.end());
     DCHECK(0 <= replica_cluster_worker_id && replica_cluster_worker_id < cluster_worker_num);

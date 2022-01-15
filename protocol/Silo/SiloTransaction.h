@@ -224,7 +224,7 @@ public:
     add_to_write_set(writeKey);
   }
 
-  bool process_requests(std::size_t worker_id) {
+  bool process_requests(std::size_t worker_id, bool last_call_in_transaction = true) {
     ScopedTimer t_local_work([&, this](uint64_t us) {
       this->record_local_work_time(us);
     });

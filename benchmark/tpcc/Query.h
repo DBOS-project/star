@@ -185,6 +185,16 @@ struct PaymentQuery {
     return parts[i];
   }
 
+  int32_t get_part_granule_count(int i) {
+    DCHECK(i < num_parts);
+    return part_granule_count[i];
+  }
+
+  int32_t get_part_granule(int i, int j) {
+    DCHECK(i < num_parts);
+    return granules[i][j];
+  }
+
   int number_of_parts() {
     return num_parts;
   }
@@ -203,12 +213,14 @@ public:
     query.parts[0] = W_ID - 1;
     query.part_granule_count[0] = query.part_granule_count[1] = 0;
     query.num_parts = 1;
-
     // The district number (D_ID) is randomly selected within [1 ..10] from the
     // home warehouse (D_W_ID) = W_ID).
 
     query.D_ID = random.uniform_dist(1, 10);
 
+    query.granules[0][query.part_granule_count[0]++] = query.D_ID % context.granules_per_partition;
+    if (query.granules[0][query.part_granule_count[0] - 1] != (int32_t)(query.W_ID % context.granules_per_partition))
+      query.granules[0][query.part_granule_count[0]++] = query.W_ID % context.granules_per_partition;
     // the customer resident warehouse is the home warehouse 85% of the time
     // and is a randomly selected remote warehouse 15% of the time.
 
@@ -234,6 +246,7 @@ public:
       query.num_parts = 2;
       query.C_W_ID = C_W_ID;
       query.C_D_ID = random.uniform_dist(1, 10);
+      query.granules[1][query.part_granule_count[1]++] = query.C_D_ID % context.granules_per_partition;
     } else {
       // If x > 15 a customer is selected from the selected district number
       // (C_D_ID = D_ID) and the home warehouse number (C_W_ID = W_ID).
