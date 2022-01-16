@@ -56,6 +56,7 @@ public:
         table->update(key, value);
       } else {
         auto coordinator_id = partitioner.master_coordinator(partitionId);
+        messages[coordinator_id]->set_transaction_id(txn.transaction_id);
         auto sz = MessageFactoryType::new_write_message(*messages[coordinator_id], *table, writeKey.get_key(), writeKey.get_value());
         txn.network_size.fetch_add(sz);
         txn.remote_write++;

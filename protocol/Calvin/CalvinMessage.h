@@ -32,7 +32,7 @@ class CalvinMessageFactory {
 
 public:
   static std::size_t new_read_message(Message &message, ITable &table,
-                                      uint32_t tid, uint32_t key_offset,
+                                      std::size_t tid, uint32_t key_offset,
                                       const void *key) {
 
     /*
@@ -40,7 +40,6 @@ public:
      */
 
     auto key_size = table.key_size();
-    DCHECK(key_size <= 8);
     auto message_size = MessagePiece::get_header_size() + sizeof(tid) +
                         sizeof(key_offset) + key_size;
 
@@ -88,7 +87,7 @@ public:
   
   template<class Workload>
   static void
-  lock_request_handler(MessagePiece inputPiece, Message &responseMessage,
+  lock_request_handler(Message& inputMessage, MessagePiece inputPiece, Message &responseMessage,
                        ITable &table,
                        Transaction* txn,
                        CalvinExecutor<Workload> * executor) {
@@ -115,7 +114,6 @@ public:
       std::size_t key_size;
       bool read_or_write;
       dec >> table_id >> partition_id >> read_or_write >> key_size;
-      DCHECK(key_size <= 8); 
       char* key_buffer = new char[key_size];
       dec.read_n_bytes(key_buffer, key_size);
       CalvinRWKey readKey;
@@ -141,7 +139,7 @@ public:
 
   template<class Workload>
   static void
-  lock_response_handler(MessagePiece inputPiece, Message &responseMessage,
+  lock_response_handler(Message& inputMessage, MessagePiece inputPiece, Message &responseMessage,
                        ITable &table,
                        Transaction* txn,
                        CalvinExecutor<Workload> * executor) {
@@ -169,7 +167,7 @@ public:
 
  template<class Workload>
    static void
-  read_request_handler(MessagePiece inputPiece, Message &responseMessage,
+  read_request_handler(Message& inputMessage, MessagePiece inputPiece, Message &responseMessage,
                        ITable &table,
                        Transaction* txn,
                        CalvinExecutor<Workload> * executor) {
@@ -187,7 +185,7 @@ public:
      * The structure of a read response: (tid, key offset, value_size, value)
      */
 
-    uint32_t tid;
+    std::size_t tid;
     uint32_t key_offset;
 
     auto input_piece_size = inputPiece.get_message_length();
@@ -232,7 +230,7 @@ public:
       // read to message buffer
       CalvinHelper::read(row, dest, value_size);
     }
-
+    responseMessage.set_transaction_id(inputMessage.get_transaction_id());
     responseMessage.flush();
     responseMessage.set_gen_time(Time::now());
 
@@ -240,7 +238,7 @@ public:
 
   template<class Workload>
    static void
-  read_response_handler(MessagePiece inputPiece, Message &responseMessage,
+  read_response_handler(Message& inputMessage, MessagePiece inputPiece, Message &responseMessage,
                        ITable &table,
                        Transaction* txn,
                        CalvinExecutor<Workload> * executor) {
@@ -283,7 +281,7 @@ public:
 
   template<class Workload>
   static void
-  lock_request_done_handler(MessagePiece inputPiece, Message &responseMessage,
+  lock_request_done_handler(Message& inputMessage, MessagePiece inputPiece, Message &responseMessage,
                        ITable &table,
                        Transaction* txn,
                        CalvinExecutor<Workload> * executor) {
@@ -310,7 +308,7 @@ public:
 
   template<class Workload>
    static void
-  write_request_handler(MessagePiece inputPiece, Message &responseMessage,
+  write_request_handler(Message& inputMessage, MessagePiece inputPiece, Message &responseMessage,
                        ITable &table,
                        Transaction* txn,
                        CalvinExecutor<Workload> * executor) {
@@ -347,12 +345,13 @@ public:
 
     star::Encoder encoder(responseMessage.data);
     encoder << message_piece_header;
+    responseMessage.set_transaction_id(inputMessage.get_transaction_id());
     responseMessage.flush();
     responseMessage.set_gen_time(Time::now());
   }
 
   template<class Workload>
-  static void write_response_handler(MessagePiece inputPiece,
+  static void write_response_handler(Message& inputMessage, MessagePiece inputPiece,
                                      Message &responseMessage, ITable &table,
                                      Transaction* txn,
                                      CalvinExecutor<Workload> * executor) {
@@ -375,12 +374,12 @@ public:
 
   template<class Workload>
   static std::vector<
-      std::function<void(MessagePiece, Message &, ITable &,
+      std::function<void(Message&, MessagePiece, Message &, ITable &,
                          Transaction*,
                          CalvinExecutor<Workload>*)>>
   get_message_handlers() {
     std::vector<
-        std::function<void(MessagePiece, Message &, ITable &,
+        std::function<void(Message&, MessagePiece, Message &, ITable &,
                            Transaction*,
                            CalvinExecutor<Workload>*)>>
         v;

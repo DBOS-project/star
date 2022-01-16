@@ -24,8 +24,8 @@ public:
                     Partitioner &partitioner, std::size_t ith_replica)
       : coordinator_id(coordinator_id), partition_id(partition_id),
         startTime(std::chrono::steady_clock::now()), partitioner(partitioner), ith_replica(ith_replica) {
-    reset();
     lock_request_for_coordinators.resize(partitioner.total_coordinators());
+    reset();
   }
 
   struct TransactionLockRequest {
@@ -37,6 +37,13 @@ public:
     std::vector<CalvinRWKey> keys;
     bool empty() {
       return keys.size() == 0;
+    }
+
+    void clear() {
+      table_ids.clear();
+      partition_ids.clear();
+      read_writes.clear();
+      keys.clear();
     }
 
     void add_key(CalvinRWKey key) {
@@ -156,6 +163,9 @@ public:
   }
 
   void reset() {
+    for (size_t i = 0; i < partitioner.total_coordinators(); ++i) {
+      lock_request_for_coordinators[i].clear();
+    }
     abort_lock = false;
     abort_no_retry = false;
     abort_read_validation = false;
@@ -170,6 +180,8 @@ public:
     operation.clear();
     readSet.clear();
     writeSet.clear();
+    async = false;
+    processed = false;
   }
 
   virtual TransactionResult execute(std::size_t worker_id) = 0;
@@ -184,7 +196,6 @@ public:
     if (execution_phase) {
       return;
     }
-    DCHECK(table_id < 1);
     CalvinRWKey readKey;
 
     readKey.set_table_id(table_id);
@@ -206,7 +217,7 @@ public:
     if (execution_phase) {
       return;
     }
-    DCHECK(table_id < 1);
+
     CalvinRWKey readKey;
 
     readKey.set_table_id(table_id);
@@ -227,7 +238,6 @@ public:
     if (execution_phase) {
       return;
     }
-    DCHECK(table_id < 1);
     CalvinRWKey readKey;
 
     readKey.set_table_id(table_id);
@@ -331,13 +341,15 @@ public:
       }
 
       message_flusher(worker_id);
-      ScopedTimer t_remote_work([&, this](uint64_t us) {
-        this->record_remote_work_time(us);
-      });
-      DCHECK(local_read.load() == 0);
-      while (remote_read.load() > 0) {
-        // process remote reads for other workers
-        remote_request_handler(worker_id);
+      if (async == false) {
+        ScopedTimer t_remote_work([&, this](uint64_t us) {
+          this->record_remote_work_time(us);
+        });
+        DCHECK(local_read.load() == 0);
+        while (remote_read.load() > 0) {
+          // process remote reads for other workers
+          remote_request_handler(worker_id);
+        }
       }
       return false;
     };
@@ -406,5 +418,6 @@ public:
   uint64_t txn_random_seed_start = 0;
   int64_t transaction_id = 0;
   uint64_t straggler_wait_time = 0;
+  bool async = false;
 };
 } // namespace star

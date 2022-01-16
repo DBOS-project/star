@@ -243,7 +243,11 @@ public:
               << " scheduling_prepare " << this->prepare_stage_time.nth(50) << " us(50) "
               << " scheduling_locking " << this->locking_stage_time.nth(50) << " us(50) "
               << " execution " << this->execution_stage_time.nth(50) << " us(50).\n "
-              << " Round conurrency " << this->round_concurrency.nth(50) << ". "
+              << " lock_requests_sent " << this->lock_requests_sent.nth(50) << ". "
+              << " effective conurrency " << this->effective_round_concurrency.nth(50) << ". "
+              << " round conurrency " << this->round_concurrency.nth(50) << ". "
+              << " successful lock requests per batch " << this->succ_lock_reuqests_per_batch.nth(50) << ". "
+              << " lock requests per batch " << this->lock_reuqests_per_batch.nth(50) << ". "
               << " LOCAL txn stall " << this->local_txn_stall_time_pct.nth(50) << " us, "
               << " local_work " << this->local_txn_local_work_time_pct.nth(50) << " us, "
               << " remote_work " << this->local_txn_remote_work_time_pct.nth(50) << " us, "
@@ -333,21 +337,26 @@ public:
 
   std::unordered_map<int64_t, int> tid_to_txn_idx;
   void generate_transactions() {
-    if (init_transaction && active_transactions.load()) {
-      for (auto i = id; i < transactions.size(); i += context.worker_num) {
-        if (!transactions[i]->processed && transactions[i]->abort_no_retry == false) {
-          transactions[i]->reset();
-          // re-prepare unprocessed transaction
-          prepare_transaction(*transactions[i]);
-        }
-      }
-      return;
-    }
+    // if (init_transaction && active_transactions.load()) {
+    //   for (auto i = id; i < transactions.size(); i += context.worker_num) {
+    //     if (!transactions[i]->processed && transactions[i]->abort_no_retry == false) {
+    //       transactions[i]->reset();
+    //       // re-prepare unprocessed transaction
+    //       prepare_transaction(*transactions[i]);
+    //     }
+    //   }
+    //   return;
+    // }
     init_transaction = true;
     tid_to_txn_idx.clear();
     std::string txn_command_data;
 
     for (auto i = id; i < transactions.size(); i += context.worker_num) {
+      if (transactions[i] != nullptr && transactions[i]->abort_no_retry == false && !transactions[i]->processed) {
+        transactions[i]->reset();
+        prepare_transaction(*transactions[i]);
+        continue;
+      }
       // generate transaction
       auto partition_id = get_partition_id();
       transactions[i] =
@@ -366,7 +375,7 @@ public:
       }
       active_transactions.fetch_add(1);
       txn_command_data += transactions[i]->serialize(0);
-      transactions[i]->set_id(i);
+      transactions[i]->set_id(transactions[i]->transaction_id);
       prepare_transaction(*transactions[i]);
     }
 
@@ -402,11 +411,10 @@ public:
     active_coordinators =
         std::vector<bool>(partitioner.total_coordinators(), false);
     auto &lock_request_for_coordinators = transaction.lock_request_for_coordinators;
-
+    CHECK(readSet.empty() == false);
     for (auto i = 0u; i < readSet.size(); i++) {
       auto &readkey = readSet[i];
 
-      DCHECK(readkey.get_table_id() < 1);
       auto partitionID = readkey.get_partition_id();
       
       auto target_coordinator = partitioner.master_coordinator(partitionID);
@@ -439,7 +447,6 @@ public:
       auto partition_id = lock_request.partition_ids[i];
       ITable *table = this->db.find_table(table_id, partition_id);
       auto key_size = table->key_size();
-      DCHECK(key_size <= 8);
       bool read_or_write = lock_request.read_writes[i];
       auto key = lock_request.keys[i];
 
@@ -499,7 +506,7 @@ public:
 
   void send_lock_requests() {
     std::size_t request_id = 0;
-
+    auto sent_lock_requests_old = sent_lock_requests;
     for (auto i = 0u; i < transactions.size(); i++) {
       tid_to_txn_idx[transactions[i]->transaction_id] = i;
       // do not grant locks to abort no retry transaction
@@ -535,6 +542,7 @@ public:
             *messages[j], coordinator_id);
     }
     flush_messages();
+    lock_requests_sent.add(sent_lock_requests - sent_lock_requests_old);
   }
 
   void collect_vote_for_txn(int64_t tid, bool success) {
@@ -607,17 +615,19 @@ public:
           if (key.get_read_lock_bit()) {
             DCHECK(CalvinHelper::is_write_locked(meta.load()) == false);
             CalvinHelper::read_lock(meta);
+            CHECK(CalvinHelper::is_read_locked(meta.load()));
           } else {
             DCHECK(CalvinHelper::is_read_locked(meta.load()) == false);
             if (CalvinHelper::is_write_locked(meta.load())) // Could have same keys from this transaction, one lock is enough
               continue;
             CalvinHelper::write_lock(meta);
+            CHECK(CalvinHelper::is_write_locked(meta.load()));
           }
         }
       }
     }
 
-
+    std::size_t succ_lock_rqs = 0;
     // Now we have figured out which transactions succeeded or failed, release all the locks we obtained.
     for (size_t i = 0; i < lock_requests_current_batch.size(); ++i) {
       if (i > 0)
@@ -626,6 +636,7 @@ public:
       bool can_obtain_all_the_locks = all_locks_obtained[i];
       
       if (can_obtain_all_the_locks) {
+        succ_lock_rqs++;
         for (size_t j = 0; j < req.keys.size() && can_obtain_all_the_locks; ++j) {
           auto key = req.keys[j];
           auto partition_id = key.get_partition_id();
@@ -647,6 +658,8 @@ public:
 
     // Send reply to the original coordinator
     send_lock_responses(all_locks_obtained);
+    this->succ_lock_reuqests_per_batch.add(succ_lock_rqs);
+    this->lock_reuqests_per_batch.add(all_locks_obtained.size());
   }
 
 
@@ -677,7 +690,7 @@ public:
     // a worker thread in a round-robin manner.
 
     std::size_t request_id = 0;
-
+    std::size_t good_txns = 0;
     for (auto i = 0u; i < transactions.size(); i++) {
       // do not grant locks to abort no retry transaction
       if (transactions[i]->processed)
@@ -693,7 +706,7 @@ public:
         transactions[i]->votes.clear();
         continue;
       }
-
+      good_txns++;
       bool grant_lock = false;
       auto worker = get_available_worker(request_id++);
       all_executors[worker]->transaction_queue.push(transactions[i].get());
@@ -701,6 +714,8 @@ public:
       n_commit.fetch_add(1);
     }
     set_lock_manager_bit(id);
+    effective_round_concurrency.add(good_txns);
+    round_concurrency.add(transactions.size());
   }
 
   void record_txn_breakdown_stats(TransactionType & txn) {
@@ -729,6 +744,7 @@ public:
 
   void run_transactions() {
     size_t cc = 0;
+    std::vector<TransactionType *> outbound_transactions;
     while (!get_lock_manager_bit(lock_manager_id) ||
            !transaction_queue.empty()) {
 
@@ -739,15 +755,25 @@ public:
       cc++;
       TransactionType *transaction = transaction_queue.front();
       bool ok = transaction_queue.pop();
+      transaction->async = true;
       DCHECK(ok);
-      this_transaction = transaction;
+      outbound_transactions.push_back(transaction);
       auto ltc =
       std::chrono::duration_cast<std::chrono::microseconds>(
           std::chrono::steady_clock::now() - transaction->startTime)
           .count();
       transaction->set_stall_time(ltc);
+      active_txns[transaction->transaction_id] = transaction;
       auto result = transaction->execute(id);
       n_network_size.fetch_add(transaction->network_size.load());
+    }
+
+    for (size_t i = 0; i < outbound_transactions.size(); ++i) {
+      auto transaction = outbound_transactions[i];
+      while (transaction->remote_read) {
+        process_request();
+      }
+      auto result = transaction->execute(id);
       if (result == TransactionResult::READY_TO_COMMIT) {
         bool commit;
         {
@@ -764,14 +790,11 @@ public:
           });
           {
             ScopedTimer t([&, this](uint64_t us) {
-              this_transaction->record_commit_write_back_time(us);
+              transaction->record_commit_write_back_time(us);
             });
             commit = protocol.commit(messages, *transaction, lock_manager_id, n_lock_manager,
                           partitioner.replica_group_size);
             flush_messages();
-            while (this_transaction->remote_write > 0) {
-              process_request();
-            }
           }
           auto latency =
           std::chrono::duration_cast<std::chrono::microseconds>(
@@ -792,10 +815,19 @@ public:
       } else {
         CHECK(false) << "abort no retry transaction should not be scheduled.";
       }
-      this_transaction->processed = true;
+    }
+
+    // Wait for all writes to be applied to remote nodes
+    for (size_t i = 0; i < outbound_transactions.size(); ++i) {
+      auto transaction = outbound_transactions[i];
+      while (outbound_transactions[i]->remote_write) {
+        process_request();
+      }
+      transaction->processed = true;
       active_transactions.fetch_sub(1);
     }
-    this->round_concurrency.add(cc);
+
+    this->effective_round_concurrency.add(cc);
   }
 
   void setup_execute_handlers(TransactionType &txn) {
@@ -811,6 +843,7 @@ public:
         txn.local_read.fetch_add(-1);
       } else {
         auto coordinator_id = partitioner.master_coordinator(partition_id);
+        worker->messages[coordinator_id]->set_transaction_id(txn.transaction_id);
         auto sz = MessageFactoryType::new_read_message(
             *worker->messages[coordinator_id], *table, id, key_offset, key);
         txn.network_size.fetch_add(sz);
@@ -880,13 +913,17 @@ public:
       CHECK(ok);
 
       for (auto it = message->begin(); it != message->end(); it++) {
-
+        auto tid = message->get_transaction_id();
+        TransactionType * this_transaction = nullptr;
+        if (active_txns.count(tid) > 0) {
+          this_transaction = active_txns[tid];
+        }
         MessagePiece messagePiece = *it;
         auto type = messagePiece.get_message_type();
         DCHECK(type < messageHandlers.size());
         ITable *table = db.find_table(messagePiece.get_table_id(),
                                       messagePiece.get_partition_id());
-        messageHandlers[type](messagePiece,
+        messageHandlers[type](*message, messagePiece,
                               *messages[message->get_source_node_id()], *table,
                               this_transaction, this);
       }
@@ -915,16 +952,20 @@ public:
   WALLogger * logger = nullptr;
   std::vector<std::unique_ptr<Message>> messages;
   std::vector<
-      std::function<void(MessagePiece, Message &, ITable &,
+      std::function<void(Message&, MessagePiece, Message &, ITable &,
                          TransactionType*,
                          CalvinExecutor<Workload>*)>>
       messageHandlers;
   LockfreeQueue<Message *> in_queue, out_queue;
   LockfreeQueue<TransactionType *> transaction_queue;
   std::vector<CalvinExecutor *> all_executors;
-  TransactionType * this_transaction = nullptr;
+  std::unordered_map<long long, TransactionType*> active_txns;
   Percentile<int64_t> percentile, dist_latency, local_latency, commit_latency; 
+  Percentile<int64_t> effective_round_concurrency;
   Percentile<int64_t> round_concurrency;
+  Percentile<int64_t> lock_requests_sent;
+  Percentile<int64_t> succ_lock_reuqests_per_batch;
+  Percentile<int64_t> lock_reuqests_per_batch;
   Percentile<int64_t> prepare_stage_time;
   Percentile<int64_t> locking_stage_time;
   Percentile<int64_t> execution_stage_time;
