@@ -16,7 +16,7 @@ int main(int argc, char *argv[]) {
   std::vector<int> cnt(100, 0);
   for (size_t i = 0; i < 1000000; ++i) {
     auto x = r.non_uniform_distribution(8191, 1, 100000) % 1500;
-    if (x <= cnt.size()) {
+    if (x < cnt.size()) {
       cnt[x]++;
     }
   }

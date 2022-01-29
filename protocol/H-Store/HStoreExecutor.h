@@ -50,6 +50,8 @@ private:
   Percentile<uint64_t> msg_send_latency;
   Percentile<uint64_t> msg_recv_latency;
   Percentile<uint64_t> msg_proc_latency;
+  Percentile<uint64_t> mp_concurrency_limit;
+  Percentile<double> mp_avg_abort;
   std::vector<Percentile<int64_t>> tries_latency;
   std::vector<Percentile<int64_t>> tries_prepare_time;
   std::vector<Percentile<int64_t>> tries_lock_stall_time;
@@ -79,6 +81,8 @@ private:
 
   std::vector<int> transaction_lengths;
   std::vector<int> transaction_lengths_count;
+
+  std::size_t mp_concurrency_max = 0;
 public:
   using base_type = Executor<Workload, HStore<typename Workload::DatabaseType>>;
 
@@ -351,6 +355,7 @@ public:
       cluster_worker_messages.shrink_to_fit();
       this->message_stats.resize((size_t)HStoreMessage::NFIELDS, 0);
       this->message_sizes.resize((size_t)HStoreMessage::NFIELDS, 0);
+      mp_concurrency_max = batch_per_worker;
   }
 
   ~HStoreExecutor() = default;
@@ -1713,35 +1718,39 @@ public:
     }
   }
 
+  void execute_transaction(TransactionType* txn) {
+    setupHandlers(*txn);
+    txn->reset();
+    txn->execution_phase = false;
+    txn->synchronous = false;
+    DCHECK(txn->is_single_partition() == false);
+    // initiate read requests (could be remote)
+    if (txn->tries == 1)
+      txn->lock_issue_time = std::chrono::steady_clock::now();
+    active_txns[txn->transaction_id] = txn;
+    auto ltc = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - txn->startTime)
+        .count();
+    txn->set_stall_time(ltc);
+    auto res = txn->execute(this->id);
+    if (res == TransactionResult::ABORT_NORETRY) {
+      txn->abort_no_retry = true;
+    } else {
+      DCHECK(check_granule_set(txn));
+    }
+    if (txn->pendingResponses == 0) {
+      async_txns_to_commit.push_back(txn);
+    }
+    handle_requests(false);
+    if (async_txns_to_commit.empty() == false) {
+      process_to_commit(async_txns_to_commit);
+    }
+  }
+
   void process_execution_phase(const std::vector<TransactionType*> & txns) {
     int cnt = 0;
     for (size_t i = 0; i < txns.size(); ++i) {
-      setupHandlers(*txns[i]);
-      txns[i]->reset();
-      txns[i]->execution_phase = false;
-      txns[i]->synchronous = false;
-      DCHECK(txns[i]->is_single_partition() == false);
-      // initiate read requests (could be remote)
-      if (txns[i]->tries == 1)
-        txns[i]->lock_issue_time = std::chrono::steady_clock::now();
-      active_txns[txns[i]->transaction_id] = txns[i];
-      auto ltc = std::chrono::duration_cast<std::chrono::microseconds>(
-          std::chrono::steady_clock::now() - txns[i]->startTime)
-          .count();
-      txns[i]->set_stall_time(ltc);
-      auto res = txns[i]->execute(this->id);
-      if (res == TransactionResult::ABORT_NORETRY) {
-        txns[i]->abort_no_retry = true;
-      } else {
-        DCHECK(check_granule_set(txns[i]));
-      }
-      if (txns[i]->pendingResponses == 0) {
-        async_txns_to_commit.push_back(txns[i]);
-      }
-      handle_requests(false);
-      if (async_txns_to_commit.empty() == false) {
-        process_to_commit(async_txns_to_commit);
-      }
+      execute_transaction(txns[i]);
     }
     process_to_commit(async_txns_to_commit);
   }
@@ -1876,65 +1885,17 @@ public:
     txn->finished_commit_phase = true;
   }
 
-  void process_commit_phase(const std::vector<TransactionType*> & txns) {
+  void process_commit_phase() {
     int cnt = 0;
     while (active_txns.size()) {
       handle_requests(false);
       process_to_commit(async_txns_to_commit);
-      // if (++cnt % group_send_interval == 0) {
-      //   flush_messages();
-      //   flush_grouped_messages();
-      // }
       if (replica_num > 1 && is_replica_worker == false && command_buffer_outgoing_data.empty() == false) {
         send_commands_to_replica();
       }
     }
-    // std::vector<TransactionType*> to_commit;
-    // for (size_t i = 0; i < txns.size(); ++i) {
-    //   auto txn = txns[i];
-    //   if (txn->finished_commit_phase) {
-    //     DCHECK(txn->pendingResponses == 0);
-    //     continue;
-    //   }
-    //   while (txn->pendingResponses > 0) {
-    //     handle_requests(false);
-    //   }
-    //   process_single_txn_commit(txn);
-    //   DCHECK(txn->release_lock_called || txn->abort_lock);
-    // }
-    // while (active_txns.size()) {
-    //   for (size_t i = 0; i < txns.size(); ++i) {
-    //     auto txn = txns[i];
-    //     if (txn->finished_commit_phase) {
-    //       DCHECK(txn->pendingResponses == 0);
-    //       continue;
-    //     }
-    //     if (txn->abort_lock) {
-    //       if (txn->abort_lock_lock_released == false && is_replica_worker == false) {
-    //         // send the release lock message earlier
-    //         abort(*txn, cluster_worker_messages);
-    //       }
-    //     }
-    //     if (txn->pendingResponses == 0) {
-    //       process_single_txn_commit(txn);
-    //       handle_requests(false);
-    //     } else {
-    //       to_commit.clear();
-    //       handle_requests_and_collect_ready_to_commit_txns(to_commit);
-    //       for (size_t i = 0; i < to_commit.size(); ++i) {
-    //         auto txn = to_commit[i];
-    //         DCHECK(txn->pendingResponses == 0);
-    //         if (txn->finished_commit_phase) {
-    //           DCHECK(txn->pendingResponses == 0);
-    //           continue;
-    //         }
-    //         process_single_txn_commit(txn);
-    //         handle_requests(false);
-    //       }
-    //     }
-    //   }
-    // }
   }
+
   std::set<int> get_granule_set_from_query(TransactionType* txn) {
     std::set<int> lock_ids1;
     int partition_count = txn->get_partition_count();
@@ -1976,6 +1937,62 @@ public:
     return res;
   }
 
+  std::deque<double> mp_abort_rate;
+  std::size_t abort_rate_window_size = 10;
+  int control_step = 0;
+  double abort_rate_threshold = 1;
+  void process_mp_transactions(std::vector<TransactionType*> & mp_txns) {
+    // ScopedTimer t0([&, this](uint64_t us) {
+    //   if (mp_txns.empty())
+    //     return;
+    //   int committed = 0;
+    //   for (size_t i = 0; i < mp_txns.size(); ++i) {
+    //     auto txn = mp_txns[i];
+    //     if (txn->abort_lock || txn->abort_no_retry)
+    //       continue;
+    //     committed++;
+    //   }
+    //   mp_abort_rate.push_back(1 - committed / (double)mp_txns.size());
+    //   if (mp_abort_rate.size() > abort_rate_window_size) {
+    //     mp_abort_rate.pop_front();
+    //   }
+    //   if (++control_step % 15 == 0) {
+    //     double avg_abort_rate = 0;
+    //     for (auto v : mp_abort_rate) {
+    //       avg_abort_rate += v;
+    //     }
+    //     avg_abort_rate /= mp_abort_rate.size();
+    //     mp_avg_abort.add(avg_abort_rate);
+    //     if (avg_abort_rate > abort_rate_threshold) {
+    //       mp_concurrency_max = std::max((std::size_t)1, mp_concurrency_max - 1);
+    //     } else {
+    //       mp_concurrency_max = std::max(batch_per_worker,  mp_concurrency_max + 1);
+    //     }
+    //   }
+    //   //mp_concurrency_max = 15;
+    // });
+
+    for (size_t i = 0; i < mp_txns.size(); ++i) {
+      if (active_txns.size() > mp_concurrency_max) {
+        handle_requests();
+        --i;
+      } else {
+        execute_transaction(mp_txns[i]);
+      }
+
+      // if (active_txns.size() >= mp_concurrency_max) {
+      //   process_commit_phase();
+      // }
+      // execute_transaction(mp_txns[i]);
+      process_to_commit(async_txns_to_commit);
+    }
+    
+    process_commit_phase();
+    if (replica_num > 1 && is_replica_worker == false) {
+      send_commands_to_replica(false);
+    }
+  }
+
   void execute_transaction_batch(const std::vector<TransactionType*> all_txns,
                                  const std::vector<TransactionType*> & sp_txns, 
                                  std::vector<TransactionType*> & mp_txns) {
@@ -1988,17 +2005,6 @@ public:
         execution_phase_time.add(us);
       });
 
-      if (replica_num > 1 && is_replica_worker == false) {
-        send_commands_to_replica(true);
-      }
-      process_execution_phase(mp_txns);
-      //flush_grouped_messages();
-      handle_requests();
-      process_commit_phase(mp_txns);
-      if (replica_num > 1 && is_replica_worker == false) {
-        send_commands_to_replica(false);
-      }
-      //flush_grouped_messages();
       int cnt = 0;
       for (size_t i = 0; i < sp_txns.size(); ++i) {
         auto txn = sp_txns[i];
@@ -2013,6 +2019,12 @@ public:
           send_commands_to_replica(false);
         }
       }
+      
+      process_mp_transactions(mp_txns);
+      if (replica_num > 1 && is_replica_worker == false) {
+        send_commands_to_replica(true);
+      }
+      //flush_grouped_messages();
     }
     if (replica_num > 1 && is_replica_worker == false) {
       send_commands_to_replica(true);
@@ -2021,21 +2033,6 @@ public:
     uint64_t commit_persistence_us = 0;
     uint64_t commit_replication_us = 0;
     {
-      // {
-      //   ScopedTimer t0([&, this](uint64_t us) {
-      //     commit_persistence_us = us;
-      //   });
-      //   DCHECK((int)workers_need_persist_cmd_buffer.size() == this->active_replica_worker_num_end);
-      //   for (int i = 0; i < (int)workers_need_persist_cmd_buffer.size(); ++i) {
-      //     if (!workers_need_persist_cmd_buffer[i] || i == this_cluster_worker_id)
-      //       continue;
-      //     cluster_worker_messages[i]->set_transaction_id(txn_id);
-      //     MessageFactoryType::new_persist_cmd_buffer_message(*cluster_worker_messages[i], 0, this_cluster_worker_id);
-      //     sent_persist_cmd_buffer_requests++;
-      //   }
-      //   flush_messages();
-      // }
-
       bool cmd_buffer_flushed = false;
       if (is_replica_worker == false && replica_num > 1) {
         ScopedTimer t1([&, this](uint64_t us) {
@@ -2118,6 +2115,7 @@ public:
     }
     this->round_concurrency.add(txns.size());
     this->effective_round_concurrency.add(committed);
+    mp_concurrency_limit.add(mp_concurrency_max);
   }
 
   void process_batch_of_transactions() {
@@ -2901,6 +2899,8 @@ public:
               << tries_latency_str << tries_prepare_time_str << tries_lock_stall_time_str << tries_execution_done_time_str 
               << tries_first_lock_request_arrive_latency_str << tries_first_lock_request_processed_latency_str 
               << tries_first_lock_response_latency_str << tries_lock_response_latency_str << tries_commit_initiated_latency_str
+              << " mp_concurrency_limit " << mp_concurrency_limit.avg()
+              << " mp_avg_abort_rate " << mp_avg_abort.avg()
               << " cmd queue time " << cmd_queue_time.nth(50)
               << " cmd stall time by lock " << cmd_stall_time.nth(50) 
               << " execution phase time " << execution_phase_time.avg()

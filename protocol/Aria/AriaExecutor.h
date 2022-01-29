@@ -216,7 +216,11 @@ public:
       setupHandlers(*transactions[i]);
 
       count++;
-
+      auto ltc =
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - transactions[i]->startTime)
+          .count();
+      transactions[i]->set_stall_time(ltc);
       // run transactions
       auto result = transactions[i]->execute(id);
       n_network_size.fetch_add(transactions[i]->network_size);

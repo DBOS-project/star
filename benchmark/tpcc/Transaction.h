@@ -94,7 +94,7 @@ public:
     auto warehouseTableID = warehouse::tableID;
     storage->warehouse_key = warehouse::key(W_ID);
     this->search_for_read(warehouseTableID, W_ID - 1, storage->warehouse_key,
-                          storage->warehouse_value, D_ID % granules_per_partition);
+                          storage->warehouse_value, wid_to_granule_id(W_ID, context));
 
     // The row in the DISTRICT table with matching D_W_ID and D_ ID is selected,
     // D_TAX, the district tax rate, is retrieved, and D_NEXT_O_ID, the next
@@ -104,7 +104,7 @@ public:
     auto districtTableID = district::tableID;
     storage->district_key = district::key(W_ID, D_ID);
     this->search_for_update(districtTableID, W_ID - 1, storage->district_key,
-                            storage->district_value, D_ID % granules_per_partition);
+                            storage->district_value, did_to_granule_id(D_ID, context));
 
     // The row in the CUSTOMER table with matching C_W_ID, C_D_ID, and C_ID is
     // selected and C_DISCOUNT, the customer's discount rate, C_LAST, the
@@ -114,7 +114,7 @@ public:
     auto customerTableID = customer::tableID;
     storage->customer_key = customer::key(W_ID, D_ID, C_ID);
     this->search_for_read(customerTableID, W_ID - 1, storage->customer_key,
-                          storage->customer_value, D_ID % granules_per_partition);
+                          storage->customer_value, did_to_granule_id(D_ID, context));
 
     auto itemTableID = item::tableID;
     auto stockTableID = stock::tableID;
@@ -151,11 +151,11 @@ public:
 
       this->search_for_update(stockTableID, OL_SUPPLY_W_ID - 1,
                               storage->stock_keys[i], storage->stock_values[i], 
-                              OL_I_ID % granules_per_partition);
+                              id_to_granule_id(OL_I_ID, context));
     }
     
     this->update(districtTableID, W_ID - 1, storage->district_key,
-              storage->district_value, D_ID % granules_per_partition);
+              storage->district_value, did_to_granule_id(D_ID, context));
     for (int i = 0; i < query.O_OL_CNT; i++) {
 
       int32_t OL_I_ID = query.INFO[i].OL_I_ID;
@@ -163,7 +163,7 @@ public:
       int32_t OL_SUPPLY_W_ID = query.INFO[i].OL_SUPPLY_W_ID;
 
       this->update(stockTableID, OL_SUPPLY_W_ID - 1, storage->stock_keys[i],
-                   storage->stock_values[i], OL_I_ID % granules_per_partition);
+                   storage->stock_values[i], id_to_granule_id(OL_I_ID, context));
     }
 
     t_local_work.end();
@@ -345,7 +345,9 @@ public:
         query(makePaymentQuery()(context, partition_id + 1, random)) {
           storage = get_storage();
         }
-  virtual ~Payment() { put_storage(storage); storage = nullptr; }
+  virtual ~Payment() {
+    put_storage(storage); storage = nullptr; 
+  }
 
 
   virtual int32_t get_partition_count() override { return query.number_of_parts(); }
@@ -387,7 +389,7 @@ public:
     auto warehouseTableID = warehouse::tableID;
     storage->warehouse_key = warehouse::key(W_ID);
     this->search_for_update(warehouseTableID, W_ID - 1, storage->warehouse_key,
-                            storage->warehouse_value, W_ID % context.granules_per_partition);
+                            storage->warehouse_value, wid_to_granule_id(W_ID, context));
 
     // The row in the DISTRICT table with matching D_W_ID and D_ID is selected.
     // D_NAME, D_STREET_1, D_STREET_2, D_CITY, D_STATE, and D_ZIP are retrieved
@@ -396,7 +398,7 @@ public:
     auto districtTableID = district::tableID;
     storage->district_key = district::key(W_ID, D_ID);
     this->search_for_update(districtTableID, W_ID - 1, storage->district_key,
-                            storage->district_value, D_ID % context.granules_per_partition);
+                            storage->district_value, did_to_granule_id(D_ID, context));
 
     // The row in the CUSTOMER table with matching C_W_ID, C_D_ID, and C_ID is
     // selected and C_DISCOUNT, the customer's discount rate, C_LAST, the
@@ -406,9 +408,9 @@ public:
     auto customerNameIdxTableID = customer_name_idx::tableID;
     
     this->update(warehouseTableID, W_ID - 1, storage->warehouse_key,
-                 storage->warehouse_value, W_ID % context.granules_per_partition);
+                 storage->warehouse_value, wid_to_granule_id(W_ID, context));
     this->update(districtTableID, W_ID - 1, storage->district_key,
-                 storage->district_value, D_ID % context.granules_per_partition);
+                 storage->district_value, did_to_granule_id(D_ID, context));
     if (C_ID == 0) {
       storage->customer_name_idx_key =
           customer_name_idx::key(C_W_ID, C_D_ID, query.C_LAST);
@@ -424,9 +426,9 @@ public:
     auto customerTableID = customer::tableID;
     storage->customer_key = customer::key(C_W_ID, C_D_ID, C_ID);
     this->search_for_update(customerTableID, C_W_ID - 1, storage->customer_key,
-                            storage->customer_value, C_D_ID % context.granules_per_partition);
+                            storage->customer_value, did_to_granule_id(C_D_ID, context));
     this->update(customerTableID, C_W_ID - 1, storage->customer_key,
-              storage->customer_value, C_D_ID % context.granules_per_partition);
+              storage->customer_value, did_to_granule_id(C_D_ID, context));
 
     t_local_work.end();
     if (this->process_requests(worker_id)) {

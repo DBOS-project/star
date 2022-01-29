@@ -170,17 +170,17 @@ public:
       }
 
       auto customerNameIdxTableID = customer_name_idx::tableID;
-      if (context.protocol != "HStore") {
+      //if (context.protocol != "HStore") {
         tbl_customer_name_idx_vec.push_back(
           std::make_unique<
               Table<997, customer_name_idx::key, customer_name_idx::value>>(
               customerNameIdxTableID, partitionID));
-      } else {
-        tbl_customer_name_idx_vec.push_back(
-          std::make_unique<
-              HStoreTable<customer_name_idx::key, customer_name_idx::value>>(
-              customerNameIdxTableID, partitionID));
-      }
+      // } else {
+      //   tbl_customer_name_idx_vec.push_back(
+      //     std::make_unique<
+      //         HStoreTable<customer_name_idx::key, customer_name_idx::value>>(
+      //         customerNameIdxTableID, partitionID));
+      // }
 
       auto historyTableID = history::tableID;
       if (context.protocol != "HStore") {

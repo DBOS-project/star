@@ -13,6 +13,24 @@
 namespace star {
 namespace tpcc {
 
+int32_t wid_to_granule_id(int32_t W_ID, const Context &context) {
+  auto W_NUM = context.partition_num;
+  auto D_NUM = 10;
+  return W_ID + context.granules_per_partition - (W_NUM + 1);
+}
+
+int32_t did_to_granule_id(int32_t D_ID, const Context &context) {
+  auto W_NUM = context.partition_num;
+  auto D_NUM = 10;
+  return D_ID + context.granules_per_partition - (W_NUM + 1) - (D_NUM + 1);
+}
+
+int32_t id_to_granule_id(int32_t ID, const Context &context) {
+  auto W_NUM = context.partition_num;
+  auto D_NUM = 10;
+  return ID % (context.granules_per_partition - (W_NUM + 1) - (D_NUM + 1));
+}
+
 struct NewOrderQuery {
   bool isRemote() {
     return num_parts == 2;
@@ -32,7 +50,7 @@ struct NewOrderQuery {
   NewOrderQueryInfo INFO[15];
 
   int32_t parts[2];
-  int32_t granules[2][15];
+  int32_t granules[2][17];
   int32_t part_granule_count[2];
   int num_parts = 0;
 
@@ -112,7 +130,7 @@ public:
       // The first supplying warehouse number (OL_SUPPLY_W_ID) is selected as
       // the home warehouse 90% of the time and as a remote warehouse 10% of the
       // time.
-      int part_idx = query.num_parts == 2 ? 1: 0;
+      int part_idx = -1;
       if (i == 0) {
         int x = random.uniform_dist(1, 100);
         if (x <= context.newOrderCrossPartitionProbability &&
@@ -125,17 +143,22 @@ public:
           query.num_parts = 2;
           query.parts[0] = OL_SUPPLY_W_ID - 1;
           query.parts[1] = W_ID - 1;
+          DCHECK(query.part_granule_count[1] == 0);
+          query.granules[1][query.part_granule_count[1]++] = wid_to_granule_id(W_ID, context);
+          part_idx = 0;
         } else {
           query.INFO[i].OL_SUPPLY_W_ID = W_ID;
+          query.granules[0][query.part_granule_count[0]++] = wid_to_granule_id(W_ID, context);
+          part_idx = 0;
         }
-        part_idx = 0;
       } else {
         query.INFO[i].OL_SUPPLY_W_ID = W_ID;
+        part_idx = query.num_parts == 2 ? 1: 0;
       }
 
       query.INFO[i].OL_QUANTITY = random.uniform_dist(1, 10);
 
-      auto g = query.INFO[i].OL_I_ID % context.granules_per_partition;
+      auto g = id_to_granule_id(query.INFO[i].OL_I_ID, context);
       bool exist = false;
 
       for (auto k = 0; k < query.part_granule_count[part_idx]; ++k) {
@@ -150,7 +173,7 @@ public:
     }
 
     int part_idx = query.num_parts == 2 ? 1: 0;
-    auto g = query.D_ID % context.granules_per_partition;
+    auto g = did_to_granule_id(query.D_ID, context);
     bool exist = false;
 
     for (auto k = 0; k < query.part_granule_count[part_idx]; ++k) {
@@ -218,9 +241,9 @@ public:
 
     query.D_ID = random.uniform_dist(1, 10);
 
-    query.granules[0][query.part_granule_count[0]++] = query.D_ID % context.granules_per_partition;
-    if (query.granules[0][query.part_granule_count[0] - 1] != (int32_t)(query.W_ID % context.granules_per_partition))
-      query.granules[0][query.part_granule_count[0]++] = query.W_ID % context.granules_per_partition;
+    query.granules[0][query.part_granule_count[0]++] = did_to_granule_id(query.D_ID, context);
+    if (query.granules[0][query.part_granule_count[0] - 1] != wid_to_granule_id(query.W_ID, context))
+      query.granules[0][query.part_granule_count[0]++] = wid_to_granule_id(query.W_ID, context);
     // the customer resident warehouse is the home warehouse 85% of the time
     // and is a randomly selected remote warehouse 15% of the time.
 
@@ -246,7 +269,7 @@ public:
       query.num_parts = 2;
       query.C_W_ID = C_W_ID;
       query.C_D_ID = random.uniform_dist(1, 10);
-      query.granules[1][query.part_granule_count[1]++] = query.C_D_ID % context.granules_per_partition;
+      query.granules[1][query.part_granule_count[1]++] = did_to_granule_id(query.C_D_ID, context);
     } else {
       // If x > 15 a customer is selected from the selected district number
       // (C_D_ID = D_ID) and the home warehouse number (C_W_ID = W_ID).
