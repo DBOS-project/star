@@ -282,7 +282,7 @@ public:
   }
 
   void sendMessage(Message *message) {
-    //message->set_message_send_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
+    message->set_message_send_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
     auto dest_node_id = message->get_dest_node_id();
     DCHECK(dest_node_id >= 0 && dest_node_id < sockets.size() &&
            dest_node_id != coordinator_id);

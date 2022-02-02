@@ -22,6 +22,7 @@ class HStoreExecutor
 
 {
 private:
+  std::unique_ptr<Partitioner> hash_partitioner;
   std::vector<std::unique_ptr<Message>> cluster_worker_messages;
   std::vector<Message*> group_cluster_worker_messages;
   int cluster_worker_num = -1;
@@ -76,7 +77,7 @@ private:
   Percentile<int64_t> cmd_queue_time;
   Percentile<int64_t> cmd_stall_time;
   Percentile<int64_t> execution_phase_time;
-  Percentile<int64_t> execution_phase_mp_rounds;
+  Percentile<int64_t> execution_after_commit_time;
   int rtt_test_target_cluster_worker = -1;
 
   std::vector<int> transaction_lengths;
@@ -169,7 +170,7 @@ public:
   std::vector<int> granule_to_cmd_queue_index;
   // Records the last command's position_in_log (TxnCommand.position_in_log) that got replayed
   std::vector<int64_t> granule_replayed_log_index; 
-  std::vector<std::deque<Message*>> granule_lock_request_queues;
+  std::vector<std::deque<MessagePiece>> granule_lock_request_queues;
   std::deque<int> granule_lock_reqeust_candidates;
   std::size_t replica_num;
   int64_t get_minimum_replayed_log_position() {
@@ -233,7 +234,7 @@ public:
     return granule_command_queues[granule_to_cmd_queue_index[partition]];
   }
 
-  std::deque<Message*> & get_granule_lock_request_queue(int partition) {
+  std::deque<MessagePiece> & get_granule_lock_request_queue(int partition) {
     DCHECK(is_replica_worker);
     DCHECK(granule_to_cmd_queue_index[partition] != -1);
     DCHECK(granule_to_cmd_queue_index[partition] >= 0);
@@ -283,12 +284,15 @@ public:
       DCHECK(this_cluster_worker_id < (int)this->context.partition_num);
       std::string managed_granules_str;
       if (is_replica_worker == false) {
+        hash_partitioner = PartitionerFactory::create_partitioner(
+            "hash", coordinator_id, this->partitioner->num_coordinator_for_one_replica());
         for (int p = 0; p < (int)this->context.partition_num; ++p) {
           if (this_cluster_worker_id == partition_owner_cluster_worker(p, 0)) {
+            managed_granules_str += std::to_string(p) + ",";
             managed_partitions.push_back(p);
             for (std::size_t j = 0; j < this->context.granules_per_partition; ++j) {
               auto lock_id = to_lock_id(p, j);
-              managed_granules_str += lock_id_to_string(lock_id) + ",";
+              //managed_granules_str += lock_id_to_string(lock_id) + ",";
               if (replica_num > 1) {
                 auto standby_replica_cluster_worker_id = partition_owner_cluster_worker(p, 1);
                 DCHECK(replica_cluster_worker_id == -1 || standby_replica_cluster_worker_id == replica_cluster_worker_id);
@@ -320,10 +324,11 @@ public:
           for (size_t i = 1; i < this->partitioner->replica_num(); ++i) {
             if (this_cluster_worker_id == partition_owner_cluster_worker(p, i)) {
               managed_partitions.push_back(p);
+              managed_replica_granules_str += std::to_string(p) + ",";
               for (size_t j = 0; j < this->context.granules_per_partition; ++j) {
                 auto lock_id = to_lock_id(p, j);
                 granule_command_queues.push_back(std::deque<TxnCommand>());
-                granule_lock_request_queues.push_back(std::deque<Message*>());
+                granule_lock_request_queues.push_back(std::deque<MessagePiece>());
                 granule_command_queue_processing.push_back(false);
                 granule_replayed_log_index.push_back(-1);
                 granule_to_cmd_queue_index[lock_id] = cmd_queue_idx++;
@@ -332,14 +337,14 @@ public:
                 auto active_replica_cluster_worker_id = partition_owner_cluster_worker(p, 0);
                 DCHECK(replica_cluster_worker_id == -1 || active_replica_cluster_worker_id == replica_cluster_worker_id);
                 replica_cluster_worker_id = active_replica_cluster_worker_id;
-                managed_replica_granules_str += lock_id_to_string(lock_id) + ",";
+                //managed_replica_granules_str += lock_id_to_string(lock_id) + ",";
               }
             }
           }
         }
         managed_replica_granules_str.pop_back(); // Remove last ,
       }
-      managed_granules_str = managed_replica_granules_str = "";
+      //managed_granules_str = managed_replica_granules_str = "";
       LOG(INFO) << "Cluster worker id " << this_cluster_worker_id << " node worker id "<< worker_id
                 << " granules managed [" << managed_granules_str 
                 << "], replica granules maanged [" << managed_replica_granules_str << "]" 
@@ -355,7 +360,7 @@ public:
       cluster_worker_messages.shrink_to_fit();
       this->message_stats.resize((size_t)HStoreMessage::NFIELDS, 0);
       this->message_sizes.resize((size_t)HStoreMessage::NFIELDS, 0);
-      mp_concurrency_max = batch_per_worker;
+      mp_concurrency_max = 2000;
   }
 
   ~HStoreExecutor() = default;
@@ -684,7 +689,7 @@ public:
         cluster_worker_messages[owner_cluster_worker]->set_transaction_id(txn.transaction_id);
         txn.network_size += MessageFactoryType::new_acquire_partition_lock_and_read_message(
               *(cluster_worker_messages[owner_cluster_worker]), *table, key, key_offset, this_cluster_worker_id, 
-              granule_id, txn.ith_replica, txn.tries);
+              granule_id, txn.ith_replica, std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
         txn.distributed_transaction = true;
         txn.pendingResponses++;
       }
@@ -761,6 +766,9 @@ public:
         //     DCHECK(false);
         //   }
         // }
+      }
+      if (success != 1) {
+        return false;
       }
     } else {
       if (lock_buckets[lock_id] == -1 || lock_buckets[lock_id] == tid) {
@@ -928,9 +936,9 @@ public:
 
     auto key_size = table.key_size();
     auto value_size = table.value_size();
-    // ScopedTimer t([&, this](uint64_t us) {
-    //   spread_time.add(us);
-    // });
+    ScopedTimer t([&, this](uint64_t us) {
+      spread_time.add(us);
+    });
     /*
      * The structure of a write command replication request: (ith_replica, txn data)
      * The structure of a write lock response: (success?, key offset, value?)
@@ -948,7 +956,7 @@ public:
     std::size_t data_sz = data.size();
     auto cmds = deserialize_commands(data);
     //command_buffer.insert(command_buffer.end(), cmds.begin(), cmds.end());
-    //spread_cnt.add(cmds.size());
+    spread_cnt.add(cmds.size());
     spread_replicated_commands(cmds);
 
     // if (persist_cmd_buffer) {
@@ -1076,7 +1084,7 @@ public:
     StringPiece stringPiece = inputPiece.toStringPiece();
     Decoder dec(stringPiece);
     dec >> success >> key_offset >> ts1 >> ts2 >> ts3;
-
+    //rtt_stat.add(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count() - ts1);
     if (success == 1) {
       uint32_t msg_length = inputPiece.get_message_length();
       auto header_size = MessagePiece::get_header_size() ;
@@ -1309,7 +1317,7 @@ public:
     int64_t active_replica_waiting_position_tmp;
     dec >> active_replica_waiting_position_tmp >> cluster_worker_id >> ith_replica;
     int64_t minimum_replayed_log_positition = get_minimum_replayed_log_position();
-    DCHECK(active_replica_waiting_position == -1);
+    //DCHECK(active_replica_waiting_position == -1);
     //LOG(INFO) << "cluster_worker " << cluster_worker_id << " called persist_cmd_buffer_request_handler on cluster worker " << this_cluster_worker_id;
     if (minimum_replayed_log_positition >= active_replica_waiting_position_tmp) {
       auto message_size = MessagePiece::get_header_size() + sizeof(minimum_replayed_log_positition);
@@ -1324,7 +1332,7 @@ public:
       responseMessage.flush();
       responseMessage.set_gen_time(Time::now());
     } else {
-      DCHECK(active_replica_waiting_position == -1);
+      //DCHECK(active_replica_waiting_position == -1);
       active_replica_waiting_position = active_replica_waiting_position_tmp;
       last_mp_arrival = std::chrono::steady_clock::now();
       last_commit = std::chrono::steady_clock::now();
@@ -1741,18 +1749,9 @@ public:
     if (txn->pendingResponses == 0) {
       async_txns_to_commit.push_back(txn);
     }
-    handle_requests(false);
     if (async_txns_to_commit.empty() == false) {
       process_to_commit(async_txns_to_commit);
     }
-  }
-
-  void process_execution_phase(const std::vector<TransactionType*> & txns) {
-    int cnt = 0;
-    for (size_t i = 0; i < txns.size(); ++i) {
-      execute_transaction(txns[i]);
-    }
-    process_to_commit(async_txns_to_commit);
   }
 
   int mp_type(TransactionType * txn) {
@@ -1827,7 +1826,9 @@ public:
     // fill in the writes
     if (txn->abort_lock == false) {
       write_command(*txn);
-      send_commands_to_replica();
+      if (this->context.lotus_async_repl == false) {
+        send_commands_to_replica(true);
+      }
     }
   
     auto result = txn->execute(this->id);
@@ -1891,7 +1892,9 @@ public:
       handle_requests(false);
       process_to_commit(async_txns_to_commit);
       if (replica_num > 1 && is_replica_worker == false && command_buffer_outgoing_data.empty() == false) {
-        send_commands_to_replica();
+        if (this->context.lotus_async_repl == false) {
+          send_commands_to_replica();
+        }
       }
     }
   }
@@ -1942,54 +1945,15 @@ public:
   int control_step = 0;
   double abort_rate_threshold = 1;
   void process_mp_transactions(std::vector<TransactionType*> & mp_txns) {
-    // ScopedTimer t0([&, this](uint64_t us) {
-    //   if (mp_txns.empty())
-    //     return;
-    //   int committed = 0;
-    //   for (size_t i = 0; i < mp_txns.size(); ++i) {
-    //     auto txn = mp_txns[i];
-    //     if (txn->abort_lock || txn->abort_no_retry)
-    //       continue;
-    //     committed++;
-    //   }
-    //   mp_abort_rate.push_back(1 - committed / (double)mp_txns.size());
-    //   if (mp_abort_rate.size() > abort_rate_window_size) {
-    //     mp_abort_rate.pop_front();
-    //   }
-    //   if (++control_step % 15 == 0) {
-    //     double avg_abort_rate = 0;
-    //     for (auto v : mp_abort_rate) {
-    //       avg_abort_rate += v;
-    //     }
-    //     avg_abort_rate /= mp_abort_rate.size();
-    //     mp_avg_abort.add(avg_abort_rate);
-    //     if (avg_abort_rate > abort_rate_threshold) {
-    //       mp_concurrency_max = std::max((std::size_t)1, mp_concurrency_max - 1);
-    //     } else {
-    //       mp_concurrency_max = std::max(batch_per_worker,  mp_concurrency_max + 1);
-    //     }
-    //   }
-    //   //mp_concurrency_max = 15;
-    // });
-
-    for (size_t i = 0; i < mp_txns.size(); ++i) {
-      if (active_txns.size() > mp_concurrency_max) {
-        handle_requests();
-        --i;
-      } else {
+    {
+      for (size_t i = 0; i < mp_txns.size(); ++i) {
         execute_transaction(mp_txns[i]);
+        //handle_requests(false);
       }
-
-      // if (active_txns.size() >= mp_concurrency_max) {
-      //   process_commit_phase();
-      // }
-      // execute_transaction(mp_txns[i]);
-      process_to_commit(async_txns_to_commit);
     }
     
-    process_commit_phase();
-    if (replica_num > 1 && is_replica_worker == false) {
-      send_commands_to_replica(false);
+    {
+      process_commit_phase();
     }
   }
 
@@ -2006,6 +1970,7 @@ public:
       });
 
       int cnt = 0;
+      process_mp_transactions(mp_txns);
       for (size_t i = 0; i < sp_txns.size(); ++i) {
         auto txn = sp_txns[i];
         txn->reset();
@@ -2016,20 +1981,21 @@ public:
         }
         handle_requests();
         if (++cnt % 2 == 0 && replica_num > 1 && is_replica_worker == false) {
-          send_commands_to_replica(false);
+          if (this->context.lotus_async_repl == false) {
+            send_commands_to_replica(true);
+          }
         }
       }
-      
-      process_mp_transactions(mp_txns);
-      if (replica_num > 1 && is_replica_worker == false) {
+    }
+    ScopedTimer t0([&, this](uint64_t us) {
+      execution_after_commit_time.add(us);
+    });
+    
+    if (replica_num > 1 && is_replica_worker == false) {
+      if (this->context.lotus_async_repl == false) {
         send_commands_to_replica(true);
       }
-      //flush_grouped_messages();
     }
-    if (replica_num > 1 && is_replica_worker == false) {
-      send_commands_to_replica(true);
-    }
-    //flush_grouped_messages();
     uint64_t commit_persistence_us = 0;
     uint64_t commit_replication_us = 0;
     {
@@ -2051,8 +2017,10 @@ public:
           cluster_worker_messages[replica_cluster_worker_id]->set_transaction_id(txn_id);
           MessageFactoryType::new_get_replayed_log_posistion_message(*cluster_worker_messages[replica_cluster_worker_id], minimum_coord_txn_written_log_position_snap, 1, this_cluster_worker_id);
           flush_messages();
-          //flush_grouped_messages();
           get_replica_replay_log_position_requests++;
+          if (this->context.lotus_async_repl) {
+            break;
+          }
           while (get_replica_replay_log_position_responses < get_replica_replay_log_position_requests) {
             if (cmd_buffer_flushed == false) {
               ScopedTimer t0([&, this](uint64_t us) {
@@ -2063,9 +2031,10 @@ public:
             }
             handle_requests();
             if (replica_num > 1 && is_replica_worker == false) {
-              send_commands_to_replica(false);
+              if (this->context.lotus_async_repl == false) {
+                send_commands_to_replica(true);
+              }
             }
-            //flush_grouped_messages();
           }
           DCHECK(get_replica_replay_log_position_responses == get_replica_replay_log_position_requests);
           if (first_account == 0) {
@@ -2085,6 +2054,10 @@ public:
         });
         persist_and_clear_command_buffer(true);
         cmd_buffer_flushed = true;
+      }
+      if (this->context.lotus_async_repl) {
+        //command_buffer_outgoing_data.clear();
+        send_commands_to_replica(true);
       }
     }
 
@@ -2150,9 +2123,9 @@ public:
   }
 
   void process_new_transactions() {
-    if (active_txns.size() >= 1) {
-      return;
-    }
+    ScopedTimer t([&, this](uint64_t us) {
+        handle_latency.add(us);
+      });
     if (pending_txns.size() < batch_per_worker) {
       fill_pending_txns(batch_per_worker);
     }
@@ -2192,6 +2165,10 @@ public:
           //     std::chrono::steady_clock::now() - cmd.queue_ts)
           //     .count());
           q.pop_front();
+          // auto & q2 = get_granule_lock_request_queue(lock_id);
+          // if (q2.empty() == false) {
+          //   granule_lock_reqeust_candidates.push_back(lock_id);
+          // }
         } else {
           // if (cmd.queue_head_processed == false) {
           //   cmd_queue_time.add(std::chrono::duration_cast<std::chrono::microseconds>(
@@ -2205,6 +2182,7 @@ public:
           break;
         }
       } else if (cmd.is_mp == false) {
+        DCHECK(false);
         DCHECK(cmd.txn != nullptr);
         // if (cmd.txn->being_replayed == false) {
         //   auto queue_time =
@@ -2383,9 +2361,6 @@ public:
       replay_commands_in_partition(partition);
       auto sz = handle_requests(false);
       sz += process_to_commit(async_txns_to_commit, complete_mp);
-      // if (++cnt % group_send_interval == 0 || sz) {
-      //   flush_grouped_messages();
-      // }
     }
     if (active_mps == 0) {
       respond_to_active_replica_with_replay_position(get_minimum_replayed_log_position());
@@ -2404,7 +2379,6 @@ public:
     MessageFactoryType::new_command_replication(
             *cluster_worker_messages[replica_cluster_worker_id], 1, command_buffer_outgoing_data, this_cluster_worker_id, persist);
     flush_messages();
-    //flush_grouped_messages();
     //LOG(INFO) << "This cluster worker " << this_cluster_worker_id << " sent " << command_buffer_outgoing.size() << " commands to replia worker " <<  replica_cluster_worker_id;
     command_buffer_outgoing_data.clear();
   }
@@ -2421,47 +2395,39 @@ public:
     auto & q = get_granule_lock_request_queue(lock_id);
     bool reorg = false;
     for (std::size_t i = 0; i < q.size(); ++i) {
-      auto message = q[i];
-
+      auto & messagePiece = q[i];
+      auto message = messagePiece.message_ptr;
+      DCHECK(message);
       bool good = true;
-      for (auto it = message->begin(); it != message->end(); it++) {
-        MessagePiece messagePiece = *it;
-        auto type = messagePiece.get_message_type();
-        DCHECK(type == (int)HStoreMessage::ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST);
-        auto lock_id_2 = to_lock_id(messagePiece.get_partition_id(), messagePiece.get_granule_id());
-        DCHECK(lock_id_2 == lock_id);
+      auto type = messagePiece.get_message_type();
+      DCHECK(type == (int)HStoreMessage::ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST);
+      auto lock_id_2 = to_lock_id(messagePiece.get_partition_id(), messagePiece.get_granule_id());
+      DCHECK(lock_id_2 == lock_id);
 
-        ITable *table = this->db.find_table(messagePiece.get_table_id(),
-                                      messagePiece.get_partition_id());
-        auto tid = message->get_transaction_id();
-        TransactionType * txn = nullptr;
-        if (active_txns.count(tid) > 0) {
-          txn = active_txns[tid];
+      ITable *table = this->db.find_table(messagePiece.get_table_id(),
+                                    messagePiece.get_partition_id());
+      TransactionType * txn = nullptr;
+      bool res = acquire_partition_lock_and_read_request_handler(*message, messagePiece,
+                                                *cluster_worker_messages[message->get_source_cluster_worker_id()], *table,
+                                                txn);
+      
+      if (res == true) {
+        if (--message->ref_cnt == 0) {
+          std::unique_ptr<Message> rel(message);
         }
-
-        bool res = acquire_partition_lock_and_read_request_handler(*message, messagePiece,
-                                                  *cluster_worker_messages[message->get_source_cluster_worker_id()], *table,
-                                                  txn);
-        if (res == false) {
-          good = false;
-          break;
-        }
-      }
-      if (good == true) {
-        std::unique_ptr<Message> rel(message);
-        flush_messages();
-        q[i] = nullptr;
         reorg = true;
+        messagePiece.message_ptr = nullptr;
+        flush_messages();
       } else {
+        DCHECK(message->ref_cnt > 0);
         cluster_worker_messages[message->get_source_cluster_worker_id()]->clear_message_pieces();
       }
     }
 
     if (reorg) {
       std::size_t j = 0;
-      // Move non-null messages to the front.
-      for (size_t i = 0; i < q.size(); ++i) {
-        if (q[i] != nullptr) {
+      for (std::size_t i = 0; i < q.size(); ++i) {
+        if (q[i].message_ptr != nullptr) {
           q[j++] = q[i];
         }
       }
@@ -2489,17 +2455,11 @@ public:
     if (is_replica_worker) {
       process_queued_lock_requests();
     }
-    bool record = this->in_queue.empty() == false;
-    if (record == false)
+    if (this->in_queue.empty())
       return 0;
+
+    TransactionType * txn = nullptr;
     int msg_count = 0;
-    // ScopedTimer t([&, this](uint64_t us) {
-    //   if (record) {
-    //     handle_latency.add(us);
-    //     handle_msg_cnt.add(msg_count);
-    //   }
-    // });
-    record = false;
     std::size_t size = 0;
     while (!this->in_queue.empty()) {
       ++size;
@@ -2511,32 +2471,32 @@ public:
         DCHECK(is_replica_worker);
       else
         DCHECK(!is_replica_worker);
-      //int message_type = 0;
-      int message_lock_id = -1;
+      int message_type = 0;
 
       int msg_idx = 0;
       bool acquire_partition_lock_requests_successful = true;
       auto msg_cnt = message->get_message_count();
       {
-      // ScopedTimer t([&, this](uint64_t us) {
-      //   //message_processing_latency[message_type].add(us);
-      //   if (message_type == (int)HStoreMessage::ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST) {
-      //     DCHECK(message->get_message_gen_time() != 0);
-      //     DCHECK(message->get_message_gen_time() <= message->get_message_send_time());
-      //     DCHECK(message->get_message_gen_time() <= message->get_message_recv_time());
-      //     msg_send_latency.add(message->get_message_send_time() - message->get_message_gen_time());
-      //     msg_recv_latency.add(message->get_message_recv_time() - message->get_message_gen_time());
-      //     msg_proc_latency.add(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count() - message->get_message_gen_time());
-      //   }
-      // });
+      ScopedTimer t([&, this](uint64_t us) {
+        //message_processing_latency[message_type].add(us);
+        if (message_type == (int)HStoreMessage::RTT_RESPONSE
+         //|| message_type == (int)HStoreMessage::ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST
+         ) {
+          DCHECK(message->get_message_gen_time() != 0);
+          DCHECK(message->get_message_gen_time() <= message->get_message_send_time());
+          DCHECK(message->get_message_gen_time() <= message->get_message_recv_time());
+          msg_send_latency.add(message->get_message_send_time() - message->get_message_gen_time());
+          msg_recv_latency.add(message->get_message_recv_time() - message->get_message_gen_time());
+          msg_proc_latency.add(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count() - message->get_message_gen_time());
+          //msg_recv_latency.add(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count() - message->get_message_recv_time());
+        }
+      });
       for (auto it = message->begin(); it != message->end(); it++, ++msg_idx) {
-        record = true;
         msg_count++;
         MessagePiece messagePiece = *it;
         auto type = messagePiece.get_message_type();
-        //message_type = type;
+        message_type = type;
         //LOG(INFO) << "Message type " << type;
-        message_lock_id = to_lock_id(messagePiece.get_partition_id(), messagePiece.get_granule_id());
         // auto message_partition_owner_cluster_worker_id = partition_owner_cluster_worker(message_partition_id);
         
         // if (type != (int)HStoreMessage::MASTER_UNLOCK_PARTITION_RESPONSE && type != (int)HStoreMessage::MASTER_LOCK_PARTITION_RESPONSE
@@ -2549,10 +2509,13 @@ public:
 //        DCHECK(message->get_source_cluster_worker_id() != this_cluster_worker_id);
         DCHECK(message->get_source_cluster_worker_id() < (int32_t)this->context.partition_num);
         auto tid = message->get_transaction_id();
-        TransactionType * txn = nullptr;
-        if (active_txns.count(tid) > 0) {
-          txn = active_txns[tid];
+        if (txn == nullptr || txn->transaction_id != tid) {
+          txn = nullptr;
+          if (active_txns.count(tid) > 0) {
+            txn = active_txns[tid];
+          }
         }
+
         if (type == (int)HStoreMessage::ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST) {
           bool res = acquire_partition_lock_and_read_request_handler(*message, messagePiece,
                                                  *cluster_worker_messages[message->get_source_cluster_worker_id()], *table,
@@ -2642,10 +2605,24 @@ public:
       }
       }
       if (is_replica_worker && acquire_partition_lock_requests_successful == false) {
-        cluster_worker_messages[message->get_source_cluster_worker_id()]->clear_message_pieces();
-        DCHECK(message_lock_id != -1);
+        //cluster_worker_messages[message->get_source_cluster_worker_id()]->clear_message_pieces();
         // Save the requests for now
-        get_granule_lock_request_queue(message_lock_id).push_back(message.release());
+        DCHECK(message->ref_cnt == 0);
+        for (auto it = message->begin(); it != message->end(); it++, ++msg_idx) {
+          MessagePiece messagePiece = *it;
+          auto type = messagePiece.get_message_type();
+          //LOG(INFO) << "Message type " << type;
+          auto lock_id = to_lock_id(messagePiece.get_partition_id(), messagePiece.get_granule_id());
+          if (lock_buckets[lock_id] != message->get_transaction_id()) {
+            messagePiece.message_ptr = message.get();
+            message->ref_cnt++;
+            get_granule_lock_request_queue(lock_id).push_back(messagePiece);
+            granule_lock_reqeust_candidates.push_back(lock_id);
+          }
+        }
+        DCHECK(message->ref_cnt > 0);
+        flush_messages();
+        message.release();
       } else {
         size += message->get_message_count();
         flush_messages();
@@ -2655,7 +2632,7 @@ public:
     // if (should_replay_commands && this->partitioner->replica_num() > 1 && is_replica_worker) {
     //   replay_all_sp_commands();
     // }
-    // if (rtt_request_sent == false && ++rtt_cnt % 10000 == 0) {
+    // if (rtt_request_sent == false && ++rtt_cnt % 1000 == 0) {
     //   rtt_request_sent_time = std::chrono::steady_clock::now();
     //   cluster_worker_messages[rtt_test_target_cluster_worker]->set_transaction_id(0);
     //   HStoreMessageFactory::new_rtt_message(*cluster_worker_messages[rtt_test_target_cluster_worker], is_replica_worker, this_cluster_worker_id);
@@ -2663,7 +2640,9 @@ public:
     //   rtt_request_sent = true;
     // }
     if (is_replica_worker == false && replica_num > 1) {
-      send_commands_to_replica();
+      if (this->context.lotus_async_repl == false) {
+        send_commands_to_replica(true);
+      }
     }
     return size;
   }
@@ -2680,7 +2659,6 @@ public:
     if (replica_num > 1 && is_replica_worker) {
       replay_loop();
     }
-    //flush_grouped_messages();
   }
   
   virtual void push_master_special_message(Message *message) override {     
@@ -2891,7 +2869,7 @@ public:
               << " mp_arrival_interval " << mp_arrival_interval.nth(50) << " " << mp_arrival_interval.nth(75) << " " << mp_arrival_interval.nth(95) << " " << mp_arrival_interval.avg()
               << " handle request latency " << handle_latency.nth(50) << " " << handle_latency.nth(75) << " " << handle_latency.nth(95) << " " << handle_latency.avg()
               << " handle message count " << handle_msg_cnt.nth(50) << " " << handle_msg_cnt.nth(75) << " " << handle_msg_cnt.nth(95) << " " << handle_msg_cnt.avg()
-              << " rtt " << rtt_stat.nth(50) << " " << rtt_stat.nth(75) << " " << rtt_stat.nth(95) << " " << rtt_stat.avg()
+              << " rtt " << rtt_stat.size() << " " << rtt_stat.nth(50) << " " << rtt_stat.nth(75) << " " << rtt_stat.nth(95) << " " << rtt_stat.avg()
               << " msg_send_latency " << msg_send_latency.nth(50) << " " << msg_send_latency.nth(75) << " " << msg_send_latency.nth(95) << " " << msg_send_latency.avg()
               << " msg_recv_latency " << msg_recv_latency.nth(50) << " " << msg_recv_latency.nth(75) << " " << msg_recv_latency.nth(95) << " " << msg_recv_latency.avg()
               << " msg_proc_latency " << msg_proc_latency.nth(50) << " " << msg_proc_latency.nth(75) << " " << msg_proc_latency.nth(95) << " " << msg_proc_latency.avg()
@@ -2904,7 +2882,7 @@ public:
               << " cmd queue time " << cmd_queue_time.nth(50)
               << " cmd stall time by lock " << cmd_stall_time.nth(50) 
               << " execution phase time " << execution_phase_time.avg()
-              << " execution phase mp rounds " << execution_phase_mp_rounds.avg() << ". \n"
+              << " execution_after_commit_time " << execution_after_commit_time.avg() << ". \n"
               << " LOCAL count " << this->local_txn_stall_time_pct.size() << " txn stall " << this->local_txn_stall_time_pct.nth(50) << " us, "
               << " local_work " << this->local_txn_local_work_time_pct.nth(50) << " us, " 
               << " remote_work " << this->local_txn_remote_work_time_pct.nth(50) << " us, "
@@ -2936,84 +2914,48 @@ public:
   }
 
 protected:
-  // void flush_standby_replica_messages() {
-  ////   for (int i = active_replica_worker_num_end; i < (int)cluster_worker_messages.size(); i++) {
-  //     if (cluster_worker_messages[i]->get_message_count() == 0) {
-  //       continue;
-  //     }
 
-  //     auto message = cluster_worker_messages[i].release();
-      
-  //     message->set_put_to_out_queue_time(Time::now());
-  //     this->out_queue.push(message);
-      
-  //     cluster_worker_messages[i] = std::make_unique<Message>();
-  //     init_message(cluster_worker_messages[i].get(), i);
-  //   }
-  // }
-
-  // void flush_active_replica_messages() {
-  ////   for (int i = 0; i < active_replica_worker_num_end; i++) {
-  //     if (cluster_worker_messages[i]->get_message_count() == 0) {
-  //       continue;
-  //     }
-
-  //     auto message = cluster_worker_messages[i].release();
-      
-  //     message->set_put_to_out_queue_time(Time::now());
-  //     this->out_queue.push(message);
-      
-  //     cluster_worker_messages[i] = std::make_unique<Message>();
-  //     init_message(cluster_worker_messages[i].get(), i);
-  //   }
-  // }
-
-  int group_send_cnt = 0;
-  int group_send_interval = 15;
   virtual void flush_messages() override {
     DCHECK(cluster_worker_messages.size() == (size_t)cluster_worker_num);
-    for (int i = 0; i < (int)cluster_worker_messages.size(); i++) {
+    //int end_num = is_replica_worker ? cluster_worker_messages.size() : active_replica_worker_num_end;
+    int end_num = cluster_worker_messages.size();
+    for (int i = 0; i < end_num; i++) {
       if (cluster_worker_messages[i]->get_message_count() == 0) {
         continue;
       }
 
       auto message = cluster_worker_messages[i].release();
       
-      //message->set_put_to_out_queue_time(Time::now());
       this->out_queue.push(message);
-      //group_cluster_worker_messages.push_back(message);
-      ++group_send_cnt;
       
       cluster_worker_messages[i] = std::make_unique<Message>();
       init_message(cluster_worker_messages[i].get(), i);
     }
-    // if (group_send_cnt > group_send_interval) {
-    //   flush_grouped_messages();
-    // }
-  }
-
-  void flush_grouped_messages() {
-    for (std::size_t i = 0; i < group_cluster_worker_messages.size(); i++) {
-      auto message = group_cluster_worker_messages[i];
-      //message->set_put_to_out_queue_time(Time::now());
-      this->out_queue.push(message);
-    }
-    group_cluster_worker_messages.clear();
-    group_send_cnt = 0;
   }
 
   int partition_owner_worker_id_on_a_node(int partition_id) const {
     auto nth_partition_on_master_coord = partition_id / this->partitioner->num_coordinator_for_one_replica();
+    if (is_replica_worker == false) {
+      DCHECK(this->partitioner->num_coordinator_for_one_replica() == this->hash_partitioner->num_coordinator_for_one_replica());
+    }
     auto node_worker_id_this_partition_belongs_to = nth_partition_on_master_coord % this->context.worker_num; // A worker could handle more than 1 partition
     return node_worker_id_this_partition_belongs_to;
   }
 
   int partition_owner_cluster_coordinator(int partition_id, std::size_t ith_replica) {
-    return this->partitioner->get_ith_replica_coordinator(partition_id, ith_replica);
+    auto ret = this->partitioner->get_ith_replica_coordinator(partition_id, ith_replica);
+    if (is_replica_worker == false && ith_replica == 0) {
+      DCHECK(ret == this->hash_partitioner->get_ith_replica_coordinator(partition_id, ith_replica));
+    }
+
+    return ret;
   }
 
   int partition_owner_cluster_worker(int partition_id, std::size_t ith_replica) const {
     auto coord_id = this->partitioner->get_ith_replica_coordinator(partition_id, ith_replica);
+    if (is_replica_worker == false && ith_replica == 0) {
+      DCHECK(coord_id == hash_partitioner->get_ith_replica_coordinator(partition_id, ith_replica));
+    }
     auto cluster_worker_id_starts_at_this_node = coord_id * this->context.worker_num;
 
     auto ret = cluster_worker_id_starts_at_this_node + partition_owner_worker_id_on_a_node(partition_id);
@@ -3038,7 +2980,6 @@ protected:
     int dest_worker_id = cluster_worker_id_to_worker_id_on_a_node(dest_cluster_worker_id);
     message->set_worker_id(dest_worker_id);
     message->set_source_cluster_worker_id(this_cluster_worker_id);
-    message->set_message_gen_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
   }
 };
 } // namespace star

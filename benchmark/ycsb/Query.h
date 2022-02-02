@@ -17,7 +17,8 @@ template <std::size_t N> struct YCSBQuery {
   bool UPDATE[N];
   bool cross_partition;
   int parts[5];
-  int granules[5];
+  int granules[5][10];
+  int part_granule_count[5];
   int num_parts = 0;
 
   int32_t get_part(int i) {
@@ -25,9 +26,14 @@ template <std::size_t N> struct YCSBQuery {
     return parts[i];
   }
 
-  int32_t get_granule(int i) {
+  int32_t get_part_granule_count(int i) {
+    return part_granule_count[i];
+  }
+
+  int32_t get_granule(int i, int j) {
     DCHECK(i < num_parts);
-    return granules[i];
+    DCHECK(j < part_granule_count[i]);
+    return granules[i][j];
   }
 
   int number_of_parts() {
@@ -43,7 +49,7 @@ public:
     query.cross_partition = false;
     query.num_parts = 1;
     query.parts[0] = partitionID;
-    query.granules[0] = granuleID;
+    query.part_granule_count[0] = 0;
     int readOnly = random.uniform_dist(1, 100);
     int crossPartition = random.uniform_dist(1, 100);
     for (auto i = 0u; i < N; i++) {
@@ -68,12 +74,15 @@ public:
         retry = false;
 
         if (context.isUniform) {
-          key = random.uniform_dist(
-              0, static_cast<int>(context.keysPerGranule) - 1);
+          // For the first key, we ensure that it will land in the granule specified by granuleID.
+          // This granule will be served as the coordinating granule
+          key = i == 0 ? random.uniform_dist(
+              0, static_cast<int>(context.keysPerGranule) - 1) : random.uniform_dist(
+              0, static_cast<int>(context.keysPerPartition) - 1);
         } else {
           key = Zipf::globalZipf().value(random.next_double());
         }
-
+        int this_partition_idx = 0;
         if (crossPartition <= context.crossPartitionProbability &&
             context.partition_num > 1) {
           if (query.num_parts == 1) {
@@ -82,41 +91,47 @@ public:
               if (query.num_parts >= (int)context.partition_num)
                 break;
               int32_t pid = random.uniform_dist(0, context.partition_num - 1);
-              int32_t gid = random.uniform_dist(0, context.granules_per_partition - 1);
               do {
                 bool good = true;
                 for (int k = 0; k < j; ++k) {
-                  if (query.parts[k] == pid && query.granules[k] == gid) {
+                  if (query.parts[k] == pid) {
                     good = false;
                   }
                 }
-                // if (partitioner.has_master_partition(pid)) // We want a partition that is not on this node.
-                //   good = false;
                 if (good == true)
                   break;
                 pid =  random.uniform_dist(0, context.partition_num - 1);
-                gid = random.uniform_dist(0, context.granules_per_partition - 1);
               } while(true);
               query.parts[query.num_parts] = pid;
-              query.granules[query.num_parts] = gid;
+              query.part_granule_count[query.num_parts] = 0;
               query.num_parts++;
             }
           }
           auto newPartitionID = query.parts[i % query.num_parts];
-          auto newGranuleID = query.granules[i % query.num_parts];
-          // while (newPartitionID == (int32_t)partitionID) {
-          //   newPartitionID = query.parts[random.uniform_dist(0, query.num_parts - 1)];
-          // }
-          query.Y_KEY[i] = context.getGlobalKeyID(key, newPartitionID, newGranuleID);
+          query.Y_KEY[i] = i == 0 ? context.getGlobalKeyID(key, newPartitionID, granuleID) : context.getGlobalKeyID(key, newPartitionID);
           query.cross_partition = true;
+          this_partition_idx = i % query.num_parts;
         } else {
-          query.Y_KEY[i] = context.getGlobalKeyID(key, partitionID, granuleID);
+          query.Y_KEY[i] = i == 0 ? context.getGlobalKeyID(key, partitionID, granuleID) : context.getGlobalKeyID(key, partitionID);
         }
 
         for (auto k = 0u; k < i; k++) {
           if (query.Y_KEY[k] == query.Y_KEY[i]) {
             retry = true;
             break;
+          }
+        }
+        if (retry == false) {
+          auto granuleId = (int)context.getGranule(query.Y_KEY[i]);
+          bool good = true;
+          for (int32_t k = 0; k < query.part_granule_count[this_partition_idx]; ++k) {
+            if (query.granules[this_partition_idx][k] == granuleId) {
+              good = false;
+              break;
+            }
+          }
+          if (good == true) {
+            query.granules[this_partition_idx][query.part_granule_count[this_partition_idx]++] = granuleId;
           }
         }
       } while (retry);

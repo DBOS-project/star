@@ -324,6 +324,7 @@ public:
   uint64_t gen_time;
   uint64_t put_to_in_queue_time;
   uint64_t put_to_out_queue_time;
+  int ref_cnt = 0;
 public:
   static constexpr uint32_t get_prefix_size() {
     return sizeof(header_type) + sizeof(deadbeef_type) + sizeof(source_cluster_worker_id_type) + sizeof(transaction_id_type) + sizeof(uint64_t) * 4;

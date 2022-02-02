@@ -51,7 +51,7 @@ DEFINE_bool(aria_si, false, "aria snapshot isolation");
 DEFINE_int32(stragglers_per_batch, 0, "# stragglers in a batch");
 DEFINE_int32(stragglers_num_txn_len, 10, "# straggler transaction length types"); 
 DEFINE_int32(stragglers_partition, -1, "straggler partition");
-
+DEFINE_bool(lotus_async_repl, false, "async replication");
 DEFINE_double(stragglers_zipf_factor, 0, "straggler zipfian factor");
 DEFINE_int32(sender_group_nop_count, 40000, "# nop insts to executes during TCP sender message grouping");
 DEFINE_int32(granule_count, 1, "# granules in a partition");
@@ -104,5 +104,6 @@ DEFINE_int32(granule_count, 1, "# granules in a partition");
   context.sender_group_nop_count = FLAGS_sender_group_nop_count;               \
   context.straggler_zipf_factor = FLAGS_stragglers_zipf_factor;                \
   context.straggler_num_txn_len = FLAGS_stragglers_num_txn_len;                \
-  context.granules_per_partition = FLAGS_granule_count;                         \
+  context.granules_per_partition = FLAGS_granule_count;                        \
+  context.lotus_async_repl = FLAGS_lotus_async_repl;                           \
   context.set_star_partitioner();

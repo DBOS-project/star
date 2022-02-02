@@ -68,12 +68,19 @@ public:
     int64_t transaction_id;
     uint64_t straggler_wait_time;
 
-    //std::vector<int32_t> partitions;
+    // std::vector<int32_t> partitions_from_command, granules_from_command;
+    // int32_t granule_count = 0;
     decoder >> transaction_id >> straggler_wait_time >> ith_replica >> seed >> partition_id >> granule_id >> partition_count;
     // for (int32_t i = 0; i < partition_count; ++i){
     //   int32_t p;
     //   decoder >> p;
-    //   partitions.push_back(p);
+    //   partitions_from_command.push_back(p);
+    // }
+    // decoder >> granule_count;
+    // for (int32_t i = 0; i < granule_count; ++i){
+    //   int32_t g;
+    //   decoder >> g;
+    //   granules_from_command.push_back(g);
     // }
     RandomType random;
     random.set_seed(seed);
@@ -83,9 +90,19 @@ public:
             coordinator_id, partition_id, granule_id, db, context, random, partitioner, ith_replica);
     p->txn_random_seed_start = seed;
     DCHECK(p->get_partition_count() == partition_count);
+    // std::vector<int32_t> partitions, granules;
     // for (int32_t i = 0; i < partition_count; ++i){
-    //   DCHECK(partitions[i] == p->get_partition(i));
+    //   partitions.push_back(p->get_partition(i));
+    //   for (int32_t j = 0; j < p->get_partition_granule_count(i); ++j) {
+    //     granules.push_back(p->get_granule(i, j));
+    //   }
     // }
+    // sort(granules.begin(), granules.end());
+    // sort(partitions.begin(), partitions.end());
+    // sort(partitions_from_command.begin(), partitions_from_command.end());
+    // sort(granules_from_command.begin(), granules_from_command.end());
+    // DCHECK(granules == granules_from_command);
+    // DCHECK(partitions == partitions_from_command);
     p->transaction_id = transaction_id;
     p->straggler_wait_time = straggler_wait_time;
     return p;

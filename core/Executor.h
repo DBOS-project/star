@@ -32,7 +32,6 @@ public:
   using MessageHandlerType = typename ProtocolType::MessageHandlerType;
 
   using StorageType = typename WorkloadType::StorageType;
-
   Executor(std::size_t coordinator_id, std::size_t id, DatabaseType &db,
            const ContextType &context, std::atomic<uint32_t> &worker_status,
            std::atomic<uint32_t> &n_complete_workers,
@@ -370,7 +369,9 @@ public:
       std::function<void(MessagePiece, Message &, ITable &, TransactionType *)>>
       messageHandlers;
   std::vector<std::size_t> message_stats, message_sizes;
-  LockfreeQueue<Message *> in_queue, out_queue, master_unlock_in_queue;
+  LockfreeQueue<Message *> in_queue;
+  char pad[64];
+  LockfreeQueue<Message *> out_queue;
 
   WALLogger * logger = nullptr;
   void record_txn_breakdown_stats(TransactionType & txn) {

@@ -27,12 +27,9 @@ public:
   static bool tested;
   static void unit_testing(Context * ctx) {
     for (std::size_t i = 0; i < ctx->partition_num; ++i) {
-      for (std::size_t j = 0; j < ctx->granules_per_partition; ++j) {
-        for (std::size_t k = 0; k < ctx->keysPerGranule; ++k) {
-          auto complete_key = ctx->getGlobalKeyID(k, i, j);
-          CHECK(ctx->getPartitionID(complete_key) == i);
-          CHECK(ctx->getGranule(complete_key) == j);
-        }
+      for (std::size_t k = 0; k < ctx->keysPerGranule; ++k) {
+        auto complete_key = ctx->getGlobalKeyID(k, i);
+        CHECK(ctx->getPartitionID(complete_key) == i);
       }
     }
   }
@@ -57,6 +54,19 @@ public:
       ret_key = (key * granules_per_partition + granuleID) * partition_num + partitionID;
     } else {
       ret_key = partitionID * keysPerPartition + granuleID * keysPerGranule + key;
+    }
+    CHECK(ret_key >= 0 && ret_key < partition_num * keysPerPartition);
+    return ret_key;
+  }
+
+  std::size_t getGlobalKeyID(std::size_t key, std::size_t partitionID) const {
+    DCHECK(key >= 0 && key < keysPerPartition && partitionID >= 0 &&
+           partitionID < partition_num);
+    std::size_t ret_key;
+    if (strategy == PartitionStrategy::ROUND_ROBIN) {
+      ret_key = key * partition_num + partitionID;
+    } else {
+      ret_key = partitionID * keysPerPartition + key;
     }
     CHECK(ret_key >= 0 && ret_key < partition_num * keysPerPartition);
     return ret_key;

@@ -169,45 +169,6 @@ public:
 
       process_request();
 
-      // if null, generate a new transaction, on this node.
-      // else only reset the query
-
-      if (transactions[i] == nullptr || i >= n_abort) {
-        auto partition_id = get_partition_id();
-        transactions[i] =
-            workload.next_transaction(context, partition_id, this->id);
-        auto total_batch_size = context.coordinator_num * context.batch_size;
-        if (context.stragglers_per_batch) {
-          auto v = random.uniform_dist(1, total_batch_size);
-          if (v <= (uint64_t)context.stragglers_per_batch) {
-            transactions[i]->straggler_wait_time = context.stragglers_total_wait_time / context.stragglers_per_batch;
-          }
-        }
-        if (context.straggler_zipf_factor > 0) {
-          int length_type = star::Zipf::globalZipfForStraggler().value(random.next_double());
-          transactions[i]->straggler_wait_time = transaction_lengths[length_type];
-          transaction_lengths_count[length_type]++;
-        }
-        txn_command_data += transactions[i]->serialize(0);
-      } else {
-        transactions[i]->reset();
-      }
-    }
-    uint64_t commit_persistence_time = 0;
-    {
-      ScopedTimer t2([&, this](uint64_t us) {
-        commit_persistence_time = us;
-      });
-      this->logger->write(txn_command_data.data(), txn_command_data.size(), true);
-    }
-    for (auto i = id; i < transactions.size(); i += context.worker_num) {
-      transactions[i]->record_commit_persistence_time(commit_persistence_time);
-    }
-
-    for (auto i = id; i < transactions.size(); i += context.worker_num) {
-
-      process_request();
-
       transactions[i]->set_epoch(cur_epoch);
       transactions[i]->set_id(i * context.coordinator_num + coordinator_id +
                               1); // tid starts from 1

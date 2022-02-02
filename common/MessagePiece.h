@@ -8,6 +8,7 @@
 
 namespace star {
 
+class Message;
 /*
  * MessagePiece header format
  *
@@ -22,10 +23,12 @@ class MessagePiece {
 public:
   using header_type = uint64_t;
 
-  MessagePiece(const MessagePiece &messagePiece)
-      : stringPiece(messagePiece.stringPiece) {}
+  MessagePiece(){}
 
-  MessagePiece(const StringPiece &stringPiece) : stringPiece(stringPiece) {}
+  MessagePiece(const MessagePiece &messagePiece)
+      : stringPiece(messagePiece.stringPiece), message_ptr(messagePiece.message_ptr) {}
+
+  MessagePiece(const StringPiece &stringPiece) : stringPiece(stringPiece), message_ptr(nullptr) {}
 
   uint32_t get_message_type() const {
     return (get_header() >> MESSAGE_TYPE_OFFSET) & MESSAGE_TYPE_MASK;
@@ -67,7 +70,7 @@ private:
 
 public:
   StringPiece stringPiece;
-
+  Message* message_ptr = nullptr;
 public:
   static uint32_t get_header_size() { return sizeof(header_type); }
 

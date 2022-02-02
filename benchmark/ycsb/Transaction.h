@@ -39,11 +39,11 @@ public:
 
   virtual int32_t get_partition_count() override { return query.number_of_parts(); }
 
-  virtual int32_t get_partition(int i) override { return query.get_part(i); }
+  virtual int32_t get_partition(int ith_partition) override { return query.get_part(ith_partition); }
 
-  virtual int32_t get_partition_granule_count(int i) override { return 1; }
+  virtual int32_t get_partition_granule_count(int ith_partition) override { return query.get_part_granule_count(ith_partition); }
   // A ycsb transaction accesses only one granule per partition.
-  virtual int32_t get_granule(int ith_partition, int j) override { return query.get_granule(ith_partition); }
+  virtual int32_t get_granule(int ith_partition, int j) override { return query.get_granule(ith_partition, j); }
 
   virtual bool is_single_partition() override { return query.number_of_parts() == 1; }
 
@@ -54,8 +54,15 @@ public:
     Encoder encoder(res);
     encoder << this->transaction_id << this->straggler_wait_time << ith_replica << this->txn_random_seed_start << partition_id << granule_id;
     encoder << get_partition_count();
+    // int granules_count = 0;
+    // for (int32_t i = 0; i < get_partition_count(); ++i)
+    //   granules_count += get_partition_granule_count(i);
     for (int32_t i = 0; i < get_partition_count(); ++i)
       encoder << get_partition(i);
+    // encoder << granules_count;
+    // for (int32_t i = 0; i < get_partition_count(); ++i)
+    //   for (int32_t j = 0; j < get_partition_granule_count(i); ++j)
+    //     encoder << get_granule(i, j);
     return res;
   }
 
