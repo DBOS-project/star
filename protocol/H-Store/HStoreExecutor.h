@@ -862,7 +862,7 @@ public:
         DCHECK(sp_txn->ith_replica > 0);
         auto & cmd = cmds[i];
         cmds[i].txn = sp_txn;
-        cmds[i].txn->no_in_group = replcia_txn_group_start_no++;
+        //cmds[i].txn->no_in_group = replcia_txn_group_start_no++;
         //cmds[i].queue_ts = std::chrono::steady_clock::now();
         q.push_back(cmds[i]);
         replay_candidate_granules.push_back(lock_id);
@@ -911,7 +911,7 @@ public:
             }
           }
         }
-        cmds[i].txn->no_in_group = replcia_txn_group_start_no++;
+        //cmds[i].txn->no_in_group = replcia_txn_group_start_no++;
         DCHECK(first_lock_id_by_this_worker != -1);
         cmds[i].txn->replay_queue_lock_id = first_lock_id_by_this_worker;
         get_partition_cmd_queue(first_lock_id_by_this_worker).push_back(cmds[i]);
@@ -1568,6 +1568,11 @@ public:
     //   encoder.write_n_bytes(command_buffer[i].command_data.data(), command_buffer[i].command_data.size());
     // }
     command_buffer_data.clear();
+    if (replica_num > 1 && is_replica_worker == false && command_buffer_outgoing_data.empty() == false) {
+      if (this->context.lotus_async_repl == false) {
+        send_commands_to_replica();
+      }
+    }
     if (continue_process_request) {
       this->logger->write(data.data(), data.size(), true, [&, this](){handle_requests(false);});
     } else {
@@ -2632,13 +2637,13 @@ public:
     // if (should_replay_commands && this->partitioner->replica_num() > 1 && is_replica_worker) {
     //   replay_all_sp_commands();
     // }
-    // if (rtt_request_sent == false && ++rtt_cnt % 1000 == 0) {
-    //   rtt_request_sent_time = std::chrono::steady_clock::now();
-    //   cluster_worker_messages[rtt_test_target_cluster_worker]->set_transaction_id(0);
-    //   HStoreMessageFactory::new_rtt_message(*cluster_worker_messages[rtt_test_target_cluster_worker], is_replica_worker, this_cluster_worker_id);
-    //   flush_messages();
-    //   rtt_request_sent = true;
-    // }
+    if (rtt_request_sent == false && ++rtt_cnt % 1000 == 0) {
+      rtt_request_sent_time = std::chrono::steady_clock::now();
+      cluster_worker_messages[rtt_test_target_cluster_worker]->set_transaction_id(0);
+      HStoreMessageFactory::new_rtt_message(*cluster_worker_messages[rtt_test_target_cluster_worker], is_replica_worker, this_cluster_worker_id);
+      flush_messages();
+      rtt_request_sent = true;
+    }
     if (is_replica_worker == false && replica_num > 1) {
       if (this->context.lotus_async_repl == false) {
         send_commands_to_replica(true);

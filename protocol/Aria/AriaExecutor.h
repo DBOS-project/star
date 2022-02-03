@@ -102,8 +102,25 @@ public:
           LOG(INFO) << "AriaExecutor " << id << " exits. ";
           return;
         }
-      } while (status != ExecutorStatus::Aria_READ);
+      } while (status != ExecutorStatus::Aria_COLLECT_XACT);
 
+      n_started_workers.fetch_add(1);
+      generate_transactions();
+      n_complete_workers.fetch_add(1);
+
+      while (static_cast<ExecutorStatus>(worker_status.load()) ==
+              ExecutorStatus::Aria_COLLECT_XACT) {
+          process_request();
+      }
+      process_request();
+      n_complete_workers.fetch_add(1);
+
+      // wait till Aria_READ
+      while (static_cast<ExecutorStatus>(worker_status.load()) !=
+            ExecutorStatus::Aria_READ) {
+        std::this_thread::yield();
+      }
+    
       {
         ScopedTimer t2([&, this](uint64_t us) {
           this->execution_time.add(us);
@@ -158,10 +175,38 @@ public:
     return partition_id;
   }
 
+  void generate_transactions() {
+    auto n_abort = total_abort.load();
+    for (std::size_t i = id; i < transactions.size(); i += context.worker_num) {
+      // if null, generate a new transaction, on this node.
+      // else only reset the query
+
+      if (transactions[i] == nullptr || i >= n_abort) {
+        auto partition_id = get_partition_id();
+        transactions[i] =
+            workload.next_transaction(context, partition_id, this->id);
+        auto total_batch_size = context.coordinator_num * context.batch_size;
+        if (context.stragglers_per_batch) {
+          auto v = random.uniform_dist(1, total_batch_size);
+          if (v <= (uint64_t)context.stragglers_per_batch) {
+            transactions[i]->straggler_wait_time = context.stragglers_total_wait_time / context.stragglers_per_batch;
+          }
+        }
+        if (context.straggler_zipf_factor > 0) {
+          int length_type = star::Zipf::globalZipfForStraggler().value(random.next_double());
+          transactions[i]->straggler_wait_time = transaction_lengths[length_type];
+          transaction_lengths_count[length_type]++;
+        }
+      } else {
+        transactions[i]->reset();
+        transactions[i]->aria_aborted = true;
+      }
+    }
+  }
+
   void read_snapshot() {
     // load epoch
     auto cur_epoch = epoch.load();
-    auto n_abort = total_abort.load();
     std::size_t count = 0;
     std::string txn_command_data;
 

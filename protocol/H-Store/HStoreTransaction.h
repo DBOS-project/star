@@ -369,7 +369,7 @@ public:
   int abort_lock_owned_by_others = 0;
   int abort_lock_owned_by_no_one = 0;
   int abort_lock_queue_len_sum = 0;
-  int no_in_group = 0;
+  //int no_in_group = 0;
   uint64_t straggler_wait_time = 0;
   bool command_written = false;
 };

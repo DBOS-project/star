@@ -297,5 +297,6 @@ public:
   int64_t transaction_id = 0;
   std::size_t ith_replica;
   uint64_t straggler_wait_time = 0;
+  bool aria_aborted = false;
 };
 } // namespace aria

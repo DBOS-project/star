@@ -17,6 +17,7 @@ enum class ExecutorStatus {
   Execute,
   Kiva_READ,
   Kiva_COMMIT,
+  Aria_COLLECT_XACT,
   Aria_READ,
   Aria_COMMIT,
   AriaFB_READ,
