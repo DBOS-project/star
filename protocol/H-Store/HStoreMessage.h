@@ -27,7 +27,6 @@ struct TxnCommand {
   star::HStoreTransaction * txn;
   //std::vector<std::pair<int,int>> partitions;
   std::chrono::steady_clock::time_point queue_ts;
-  bool queue_head_processed = false;
 };
 
 enum class HStoreMessage {

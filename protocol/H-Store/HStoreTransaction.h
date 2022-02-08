@@ -372,5 +372,6 @@ public:
   //int no_in_group = 0;
   uint64_t straggler_wait_time = 0;
   bool command_written = false;
+  int granules_left_to_lock = 0;
 };
 } // namespace star

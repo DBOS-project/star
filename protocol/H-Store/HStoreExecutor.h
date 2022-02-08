@@ -168,6 +168,7 @@ public:
   std::vector<std::deque<TxnCommand>> granule_command_queues; // Commands against individual partition
   std::vector<bool> granule_command_queue_processing;
   std::vector<int> granule_to_cmd_queue_index;
+  std::deque<TransactionType*> mp_txns_candidate_for_execution;
   // Records the last command's position_in_log (TxnCommand.position_in_log) that got replayed
   std::vector<int64_t> granule_replayed_log_index; 
   std::vector<std::deque<MessagePiece>> granule_lock_request_queues;
@@ -902,10 +903,11 @@ public:
               cmd_mp.is_coordinator = false;
               cmd_mp.partition_id = partition_id;
               cmd_mp.granule_id = granule_id;
-              cmd_mp.position_in_log = -1;
+              cmd_mp.position_in_log = cmds[i].position_in_log;
               cmd_mp.is_mp = true;
               cmd_mp.command_data = "";
-              cmd_mp.txn = nullptr;
+              cmd_mp.txn = mp_txn;
+              mp_txn->granules_left_to_lock++;
               q.push_back(cmd_mp);
               replay_candidate_granules.push_back(lock_id);
             }
@@ -914,7 +916,7 @@ public:
         //cmds[i].txn->no_in_group = replcia_txn_group_start_no++;
         DCHECK(first_lock_id_by_this_worker != -1);
         cmds[i].txn->replay_queue_lock_id = first_lock_id_by_this_worker;
-        get_partition_cmd_queue(first_lock_id_by_this_worker).push_back(cmds[i]);
+        //get_partition_cmd_queue(first_lock_id_by_this_worker).push_back(cmds[i]);
         //auto now_time = std::chrono::steady_clock::now();
         // mp_arrival_interval.add(std::chrono::duration_cast<std::chrono::microseconds>(
         //     now_time - last_mp_arrival)
@@ -2062,6 +2064,20 @@ public:
       }
       if (this->context.lotus_async_repl) {
         //command_buffer_outgoing_data.clear();
+        // {
+        //   ScopedTimer t0([&, this](uint64_t us) {
+        //     commit_persistence_us = us;
+        //   });
+        //   DCHECK((int)workers_need_persist_cmd_buffer.size() == this->cluster_worker_num);
+        //   for (int i = 0; i < (int)workers_need_persist_cmd_buffer.size(); ++i) {
+        //     if (!workers_need_persist_cmd_buffer[i] || i == this_cluster_worker_id)
+        //       continue;
+        //     cluster_worker_messages[i]->set_transaction_id(txn_id);
+        //     MessageFactoryType::new_persist_cmd_buffer_message(*cluster_worker_messages[i], 0, this_cluster_worker_id);
+        //     sent_persist_cmd_buffer_requests++;
+        //   }
+        //   flush_messages();
+        // }
         send_commands_to_replica(true);
       }
     }
@@ -2153,7 +2169,6 @@ public:
       auto & cmd = q.front();
       if (cmd.is_coordinator == false) {
         //DCHECK(false);
-        DCHECK(cmd.txn == nullptr);
         auto partition_id = cmd.partition_id;
         auto granule_id = cmd.granule_id;
         auto lock_id = to_lock_id(partition_id, granule_id);
@@ -2169,19 +2184,16 @@ public:
           // cmd_stall_time.add(std::chrono::duration_cast<std::chrono::microseconds>(
           //     std::chrono::steady_clock::now() - cmd.queue_ts)
           //     .count());
+          if (cmd.txn != nullptr && --cmd.txn->granules_left_to_lock == 0) {
+            mp_txns_candidate_for_execution.push_back(cmd.txn);
+          }
           q.pop_front();
           // auto & q2 = get_granule_lock_request_queue(lock_id);
           // if (q2.empty() == false) {
           //   granule_lock_reqeust_candidates.push_back(lock_id);
           // }
         } else {
-          // if (cmd.queue_head_processed == false) {
-          //   cmd_queue_time.add(std::chrono::duration_cast<std::chrono::microseconds>(
-          //     std::chrono::steady_clock::now() - cmd.queue_ts)
-          //     .count());
-          //   cmd.queue_ts = std::chrono::steady_clock::now();
-          //   cmd.queue_head_processed = true;
-          // }
+
           // The partition is being locked by front transaction executing, try next time.
           //replay_candidate_granules.push_back(lock_id);
           break;
@@ -2245,13 +2257,6 @@ public:
     return replay_sp_queue_commands(granule_to_cmd_queue_index[partition]);
   }
 
-  void replay_all_sp_commands() {
-    for (auto p : managed_partitions) {
-      if (replay_sp_commands(p) == true) {
-        handle_requests(false);
-      }
-    }
-  }
   uint64_t cross_node_mp_txn = 0;
   uint64_t cross_worker_mp_txn = 0;
   uint64_t single_worker_mp_txn = 0;
@@ -2262,6 +2267,7 @@ public:
     if (granule_command_queue_processing[i])
         return;
     replay_sp_queue_commands(i);
+    return; 
     auto & q = granule_command_queues[i];
     if (q.empty())
       return;
@@ -2289,6 +2295,76 @@ public:
   }
 
   void replay_loop() {
+    // auto complete_mp = [&, this](TransactionType* mp_txn) {
+    //   DCHECK(active_txns.count(mp_txn->transaction_id) == 0);
+    //   //DCHECK(mp_txn->is_single_partition() == false);
+    //   auto lock_id = mp_txn->replay_queue_lock_id;
+    //   auto replay_queue_idx = granule_to_cmd_queue_index[mp_txn->replay_queue_lock_id];
+    //   DCHECK(granule_command_queue_processing[replay_queue_idx]);
+    //   if (mp_txn->finished_commit_phase && (mp_txn->abort_lock == false || mp_txn->abort_no_retry)) {
+    //     DCHECK(mp_txn->release_lock_called);
+    //     auto & q = granule_command_queues[replay_queue_idx];
+    //     auto cmd = q.front();
+    //     DCHECK(mp_txn == cmd.txn);
+    //     auto latency =
+    //     std::chrono::duration_cast<std::chrono::microseconds>(
+    //         std::chrono::steady_clock::now() - mp_txn->startTime)
+    //         .count();
+    //     this->percentile.add(latency);
+    //     this->dist_latency.add(latency);
+    //     DCHECK(mp_txn->tries >= 1);
+    //     this->record_txn_breakdown_stats(*mp_txn);
+    //     DCHECK(get_partition_last_replayed_position_in_log(mp_txn->replay_queue_lock_id) <= cmd.position_in_log);
+    //     get_partition_last_replayed_position_in_log(mp_txn->replay_queue_lock_id) = cmd.position_in_log;
+    //     q.pop_front();
+    //     // auto mp_t = mp_type(mp_txn);
+    //     // if (cnt > 200000 && (latency > 2000)) {
+    //     //   straggler_count++;
+    //     //   straggler_mp_debug_string += tid_to_string(mp_txn->transaction_id) + " mp_t " + std::to_string(mp_t) + " latency " + std::to_string(latency) + " tries " + std::to_string(mp_txn->tries) + " abort_lock_queue_len_sum " + std::to_string(mp_txn->abort_lock_queue_len_sum) + " self queue length " + std::to_string(q.size()) + " no_in_group " + std::to_string(mp_txn->no_in_group) + " abort_lock_owned_by_others "  + std::to_string(mp_txn->abort_lock_owned_by_others) + " abort_lock_owned_by_no_one "  + std::to_string(mp_txn->abort_lock_owned_by_no_one) + "\n";
+    //     // }
+    //     granule_command_queue_processing[replay_queue_idx] = false;
+    //     tries_latency[std::min((int)mp_txn->tries, (int)tries_latency.size() - 1)].add(latency);
+    //     // tries_prepare_time[std::min((int)mp_txn->tries, (int)tries_prepare_time.size() - 1)].add(mp_txn->get_commit_prepare_time());
+    //     // tries_lock_stall_time[std::min((int)mp_txn->tries, (int)tries_lock_stall_time.size() - 1)].add(mp_txn->get_stall_time());
+    //     // tries_execution_done_latency[std::min((int)mp_txn->tries, (int)tries_execution_done_latency.size() - 1)].add(mp_txn->execution_done_latency);
+    //     // tries_commit_initiated_latency[std::min((int)mp_txn->tries, (int)tries_commit_initiated_latency.size() - 1)].add(mp_txn->commit_initiated_latency);
+    //     // tries_first_lock_request_arrive_latency[std::min((int)mp_txn->tries, (int)tries_first_lock_request_arrive_latency.size() - 1)].add(mp_txn->first_lock_request_arrive_latency);
+    //     // tries_first_lock_request_processed_latency[std::min((int)mp_txn->tries, (int)tries_first_lock_request_processed_latency.size() - 1)].add(mp_txn->first_lock_request_processed_latency);
+    //     // tries_first_lock_response_latency[std::min((int)mp_txn->tries, (int)tries_first_lock_response_latency.size() - 1)].add(mp_txn->first_lock_response_latency);
+    //     delete mp_txn;
+
+    //     if (q.empty() == false) {
+    //       replay_candidate_granules.push_back(lock_id);
+    //     }
+
+    //     auto & q2 = get_granule_lock_request_queue(lock_id);
+    //     if (q2.empty() == false) {
+    //       granule_lock_reqeust_candidates.push_back(lock_id);
+    //     }
+    //   } else {
+    //     granule_command_queue_processing[replay_queue_idx] = false;
+    //     auto ltc =
+    //     std::chrono::duration_cast<std::chrono::microseconds>(
+    //         std::chrono::steady_clock::now() - mp_txn->startTime)
+    //         .count();
+    //     DCHECK(ltc != 0);
+    //     mp_txn->set_stall_time(ltc);
+    //     for (int i = 0; i < mp_txn->get_partition_count(); ++i) {
+    //       auto p = mp_txn->get_partition(i);
+    //       if (partition_owner_cluster_worker(p, 1) == this_cluster_worker_id) {
+    //         auto granule_count = mp_txn->get_partition_granule_count(i);
+    //         for (int j = 0; j < granule_count; ++j) {
+    //           auto granule_id = mp_txn->get_granule(i, j);
+    //           auto lock_id = to_lock_id(p, granule_id);
+    //           replay_candidate_granules.push_back(lock_id);
+    //         }
+    //       }
+    //     }
+    //   }
+      
+    //   --active_mps;
+    // };
+
     auto complete_mp = [&, this](TransactionType* mp_txn) {
       DCHECK(active_txns.count(mp_txn->transaction_id) == 0);
       //DCHECK(mp_txn->is_single_partition() == false);
@@ -2297,9 +2373,6 @@ public:
       DCHECK(granule_command_queue_processing[replay_queue_idx]);
       if (mp_txn->finished_commit_phase && (mp_txn->abort_lock == false || mp_txn->abort_no_retry)) {
         DCHECK(mp_txn->release_lock_called);
-        auto & q = granule_command_queues[replay_queue_idx];
-        auto cmd = q.front();
-        DCHECK(mp_txn == cmd.txn);
         auto latency =
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - mp_txn->startTime)
@@ -2308,9 +2381,6 @@ public:
         this->dist_latency.add(latency);
         DCHECK(mp_txn->tries >= 1);
         this->record_txn_breakdown_stats(*mp_txn);
-        DCHECK(get_partition_last_replayed_position_in_log(mp_txn->replay_queue_lock_id) <= cmd.position_in_log);
-        get_partition_last_replayed_position_in_log(mp_txn->replay_queue_lock_id) = cmd.position_in_log;
-        q.pop_front();
         // auto mp_t = mp_type(mp_txn);
         // if (cnt > 200000 && (latency > 2000)) {
         //   straggler_count++;
@@ -2326,34 +2396,8 @@ public:
         // tries_first_lock_request_processed_latency[std::min((int)mp_txn->tries, (int)tries_first_lock_request_processed_latency.size() - 1)].add(mp_txn->first_lock_request_processed_latency);
         // tries_first_lock_response_latency[std::min((int)mp_txn->tries, (int)tries_first_lock_response_latency.size() - 1)].add(mp_txn->first_lock_response_latency);
         delete mp_txn;
-
-        if (q.empty() == false) {
-          replay_candidate_granules.push_back(lock_id);
-        }
-
-        auto & q2 = get_granule_lock_request_queue(lock_id);
-        if (q2.empty() == false) {
-          granule_lock_reqeust_candidates.push_back(lock_id);
-        }
       } else {
-        granule_command_queue_processing[replay_queue_idx] = false;
-        auto ltc =
-        std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - mp_txn->startTime)
-            .count();
-        DCHECK(ltc != 0);
-        mp_txn->set_stall_time(ltc);
-        for (int i = 0; i < mp_txn->get_partition_count(); ++i) {
-          auto p = mp_txn->get_partition(i);
-          if (partition_owner_cluster_worker(p, 1) == this_cluster_worker_id) {
-            auto granule_count = mp_txn->get_partition_granule_count(i);
-            for (int j = 0; j < granule_count; ++j) {
-              auto granule_id = mp_txn->get_granule(i, j);
-              auto lock_id = to_lock_id(p, granule_id);
-              replay_candidate_granules.push_back(lock_id);
-            }
-          }
-        }
+        DCHECK(false);
       }
       
       --active_mps;
@@ -2364,6 +2408,17 @@ public:
       int partition = replay_candidate_granules.front();
       replay_candidate_granules.pop_front();
       replay_commands_in_partition(partition);
+      auto sz = handle_requests(false);
+      sz += process_to_commit(async_txns_to_commit, complete_mp);
+    }
+    while (mp_txns_candidate_for_execution.empty() == false) {
+      auto mp_txn = mp_txns_candidate_for_execution.front();
+      mp_txns_candidate_for_execution.pop_front();
+      auto replay_queue_idx = granule_to_cmd_queue_index[mp_txn->replay_queue_lock_id];
+      DCHECK(granule_command_queue_processing[replay_queue_idx] == false);
+      granule_command_queue_processing[replay_queue_idx] = true;
+      ++active_mps;
+      process_execution_async_single_mp_txn(mp_txn);
       auto sz = handle_requests(false);
       sz += process_to_commit(async_txns_to_commit, complete_mp);
     }
@@ -2466,6 +2521,7 @@ public:
     TransactionType * txn = nullptr;
     int msg_count = 0;
     std::size_t size = 0;
+    bool persist_cmd_buffer_called = false;
     while (!this->in_queue.empty()) {
       ++size;
       std::unique_ptr<Message> message(this->in_queue.front());
@@ -2578,6 +2634,7 @@ public:
           persist_cmd_buffer_request_handler(*message, messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()], 
                                                 *table, 
                                                 txn);
+          persist_cmd_buffer_called = true;
         } else if (type == (int)HStoreMessage::PERSIST_CMD_BUFFER_RESPONSE) {
           persist_cmd_buffer_response_handler(*message, messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()], 
                                                 *table, 
@@ -2634,16 +2691,13 @@ public:
       }
     }
 
-    // if (should_replay_commands && this->partitioner->replica_num() > 1 && is_replica_worker) {
-    //   replay_all_sp_commands();
+    // if (rtt_request_sent == false && ++rtt_cnt % 1000 == 0) {
+    //   rtt_request_sent_time = std::chrono::steady_clock::now();
+    //   cluster_worker_messages[rtt_test_target_cluster_worker]->set_transaction_id(0);
+    //   HStoreMessageFactory::new_rtt_message(*cluster_worker_messages[rtt_test_target_cluster_worker], is_replica_worker, this_cluster_worker_id);
+    //   flush_messages();
+    //   rtt_request_sent = true;
     // }
-    if (rtt_request_sent == false && ++rtt_cnt % 1000 == 0) {
-      rtt_request_sent_time = std::chrono::steady_clock::now();
-      cluster_worker_messages[rtt_test_target_cluster_worker]->set_transaction_id(0);
-      HStoreMessageFactory::new_rtt_message(*cluster_worker_messages[rtt_test_target_cluster_worker], is_replica_worker, this_cluster_worker_id);
-      flush_messages();
-      rtt_request_sent = true;
-    }
     if (is_replica_worker == false && replica_num > 1) {
       if (this->context.lotus_async_repl == false) {
         send_commands_to_replica(true);
@@ -2663,6 +2717,11 @@ public:
 
     if (replica_num > 1 && is_replica_worker) {
       replay_loop();
+    }
+    if (replica_num > 1 && is_replica_worker == false && command_buffer_outgoing_data.empty() == false) {
+      if (this->context.lotus_async_repl == true) {
+        send_commands_to_replica();
+      }
     }
   }
   
