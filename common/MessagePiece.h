@@ -83,7 +83,7 @@ public:
     DCHECK(message_length < (1ull << 24));
     DCHECK(table_id < (1ull << 5));
     DCHECK(granule_id < (1ull << 12));
-    DCHECK(partition_id < (1ull << 20));
+    DCHECK(partition_id < (1ull << 12));
 
     return (((uint64_t)message_type) << MESSAGE_TYPE_OFFSET) +
            (((uint64_t)message_length) << MESSAGE_LENGTH_OFFSET) +
@@ -98,14 +98,14 @@ public:
 
 public:
   static constexpr uint64_t MESSAGE_TYPE_MASK = 0x7f;
-  static constexpr uint64_t MESSAGE_TYPE_OFFSET = 25+24+8;
+  static constexpr uint64_t MESSAGE_TYPE_OFFSET = 24 + 5 + 24;
   static constexpr uint64_t MESSAGE_LENGTH_MASK = 0xfffff;
-  static constexpr uint64_t MESSAGE_LENGTH_OFFSET = 13+24;
+  static constexpr uint64_t MESSAGE_LENGTH_OFFSET = 24 + 5;
   static constexpr uint64_t TABLE_ID_MASK = 0x1f;
-  static constexpr uint64_t TABLE_ID_OFFSET = 32;
+  static constexpr uint64_t TABLE_ID_OFFSET = 24;
   static constexpr uint64_t GRANULE_ID_MASK = 0xfff;
-  static constexpr uint64_t GRANULE_ID_OFFSET = 20;
-  static constexpr uint64_t PARTITION_ID_MASK = 0xfffff;
+  static constexpr uint64_t GRANULE_ID_OFFSET = 12;
+  static constexpr uint64_t PARTITION_ID_MASK = 0xfff;
   static constexpr uint64_t PARTITION_ID_OFFSET = 0;
 };
 } // namespace star
