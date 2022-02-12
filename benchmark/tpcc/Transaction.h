@@ -24,7 +24,9 @@ static thread_local std::vector<Storage*> storage_cache;
 
 Storage* get_storage() {
   if (storage_cache.empty()) {
-    return new Storage();
+    for (size_t i = 0; i < 10; ++i) {
+      storage_cache.push_back(new Storage());
+    }
   }
   Storage * last = storage_cache.back();
   storage_cache.pop_back();

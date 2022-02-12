@@ -80,7 +80,7 @@ public:
                                                  std::size_t partition_id,
                                                  std::size_t granule_id = 0) {
     DCHECK(message_type < (1ull << 7));
-    DCHECK(message_length < (1ull << 24));
+    DCHECK(message_length < (1ull << 20));
     DCHECK(table_id < (1ull << 5));
     DCHECK(granule_id < (1ull << 12));
     DCHECK(partition_id < (1ull << 12));

@@ -306,6 +306,7 @@ public:
       if (dest_node != this->coordinator_id) {
         messages_by_coordinator[dest_node].push_back(raw_message);
       } else {
+        //DCHECK(false);
         DCHECK(raw_message->get_message_length() == raw_message->data.length());
         DCHECK(raw_message->get_dest_node_id() == this->coordinator_id);
         internal_network_size += raw_message->get_message_length();

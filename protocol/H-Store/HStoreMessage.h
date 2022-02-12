@@ -16,17 +16,18 @@
 
 namespace star {
 
-struct TxnCommand {
+
+struct TxnCommandBase {
   int64_t tid; 
+  int64_t position_in_log;
+  star::HStoreTransaction * txn;
   int partition_id;
   int granule_id = 0;
   bool is_coordinator;
   bool is_mp;
+};
+struct TxnCommand: public TxnCommandBase {
   std::string command_data;
-  int64_t position_in_log;
-  star::HStoreTransaction * txn;
-  //std::vector<std::pair<int,int>> partitions;
-  std::chrono::steady_clock::time_point queue_ts;
 };
 
 enum class HStoreMessage {

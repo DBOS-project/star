@@ -154,7 +154,7 @@ public:
     }
 
     // run timeToRun seconds
-    auto timeToRun = 30, warmup = 15, cooldown = 0;
+    auto timeToRun = 30, warmup = 5, cooldown = 0;
     auto startTime = std::chrono::steady_clock::now();
 
     uint64_t total_commit = 0, total_abort_no_retry = 0, total_abort_lock = 0,
@@ -377,7 +377,7 @@ public:
     };
 
     double sum = value;
-
+    double replica_sum = 0;
     if (id == 0) {
       auto partitioner = PartitionerFactory::create_partitioner(
             context.partitioner, id, context.coordinator_num);
@@ -402,11 +402,12 @@ public:
         if (context.partitioner == "hpb") {
           if (coordinator_id < (int)partitioner->num_coordinator_for_one_replica()) {
             sum += v;
+          } else {
+            replica_sum += v;
           }
         } else {
           sum += v;
         }
-        
       }
 
     } else {
@@ -414,6 +415,9 @@ public:
       init_message(message.get(), id, 0);
       ControlMessageFactory::new_statistics_message(*message, id, value);
       out_queue.push(message.release());
+    }
+    if (context.partitioner == "hpb") {
+      LOG(INFO) << "replica total commit " << replica_sum;
     }
     return sum;
   }

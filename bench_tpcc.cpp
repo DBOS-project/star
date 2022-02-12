@@ -20,9 +20,9 @@ int main(int argc, char *argv[]) {
       cnt[x]++;
     }
   }
-  for (size_t i = 1; i < cnt.size(); ++i) {
-    LOG(INFO) << "i " << i << " " << cnt[i];
-  }
+  // for (size_t i = 1; i < cnt.size(); ++i) {
+  //   LOG(INFO) << "i " << i << " " << cnt[i];
+  // }
   google::InitGoogleLogging(argv[0]);
   google::InstallFailureSignalHandler();
   google::ParseCommandLineFlags(&argc, &argv, true);

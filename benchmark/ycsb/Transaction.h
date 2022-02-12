@@ -17,6 +17,22 @@
 
 namespace star {
 namespace ycsb {
+static thread_local std::vector<Storage*> storage_cache;
+
+Storage* get_storage() {
+  if (storage_cache.empty()) {
+    for (size_t i = 0; i < 10; ++i) {
+      storage_cache.push_back(new Storage());
+    }
+  }
+  Storage * last = storage_cache.back();
+  storage_cache.pop_back();
+  return last;
+}
+
+void put_storage(Storage * s) {
+  storage_cache.push_back(s);
+}
 
 template <class Transaction> class ReadModifyWrite : public Transaction {
 
@@ -35,7 +51,9 @@ public:
       : Transaction(coordinator_id, partition_id, partitioner, ith_replica), db(db),
         context(context), random(random),
         partition_id(partition_id), granule_id(granule_id),
-        query(makeYCSBQuery<keys_num>()(context, partition_id, granule_id, random, partitioner)) {}
+        query(makeYCSBQuery<keys_num>()(context, partition_id, granule_id, random, partitioner)) {
+          storage = get_storage();
+  }
 
   virtual int32_t get_partition_count() override { return query.number_of_parts(); }
 
@@ -47,7 +65,10 @@ public:
 
   virtual bool is_single_partition() override { return query.number_of_parts() == 1; }
 
-  virtual ~ReadModifyWrite() override = default;
+  virtual ~ReadModifyWrite() {
+    put_storage(storage);
+    storage = nullptr;
+  }
 
   virtual const std::string serialize(std::size_t ith_replica = 0) override {
     std::string res;
@@ -76,14 +97,14 @@ public:
     DCHECK(ycsbTableID < 1);
     for (auto i = 0u; i < keys_num; i++) {
       auto key = query.Y_KEY[i];
-      storage.ycsb_keys[i].Y_KEY = key;
+      storage->ycsb_keys[i].Y_KEY = key;
       if (query.UPDATE[i]) {
         this->search_for_update(ycsbTableID, context.getPartitionID(key),
-                                storage.ycsb_keys[i], storage.ycsb_values[i],
+                                storage->ycsb_keys[i], storage->ycsb_values[i],
                                 context.getGranule(key));
       } else {
         this->search_for_read(ycsbTableID, context.getPartitionID(key),
-                              storage.ycsb_keys[i], storage.ycsb_values[i],
+                              storage->ycsb_keys[i], storage->ycsb_values[i],
                               context.getGranule(key));
       }
     }
@@ -91,7 +112,7 @@ public:
       auto key = query.Y_KEY[i];
       if (query.UPDATE[i]) {
         this->update(ycsbTableID, context.getPartitionID(key),
-                     storage.ycsb_keys[i], storage.ycsb_values[i],
+                     storage->ycsb_keys[i], storage->ycsb_values[i],
                                 context.getGranule(key));
       }
     }
@@ -106,30 +127,30 @@ public:
       if (query.UPDATE[i]) {
 
         if (this->execution_phase) {
-          storage.ycsb_values[i].Y_F01.assign(
+          storage->ycsb_values[i].Y_F01.assign(
               random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
-          storage.ycsb_values[i].Y_F02.assign(
+          storage->ycsb_values[i].Y_F02.assign(
               random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
-          storage.ycsb_values[i].Y_F03.assign(
+          storage->ycsb_values[i].Y_F03.assign(
               random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
-          storage.ycsb_values[i].Y_F04.assign(
+          storage->ycsb_values[i].Y_F04.assign(
               random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
-          storage.ycsb_values[i].Y_F05.assign(
+          storage->ycsb_values[i].Y_F05.assign(
               random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
-          storage.ycsb_values[i].Y_F06.assign(
+          storage->ycsb_values[i].Y_F06.assign(
               random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
-          storage.ycsb_values[i].Y_F07.assign(
+          storage->ycsb_values[i].Y_F07.assign(
               random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
-          storage.ycsb_values[i].Y_F08.assign(
+          storage->ycsb_values[i].Y_F08.assign(
               random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
-          storage.ycsb_values[i].Y_F09.assign(
+          storage->ycsb_values[i].Y_F09.assign(
               random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
-          storage.ycsb_values[i].Y_F10.assign(
+          storage->ycsb_values[i].Y_F10.assign(
               random.a_string(YCSB_FIELD_SIZE, YCSB_FIELD_SIZE));
         }
 
         // this->update(ycsbTableID, context.getPartitionID(key),
-        //              storage.ycsb_keys[i], storage.ycsb_values[i],
+        //              storage->ycsb_keys[i], storage->ycsb_values[i],
         //                         context.getGranule(key));
       }
     }
@@ -176,7 +197,7 @@ private:
   DatabaseType &db;
   const ContextType &context;
   RandomType random;
-  Storage storage;
+  Storage * storage = nullptr;
   std::size_t partition_id, granule_id;
   YCSBQuery<keys_num> query;
 };

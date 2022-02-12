@@ -360,12 +360,12 @@ public:
   int replay_queue_lock_id = -1;
   bool abort_lock_local_read = false;
   int64_t execution_done_latency = 0;
-  int64_t commit_initiated_latency = 0;
+  //int64_t commit_initiated_latency = 0;
   std::chrono::steady_clock::time_point lock_issue_time;
   bool lock_request_responded = false;
-  int64_t first_lock_response_latency = 0;
-  int64_t first_lock_request_arrive_latency = 0;
-  int64_t first_lock_request_processed_latency = 0;
+  //int64_t first_lock_response_latency = 0;
+  //int64_t first_lock_request_arrive_latency = 0;
+  //int64_t first_lock_request_processed_latency = 0;
   int abort_lock_owned_by_others = 0;
   int abort_lock_owned_by_no_one = 0;
   int abort_lock_queue_len_sum = 0;
@@ -373,5 +373,6 @@ public:
   uint64_t straggler_wait_time = 0;
   bool command_written = false;
   int granules_left_to_lock = 0;
+  int64_t position_in_log;
 };
 } // namespace star
