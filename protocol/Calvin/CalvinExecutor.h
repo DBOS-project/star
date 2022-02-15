@@ -30,6 +30,7 @@ public:
   using TransactionType = CalvinTransaction;
   std::vector<TransactionType::TransactionLockRequest> lock_requests_current_batch;
   std::uint64_t sent_lock_requests = 0;
+  std::uint64_t dtxn_lock_requests = 0;
   std::uint64_t received_lock_responses = 0;
   std::uint64_t received_net_lock_responses = 0;
   std::uint64_t lock_request_done_received = 0;
@@ -116,6 +117,19 @@ public:
     lock_requests_current_batch.clear();
   }
 
+  static int64_t next_transaction_id(std::size_t epoch, uint64_t coordinator_id) {
+    // tid format : epoch id (24bits) | coordinator id(8 bits) | counter (32 bits)
+    CHECK(epoch < (1ull << 24));
+    CHECK(coordinator_id < (1ull << 8));
+    constexpr int epoch_id_offset = 40;
+    constexpr int coordinator_id_offset = epoch_id_offset - 8;
+    static std::atomic<int64_t> tid_static{1};
+    auto tid = tid_static.fetch_add(1);
+    CHECK(tid < (1ll << 32));
+    return (epoch << epoch_id_offset) | ((int64_t)coordinator_id << coordinator_id_offset) | tid;
+  }
+
+  std::size_t epoch = 0;
   void start() override {
     LOG(INFO) << "CalvinExecutor " << id << " started. ";
 
@@ -131,6 +145,8 @@ public:
           return;
         }
       } while (status != ExecutorStatus::Analysis);
+      // Advance epoch
+      epoch += 1;
 
       lock_request_done_received = 0;
       {
@@ -166,6 +182,7 @@ public:
         if (id < n_lock_manager) {
           // send lock requests to remote node
           //LOG(INFO) << "LockRequest active transactions " << active_transactions.load();
+          dtxn_lock_requests = 0;
           send_lock_requests();
           // Wait until we have recevied all the lock requests from all coordinators
           // which is signaled by the CalvinMessage::LOCK_REQUEST_DONE message
@@ -243,7 +260,7 @@ public:
               << " scheduling_prepare " << this->prepare_stage_time.nth(50) << " us(50) "
               << " scheduling_locking " << this->locking_stage_time.nth(50) << " us(50) "
               << " execution " << this->execution_stage_time.nth(50) << " us(50).\n "
-              << " lock_requests_sent " << this->lock_requests_sent.nth(50) << ". "
+              << " remote_lock_requests_sent " << this->remote_lock_requests_sent.nth(50) << ". "
               << " effective conurrency " << this->effective_round_concurrency.nth(50) << ". "
               << " round conurrency " << this->round_concurrency.nth(50) << ". "
               << " successful lock requests per batch " << this->succ_lock_reuqests_per_batch.nth(50) << ". "
@@ -361,6 +378,7 @@ public:
       auto partition_id = get_partition_id();
       transactions[i] =
           workload.next_transaction(context, partition_id, this->id);
+      transactions[i]->transaction_id = next_transaction_id(epoch, this->coordinator_id);
       if (this->context.stragglers_per_batch) {
         auto total_batch_size = this->partitioner.num_coordinator_for_one_replica() * this->context.batch_size;
         auto v = this->random.uniform_dist(1, total_batch_size);
@@ -530,6 +548,7 @@ public:
         txn->network_size.fetch_add(sz);
         txn->distributed_transaction = true;
         sent_lock_requests++;
+        dtxn_lock_requests++;
       }
       flush_messages();
     }
@@ -542,7 +561,7 @@ public:
             *messages[j], coordinator_id);
     }
     flush_messages();
-    lock_requests_sent.add(sent_lock_requests - sent_lock_requests_old);
+    remote_lock_requests_sent.add(dtxn_lock_requests);
   }
 
   void collect_vote_for_txn(int64_t tid, bool success) {
@@ -963,7 +982,7 @@ public:
   Percentile<int64_t> percentile, dist_latency, local_latency, commit_latency; 
   Percentile<int64_t> effective_round_concurrency;
   Percentile<int64_t> round_concurrency;
-  Percentile<int64_t> lock_requests_sent;
+  Percentile<int64_t> remote_lock_requests_sent;
   Percentile<int64_t> succ_lock_reuqests_per_batch;
   Percentile<int64_t> lock_reuqests_per_batch;
   Percentile<int64_t> prepare_stage_time;

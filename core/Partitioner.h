@@ -419,6 +419,9 @@ public:
     } else if (part == "hpb") {
       return std::make_unique<HStorePBPartitioner>(coordinator_id,
                                                 coordinator_num);
+    } else if (part == "lotus") {
+      return std::make_unique<HStorePBPartitioner>(coordinator_id,
+                                                coordinator_num);
     } else {
       CHECK(false);
       return nullptr;

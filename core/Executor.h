@@ -208,31 +208,33 @@ public:
               << " us (99%). dist txn latency: " << dist_latency.nth(50)
               << " us (50%) " << dist_latency.nth(75) << " us (75%) "
               << dist_latency.nth(95) << " us (95%) " << dist_latency.nth(99)
-              << " us (99%). local txn latency: " << local_latency.nth(50)
+              << " us (99%) " << " avg " << dist_latency.avg() << " us "
+              << ". local txn latency: " << local_latency.nth(50)
               << " us (50%) " << local_latency.nth(75) << " us (75%) "
               << local_latency.nth(95) << " us (95%) " << local_latency.nth(99)
-              << " us (99%). txn commit latency: " << commit_latency.nth(50)
+              << " us (99%) " << " avg " << local_latency.avg() << " us."
+              << " txn commit latency: " << commit_latency.nth(50)
               << " us (50%) " << commit_latency.nth(75) << " us (75%) "
               << commit_latency.nth(95) << " us (95%) " << commit_latency.nth(99)
-              << " us (99%).\n"
-              << " LOCAL txn stall " << this->local_txn_stall_time_pct.nth(50) << " us, "
-              << " local_work " << this->local_txn_local_work_time_pct.nth(50) << " us, "
-              << " remote_work " << this->local_txn_remote_work_time_pct.nth(50) << " us, "
-              << " commit_work " << this->local_txn_commit_work_time_pct.nth(50) << " us, "
-              << " commit_prepare " << this->local_txn_commit_prepare_time_pct.nth(50) << " us, "
-              << " commit_persistence " << this->local_txn_commit_persistence_time_pct.nth(50) << " us, "
-              << " commit_write_back " << this->local_txn_commit_write_back_time_pct.nth(50) << " us, "
-              << " commit_replication " << this->local_txn_commit_replication_time_pct.nth(50) << " us, "
-              << " commit_release_lock " << this->local_txn_commit_unlock_time_pct.nth(50) << " us \n"
-              << " DIST txn stall " << this->dist_txn_stall_time_pct.nth(50) << " us, "
-              << " local_work " << this->dist_txn_local_work_time_pct.nth(50) << " us, "
-              << " remote_work " << this->dist_txn_remote_work_time_pct.nth(50) << " us, "
-              << " commit_work " << this->dist_txn_commit_work_time_pct.nth(50) << " us, "
-              << " commit_prepare " << this->dist_txn_commit_prepare_time_pct.nth(50) << " us, "
-              << " commit_persistence " << this->dist_txn_commit_persistence_time_pct.nth(50) << " us, "
-              << " commit_write_back " << this->dist_txn_commit_write_back_time_pct.nth(50) << " us, "
-              << " commit_replication " << this->dist_txn_commit_replication_time_pct.nth(50) << " us, "
-              << " commit_release_lock " << this->dist_txn_commit_unlock_time_pct.nth(50) << " us \n";
+              << " us (99%) " << "avg " << commit_latency.avg() << " us.\n"
+              << " LOCAL txn stall " << this->local_txn_stall_time_pct.avg() << " us, "
+              << " local_work " << this->local_txn_local_work_time_pct.avg() << " us, "
+              << " remote_work " << this->local_txn_remote_work_time_pct.avg() << " us, "
+              << " commit_work " << this->local_txn_commit_work_time_pct.avg() << " us, "
+              << " commit_prepare " << this->local_txn_commit_prepare_time_pct.avg() << " us, "
+              << " commit_persistence " << this->local_txn_commit_persistence_time_pct.avg() << " us, "
+              << " commit_write_back " << this->local_txn_commit_write_back_time_pct.avg() << " us, "
+              << " commit_replication " << this->local_txn_commit_replication_time_pct.avg() << " us, "
+              << " commit_release_lock " << this->local_txn_commit_unlock_time_pct.avg() << " us \n"
+              << " DIST txn stall " << this->dist_txn_stall_time_pct.avg() << " us, "
+              << " local_work " << this->dist_txn_local_work_time_pct.avg() << " us, "
+              << " remote_work " << this->dist_txn_remote_work_time_pct.avg() << " us, "
+              << " commit_work " << this->dist_txn_commit_work_time_pct.avg() << " us, "
+              << " commit_prepare " << this->dist_txn_commit_prepare_time_pct.avg() << " us, "
+              << " commit_persistence " << this->dist_txn_commit_persistence_time_pct.avg() << " us, "
+              << " commit_write_back " << this->dist_txn_commit_write_back_time_pct.avg() << " us, "
+              << " commit_replication " << this->dist_txn_commit_replication_time_pct.avg() << " us, "
+              << " commit_release_lock " << this->dist_txn_commit_unlock_time_pct.avg() << " us \n";
 
     if (id == 0) {
       for (auto i = 0u; i < message_stats.size(); i++) {

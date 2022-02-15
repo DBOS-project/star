@@ -309,6 +309,7 @@ public:
               }
               socket.set_quick_ack_flag(tcp_quick_ack);
               inSockets[c_id] = std::move(socket);
+              LOG(INFO) << "Listener accepted connection from coordinator " << c_id;
             }
 
             LOG(INFO) << "Listener " << listener_id << " on coordinator " << id

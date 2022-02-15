@@ -86,7 +86,7 @@ public:
     encoder << message_piece_header << cluster_worker_id << ith_replica;
     message.set_is_replica(ith_replica > 0);
     message.flush();
-    message.set_message_gen_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
+    message.set_message_gen_time(0);
     message.set_gen_time(Time::now());
     return message_size;
   }
@@ -107,7 +107,7 @@ public:
     message.set_is_replica(ith_replica > 0);
     message.flush();
     message.set_gen_time(Time::now());
-    message.set_message_gen_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
+    message.set_message_gen_time(0);
     return message_size;
   }
 
@@ -164,7 +164,7 @@ public:
     message.set_is_replica(ith_replica > 0);
     message.flush();
     message.set_gen_time(Time::now());
-    message.set_message_gen_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
+    message.set_message_gen_time(0);
     return message_size;
   }
 
@@ -210,7 +210,7 @@ public:
     encoder.write_n_bytes(data.c_str(), data.size());
     message.set_is_replica(ith_replica > 0);
     message.flush();
-    message.set_message_gen_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
+    message.set_message_gen_time(0);
     message.set_gen_time(Time::now());
     return message_size;
   }
@@ -233,7 +233,7 @@ public:
       encoder.write_n_bytes(commands_data[i].c_str(), commands_data[i].size());
     }
     message.set_is_replica(ith_replica > 0);
-    message.set_message_gen_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
+    message.set_message_gen_time(0);
     message.flush();
     message.set_gen_time(Time::now());
     return message_size;
@@ -271,7 +271,7 @@ public:
     encoder << ith_replica;
     encoder << tries;
     message.set_is_replica(ith_replica > 0);
-    message.set_message_gen_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
+    message.set_message_gen_time(0);
     message.flush();
     message.set_gen_time(Time::now());
     return message_size;
@@ -304,7 +304,7 @@ public:
     message.set_is_replica(ith_replica > 0);
     message.flush();
     message.set_gen_time(Time::now());
-    message.set_message_gen_time(std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count());
+    message.set_message_gen_time(0);
     return message_size;
   }
 

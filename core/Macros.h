@@ -55,6 +55,7 @@ DEFINE_bool(lotus_async_repl, false, "async replication");
 DEFINE_double(stragglers_zipf_factor, 0, "straggler zipfian factor");
 DEFINE_int32(sender_group_nop_count, 40000, "# nop insts to executes during TCP sender message grouping");
 DEFINE_int32(granule_count, 1, "# granules in a partition");
+DEFINE_bool(hstore_active_active, false, "H-Store style active-active replication");
 
 #define SETUP_CONTEXT(context)                                                 \
   boost::algorithm::split(context.peers, FLAGS_servers,                        \
@@ -106,4 +107,5 @@ DEFINE_int32(granule_count, 1, "# granules in a partition");
   context.straggler_num_txn_len = FLAGS_stragglers_num_txn_len;                \
   context.granules_per_partition = FLAGS_granule_count;                        \
   context.lotus_async_repl = FLAGS_lotus_async_repl;                           \
+  context.hstore_active_active = FLAGS_hstore_active_active;                   \
   context.set_star_partitioner();

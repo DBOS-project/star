@@ -88,5 +88,6 @@ public:
   std::size_t straggler_num_txn_len = 10;
   std::size_t granules_per_partition = 128;
   bool lotus_async_repl = false;
+  bool hstore_active_active = false;
 };
 } // namespace star

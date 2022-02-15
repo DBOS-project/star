@@ -93,34 +93,37 @@ public:
     LOG(INFO) << "AriaExecutor " << id << " started. ";
 
     for (;;) {
+      {
+        ExecutorStatus status;
+        do {
+          status = static_cast<ExecutorStatus>(worker_status.load());
 
-      ExecutorStatus status;
-      do {
-        status = static_cast<ExecutorStatus>(worker_status.load());
+          if (status == ExecutorStatus::EXIT) {
+            LOG(INFO) << "AriaExecutor " << id << " exits. ";
+            return;
+          }
+        } while (status != ExecutorStatus::Aria_COLLECT_XACT);
 
-        if (status == ExecutorStatus::EXIT) {
-          LOG(INFO) << "AriaExecutor " << id << " exits. ";
-          return;
+        n_started_workers.fetch_add(1);
+        generate_transactions();
+        n_complete_workers.fetch_add(1);
+        ScopedTimer t2([&, this](uint64_t us) {
+          this->sequencing_time.add(us);
+        });
+        while (static_cast<ExecutorStatus>(worker_status.load()) ==
+                ExecutorStatus::Aria_COLLECT_XACT) {
+            process_request();
         }
-      } while (status != ExecutorStatus::Aria_COLLECT_XACT);
+        process_request();
+        n_complete_workers.fetch_add(1);
 
-      n_started_workers.fetch_add(1);
-      generate_transactions();
-      n_complete_workers.fetch_add(1);
-
-      while (static_cast<ExecutorStatus>(worker_status.load()) ==
-              ExecutorStatus::Aria_COLLECT_XACT) {
-          process_request();
+        // wait till Aria_READ
+        while (static_cast<ExecutorStatus>(worker_status.load()) !=
+              ExecutorStatus::Aria_READ) {
+          std::this_thread::yield();
+        }
       }
-      process_request();
-      n_complete_workers.fetch_add(1);
 
-      // wait till Aria_READ
-      while (static_cast<ExecutorStatus>(worker_status.load()) !=
-            ExecutorStatus::Aria_READ) {
-        std::this_thread::yield();
-      }
-    
       {
         ScopedTimer t2([&, this](uint64_t us) {
           this->execution_time.add(us);
@@ -563,27 +566,28 @@ public:
               << " us (99%)"
               << ". batch concurrency: " << this->round_concurrency.nth(50) 
               << ". effective batch concurrency: " << this->effective_round_concurrency.nth(50) 
-              << ". execution time: " << this->execution_time.nth(50) 
-              << ". commit time: " << this->commit_time.nth(50) 
+              << ". sequencing_time: " << this->sequencing_time.avg() 
+              << ". execution time: " << this->execution_time.avg() 
+              << ". commit time: " << this->commit_time.avg() 
               << "\n"
               << " LOCAL count " << this->local_txn_stall_time_pct.size() << " txn stall " << this->local_txn_stall_time_pct.nth(50) << " us, "
-              << " local_work " << this->local_txn_local_work_time_pct.nth(50) << " us, "
-              << " remote_work " << this->local_txn_remote_work_time_pct.nth(50) << " us, "
-              << " commit_work " << this->local_txn_commit_work_time_pct.nth(50) << " us, "
-              << " commit_prepare " << this->local_txn_commit_prepare_time_pct.nth(50) << " us, "
-              << " commit_persistence " << this->local_txn_commit_persistence_time_pct.nth(50) << " us, "
-              << " commit_replication " << this->local_txn_commit_replication_time_pct.nth(50) << " us, "
-              << " commit_write_back " << this->local_txn_commit_write_back_time_pct.nth(50) << " us, "
-              << " commit_release_lock " << this->local_txn_commit_unlock_time_pct.nth(50) << " us \n"
-              << " DIST count " << this->dist_txn_stall_time_pct.size() << " txn stall " << this->dist_txn_stall_time_pct.nth(50) << " us, "
-              << " local_work " << this->dist_txn_local_work_time_pct.nth(50) << " us, "
-              << " remote_work " << this->dist_txn_remote_work_time_pct.nth(50) << " us, "
-              << " commit_work " << this->dist_txn_commit_work_time_pct.nth(50) << " us, "
-              << " commit_prepare " << this->dist_txn_commit_prepare_time_pct.nth(50) << " us, "
-              << " commit_persistence " << this->dist_txn_commit_persistence_time_pct.nth(50) << " us, "
-              << " commit_replication " << this->local_txn_commit_replication_time_pct.nth(50) << " us, "
-              << " commit_write_back " << this->dist_txn_commit_write_back_time_pct.nth(50) << " us, "
-              << " commit_release_lock " << this->dist_txn_commit_unlock_time_pct.nth(50) << " us \n";
+              << " local_work " << this->local_txn_local_work_time_pct.avg() << " us, "
+              << " remote_work " << this->local_txn_remote_work_time_pct.avg() << " us, "
+              << " commit_work " << this->local_txn_commit_work_time_pct.avg() << " us, "
+              << " commit_prepare " << this->local_txn_commit_prepare_time_pct.avg() << " us, "
+              << " commit_persistence " << this->local_txn_commit_persistence_time_pct.avg() << " us, "
+              << " commit_replication " << this->local_txn_commit_replication_time_pct.avg() << " us, "
+              << " commit_write_back " << this->local_txn_commit_write_back_time_pct.avg() << " us, "
+              << " commit_release_lock " << this->local_txn_commit_unlock_time_pct.avg() << " us \n"
+              << " DIST count " << this->dist_txn_stall_time_pct.size() << " txn stall " << this->dist_txn_stall_time_pct.avg() << " us, "
+              << " local_work " << this->dist_txn_local_work_time_pct.avg() << " us, "
+              << " remote_work " << this->dist_txn_remote_work_time_pct.avg() << " us, "
+              << " commit_work " << this->dist_txn_commit_work_time_pct.avg() << " us, "
+              << " commit_prepare " << this->dist_txn_commit_prepare_time_pct.avg() << " us, "
+              << " commit_persistence " << this->dist_txn_commit_persistence_time_pct.avg() << " us, "
+              << " commit_replication " << this->local_txn_commit_replication_time_pct.avg() << " us, "
+              << " commit_write_back " << this->dist_txn_commit_write_back_time_pct.avg() << " us, "
+              << " commit_release_lock " << this->dist_txn_commit_unlock_time_pct.avg() << " us \n";
   }
 
   void push_message(Message *message) override { in_queue.push(message); }
@@ -716,6 +720,7 @@ private:
   Percentile<uint64_t> effective_round_concurrency;
   Percentile<uint64_t> execution_time;
   Percentile<uint64_t> commit_time;
+  Percentile<uint64_t> sequencing_time;
   Percentile<uint64_t> local_txn_stall_time_pct, local_txn_commit_work_time_pct, local_txn_commit_persistence_time_pct, local_txn_commit_prepare_time_pct, local_txn_commit_replication_time_pct, local_txn_commit_write_back_time_pct, local_txn_commit_unlock_time_pct, local_txn_local_work_time_pct, local_txn_remote_work_time_pct;
   Percentile<uint64_t> dist_txn_stall_time_pct, dist_txn_commit_work_time_pct, 
                        dist_txn_commit_persistence_time_pct, dist_txn_commit_prepare_time_pct,

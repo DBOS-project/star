@@ -14,18 +14,27 @@ namespace star {
 namespace tpcc {
 
 int32_t wid_to_granule_id(int32_t W_ID, const Context &context) {
+  if (context.granules_per_partition == 1) {
+    return 0;
+  }
   auto W_NUM = context.partition_num;
   auto D_NUM = 10;
   return W_ID + context.granules_per_partition - (W_NUM + 1);
 }
 
 int32_t did_to_granule_id(int32_t D_ID, const Context &context) {
+  if (context.granules_per_partition == 1) {
+    return 0;
+  }
   auto W_NUM = context.partition_num;
   auto D_NUM = 10;
   return D_ID + context.granules_per_partition - (W_NUM + 1) - (D_NUM + 1);
 }
 
 int32_t id_to_granule_id(int32_t ID, const Context &context) {
+  if (context.granules_per_partition == 1) {
+    return 0;
+  }
   auto W_NUM = context.partition_num;
   auto D_NUM = 10;
   return ID % (context.granules_per_partition - (W_NUM + 1) - (D_NUM + 1));

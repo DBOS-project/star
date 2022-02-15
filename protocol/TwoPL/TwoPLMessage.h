@@ -588,7 +588,7 @@ public:
       std::ostringstream ss;
       ss << commit_tid << true;
       auto output = ss.str();
-      auto lsn = txn->get_logger()->write(output.c_str(), output.size(), true);
+      auto lsn = txn->get_logger()->write(output.c_str(), output.size(), false);
       //txn->get_logger()->sync(lsn, );
     }
   }
@@ -665,6 +665,7 @@ public:
 
     DCHECK(txn->get_logger());
 
+    std::string output;
     for (size_t i = 0; i < redoWriteSetSize; ++i) {
       uint64_t tableId;
       uint64_t partitionId;
@@ -683,8 +684,8 @@ public:
 
       std::ostringstream ss;
       ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
-      auto output = ss.str();
-      txn->get_logger()->write(output.c_str(), output.size(), false);
+      output += ss.str();
+      //txn->get_logger()->write(output.c_str(), output.size(), false);
     }
 
     // prepare response message header
@@ -704,7 +705,7 @@ public:
       // write the vote
       std::ostringstream ss;
       ss << success;
-      auto output = ss.str();
+      output += ss.str();
       txn->get_logger()->write(output.c_str(), output.size(), true);
     }
 
@@ -799,12 +800,12 @@ public:
     TwoPLHelper::write_lock_release(tid, commit_tid);
 
     //uint64_t lsn = 0;
-    if (txn->get_logger()) {
-      std::ostringstream ss;
-      ss << commit_tid << std::string((const char *)key, key_size) << std::string(valueStringPiece.data(), field_size);
-      auto output = ss.str();
-      txn->get_logger()->write(output.c_str(), output.size(), sync_redo);
-    }
+    // if (txn->get_logger()) {
+    //   std::ostringstream ss;
+    //   ss << commit_tid << std::string((const char *)key, key_size) << std::string(valueStringPiece.data(), field_size);
+    //   auto output = ss.str();
+    //   txn->get_logger()->write(output.c_str(), output.size(), sync_redo);
+    // }
 
     // if (txn->get_logger() && sync_redo) {
     //   txn->get_logger()->sync(lsn, );

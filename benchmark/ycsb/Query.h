@@ -52,6 +52,8 @@ public:
     query.part_granule_count[0] = 0;
     int readOnly = random.uniform_dist(1, 100);
     int crossPartition = random.uniform_dist(1, 100);
+    //int crossPartitionPartNum = context.crossPartitionPartNum;
+    int crossPartitionPartNum = random.uniform_dist(2, context.crossPartitionPartNum);
     for (auto i = 0u; i < N; i++) {
       // read or write
 
@@ -87,7 +89,7 @@ public:
             context.partition_num > 1) {
           if (query.num_parts == 1) {
             query.num_parts = 1;
-            for (int j = query.num_parts; j < context.crossPartitionPartNum; ++j) {
+            for (int j = query.num_parts; j < crossPartitionPartNum; ++j) {
               if (query.num_parts >= (int)context.partition_num)
                 break;
               int32_t pid = random.uniform_dist(0, context.partition_num - 1);
