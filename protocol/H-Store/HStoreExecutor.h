@@ -24,6 +24,8 @@ class HStoreExecutor
 private:
   std::unique_ptr<Partitioner> hash_partitioner;
   std::vector<std::unique_ptr<Message>> cluster_worker_messages;
+  std::vector<bool> cluster_worker_messages_filled_in;
+  std::deque<int> cluster_worker_messages_ready;
   std::vector<Message*> group_cluster_worker_messages;
   int cluster_worker_num = -1;
   int active_replica_worker_num_end = -1;
@@ -181,6 +183,13 @@ public:
       minv = std::max(minv, v);
     }
     return minv;
+  }
+
+  void add_outgoing_message(int cluster_worker_id) {
+    if (cluster_worker_messages_filled_in[cluster_worker_id])
+      return;
+    cluster_worker_messages_filled_in[cluster_worker_id] = true;
+    cluster_worker_messages_ready.push_back(cluster_worker_id);
   }
 
   std::string serialize_commands(std::deque<TxnCommand>::iterator it, const std::deque<TxnCommand>::iterator end) {
@@ -358,6 +367,7 @@ public:
       lock_buckets.resize(this->context.partition_num * this->context.granules_per_partition, -1);
       granule_is_in_replay_candidates.resize(this->context.partition_num * this->context.granules_per_partition, false);
       cluster_worker_messages.resize(cluster_worker_num);
+      cluster_worker_messages_filled_in.resize(cluster_worker_num, false);
       for (int i = 0; i < (int)cluster_worker_num; ++i) {
         cluster_worker_messages[i] = std::make_unique<Message>();
         init_message(cluster_worker_messages[i].get(), i);
@@ -424,6 +434,7 @@ public:
             txn.network_size += MessageFactoryType::new_release_partition_lock_message(
                 *messages[owner_cluster_worker], *table, this_cluster_worker_id, granule_id, false, txn.ith_replica, write_cmd_buffer, txn_cmd);
             //LOG(INFO) << "Abort release lock MP partition " << partition_id << " by cluster worker" << this_cluster_worker_id << " " << tid_to_string(txn.transaction_id) << " request sent";
+            add_outgoing_message(owner_cluster_worker);
           }
         }
       }
@@ -480,7 +491,7 @@ public:
     //   CHECK(txn.abort_lock == false);
     // }
     if (txn.abort_lock) {
-      DCHECK(txn.is_single_partition() == false);
+      //DCHECK(txn.is_single_partition() == false);
       if (is_replica_worker == false) {
         // We only release locks when executing on active replica
         abort(txn, messages);
@@ -565,6 +576,7 @@ public:
               DCHECK(0 <= owner_cluster_worker && owner_cluster_worker < cluster_worker_num);
               txn.network_size += MessageFactoryType::new_release_partition_lock_message(
                   *messages[owner_cluster_worker], *table, this_cluster_worker_id, granule_id, false, txn.ith_replica, write_cmd_buffer, txn_cmd);
+              add_outgoing_message(owner_cluster_worker);
               //if (is_replica_worker)
               //  LOG(INFO) << "Partition worker " << this_cluster_worker_id << " issueed lock release request on partition " << partitionId << " ith_replica " << txn.ith_replica << " txn " << tid_to_string(txn.transaction_id);;
           }
@@ -628,6 +640,7 @@ public:
             *messages[owner_cluster_worker], *table, writeKey.get_key(),
             writeKey.get_value(), this_cluster_worker_id, writeKey.get_granule_id(), commit_tid, txn.ith_replica, false);
         //LOG(INFO) << "Partition worker " << this_cluster_worker_id << " issueed write request on partition " << partitionId;
+        add_outgoing_message(owner_cluster_worker);
       }
     }
     // if (txn.is_single_partition() == false) {
@@ -667,14 +680,15 @@ public:
                      bool local_index_read, bool write_lock, bool &success,
                      bool &remote) {
       int owner_cluster_worker = partition_owner_cluster_worker(partition_id, txn.ith_replica);
-      if (local_index_read || txn.is_single_partition() || (is_replica_worker && owner_cluster_worker == this_cluster_worker_id)) {
+      if (local_index_read || txn.is_single_partition() && this->context.granules_per_partition == 1 || (is_replica_worker && owner_cluster_worker == this_cluster_worker_id)) {
         remote = false;
         success = true;
         this->search(table_id, partition_id, key, value);
         return;
       }
 
-      
+      // int granuleId = this->context.getGranule(*(int32_t*)key); // for granule-locking overhead expriment
+      // CHECK(granuleId == granule_id);
       if ((int)owner_cluster_worker == this_cluster_worker_id) {
         remote = false;
         auto lock_id = to_lock_id(partition_id, granule_id);
@@ -714,6 +728,7 @@ public:
         txn.network_size += MessageFactoryType::new_acquire_partition_lock_and_read_message(
               *(cluster_worker_messages[owner_cluster_worker]), *table, key, key_offset, this_cluster_worker_id, 
               granule_id, txn.ith_replica, 0);
+        add_outgoing_message(owner_cluster_worker);
         txn.distributed_transaction = true;
         txn.pendingResponses++;
       }
@@ -1312,6 +1327,7 @@ public:
       return;
     DCHECK(0 <= replica_cluster_worker_id && replica_cluster_worker_id < cluster_worker_num);
     new_get_replayed_log_posistion_response_message(*cluster_worker_messages[replica_cluster_worker_id], replayed_position);
+    add_outgoing_message(replica_cluster_worker_id);
     flush_messages();
     last_mp_arrival = std::chrono::steady_clock::now();
     last_commit = std::chrono::steady_clock::now();
@@ -1629,7 +1645,7 @@ public:
 
   bool process_single_transaction(TransactionType * txn, bool lock_acquired = false) {
     auto txn_id = txn->transaction_id;
-    if (txn->is_single_partition() && lock_acquired == false) {
+    if (txn->is_single_partition() && lock_acquired == false && this->context.granules_per_partition == 1) {
       auto partition_count = txn->get_partition_count();
       auto partition_id = txn->get_partition(0);
       DCHECK(partition_count == 1);
@@ -1701,7 +1717,7 @@ public:
         last_commit = std::chrono::steady_clock::now();
         return true;
       } else {
-        DCHECK(txn->is_single_partition() == false);
+//        DCHECK(txn->is_single_partition() == false);
         // if (is_replica_worker)
         //   LOG(INFO) << "Txn " << txn_id << " Execution result " << (int)result << " abort by lock conflict on cluster worker " << this_cluster_worker_id;
         // Txns on slave replicas won't abort due to locking failure.
@@ -2090,6 +2106,7 @@ public:
           DCHECK(0 <= replica_cluster_worker_id && replica_cluster_worker_id < cluster_worker_num);
           cluster_worker_messages[replica_cluster_worker_id]->set_transaction_id(txn_id);
           MessageFactoryType::new_get_replayed_log_posistion_message(*cluster_worker_messages[replica_cluster_worker_id], minimum_coord_txn_written_log_position_snap, 1, this_cluster_worker_id);
+          add_outgoing_message(replica_cluster_worker_id);
           flush_messages();
           get_replica_replay_log_position_requests++;
           
@@ -2131,6 +2148,7 @@ public:
             continue;
           cluster_worker_messages[i]->set_transaction_id(txn_id);
           MessageFactoryType::new_persist_cmd_buffer_message(*cluster_worker_messages[i], 0, this_cluster_worker_id);
+          add_outgoing_message(i);
           sent_persist_cmd_buffer_requests++;
         }
         flush_messages();
@@ -2535,6 +2553,7 @@ public:
     DCHECK(0 <= replica_cluster_worker_id && replica_cluster_worker_id < cluster_worker_num);
     MessageFactoryType::new_command_replication(
             *cluster_worker_messages[replica_cluster_worker_id], 1, command_buffer_outgoing_data, this_cluster_worker_id, persist);
+    add_outgoing_message(replica_cluster_worker_id);
     flush_messages();
     //LOG(INFO) << "This cluster worker " << this_cluster_worker_id << " sent " << command_buffer_outgoing.size() << " commands to replia worker " <<  replica_cluster_worker_id;
     command_buffer_outgoing_data.clear();
@@ -2567,8 +2586,8 @@ public:
       bool res = acquire_partition_lock_and_read_request_handler(*message, messagePiece,
                                                 *cluster_worker_messages[message->get_source_cluster_worker_id()], *table,
                                                 txn);
-      
       if (res == true) {
+        add_outgoing_message(message->get_source_cluster_worker_id());
         if (--message->ref_cnt == 0) {
           std::unique_ptr<Message> rel(message);
         }
@@ -2762,6 +2781,7 @@ public:
         this->message_stats[type]++;
         this->message_sizes[type] += messagePiece.get_message_length();
       }
+      add_outgoing_message(message->get_source_cluster_worker_id());
       }
       if (is_replica_worker && acquire_partition_lock_requests_successful == false) {
         //cluster_worker_messages[message->get_source_cluster_worker_id()]->clear_message_pieces();
@@ -3085,9 +3105,25 @@ protected:
   virtual void flush_messages() override {
     DCHECK(cluster_worker_messages.size() == (size_t)cluster_worker_num);
     //int end_num = is_replica_worker ? cluster_worker_messages.size() : active_replica_worker_num_end;
-    int end_num = cluster_worker_messages.size();
-    for (int i = 0; i < end_num; i++) {
+    // int end_num = cluster_worker_messages.size();
+    // for (int i = 0; i < end_num; i++) {
+    //   if (cluster_worker_messages[i]->get_message_count() == 0) {
+    //     continue;
+    //   }
+
+    //   auto message = cluster_worker_messages[i].release();
+      
+    //   this->out_queue.push(message);
+      
+    //   cluster_worker_messages[i] = std::make_unique<Message>();
+    //   init_message(cluster_worker_messages[i].get(), i);
+    // }
+    while (!cluster_worker_messages_ready.empty()) {
+      int i = cluster_worker_messages_ready.front();
+      cluster_worker_messages_ready.pop_back();
+      DCHECK(cluster_worker_messages_filled_in[i]);
       if (cluster_worker_messages[i]->get_message_count() == 0) {
+        cluster_worker_messages_filled_in[i] = false;
         continue;
       }
 
@@ -3097,6 +3133,7 @@ protected:
       
       cluster_worker_messages[i] = std::make_unique<Message>();
       init_message(cluster_worker_messages[i].get(), i);
+      cluster_worker_messages_filled_in[i] = false;
     }
   }
 

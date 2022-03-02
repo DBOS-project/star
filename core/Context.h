@@ -76,12 +76,12 @@ public:
   bool operation_replication = false;
 
   bool aria_read_only_optmization = true;
-  bool aria_reordering_optmization = true;
+  bool aria_reordering_optmization = false;
   bool aria_snapshot_isolation = false;
 
   std::vector<std::string> peers;
   int stragglers_per_batch = 0;
-  int stragglers_total_wait_time = 20000;
+  int stragglers_total_wait_time = 5000;
   int stragglers_partition = -1;
   int sender_group_nop_count = 40000;
   double straggler_zipf_factor = 0;

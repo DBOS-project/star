@@ -80,9 +80,9 @@ public:
                                                  std::size_t partition_id,
                                                  std::size_t granule_id = 0) {
     DCHECK(message_type < (1ull << 7));
-    DCHECK(message_length < (1ull << 20));
+    DCHECK(message_length < (1ull << 22));
     DCHECK(table_id < (1ull << 5));
-    DCHECK(granule_id < (1ull << 12));
+    DCHECK(granule_id < (1ull << 18));
     DCHECK(partition_id < (1ull << 12));
 
     return (((uint64_t)message_type) << MESSAGE_TYPE_OFFSET) +
@@ -98,12 +98,12 @@ public:
 
 public:
   static constexpr uint64_t MESSAGE_TYPE_MASK = 0x7f;
-  static constexpr uint64_t MESSAGE_TYPE_OFFSET = 24 + 5 + 24;
-  static constexpr uint64_t MESSAGE_LENGTH_MASK = 0xfffff;
-  static constexpr uint64_t MESSAGE_LENGTH_OFFSET = 24 + 5;
+  static constexpr uint64_t MESSAGE_TYPE_OFFSET = 30 + 5 + 20 + 2;
+  static constexpr uint64_t MESSAGE_LENGTH_MASK = 0x3fffff;
+  static constexpr uint64_t MESSAGE_LENGTH_OFFSET = 30 + 5;
   static constexpr uint64_t TABLE_ID_MASK = 0x1f;
-  static constexpr uint64_t TABLE_ID_OFFSET = 24;
-  static constexpr uint64_t GRANULE_ID_MASK = 0xfff;
+  static constexpr uint64_t TABLE_ID_OFFSET = 30;
+  static constexpr uint64_t GRANULE_ID_MASK = 0x3ffff;
   static constexpr uint64_t GRANULE_ID_OFFSET = 12;
   static constexpr uint64_t PARTITION_ID_MASK = 0xfff;
   static constexpr uint64_t PARTITION_ID_OFFSET = 0;

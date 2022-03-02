@@ -122,7 +122,7 @@ public:
 
   // granule
   void set_granule_id(uint64_t granule_id) {
-    DCHECK(granule_id < (1ULL << 12));
+    DCHECK(granule_id < (1ULL << 17));
     clear_granule_id();
     bitvec |= granule_id << GRANULE_ID_OFFSET;
   }
@@ -173,9 +173,9 @@ private:
 
 public:
   static constexpr uint64_t TABLE_ID_MASK = 0x1f;
-  static constexpr uint64_t TABLE_ID_OFFSET = 51;
+  static constexpr uint64_t TABLE_ID_OFFSET = 57;
 
-  static constexpr uint64_t GRANULE_ID_MASK = 0xfff;
+  static constexpr uint64_t GRANULE_ID_MASK = 0x3ffff;
   static constexpr uint64_t GRANULE_ID_OFFSET = 39;
 
   static constexpr uint64_t PARTITION_ID_MASK = 0xfffff;

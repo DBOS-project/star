@@ -207,8 +207,14 @@ private:
     sockaddr_in serv = Socket::make_endpoint(addr, port);
     int enable = 1;
     int ret = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int));
+    if (ret < 0) {
+      LOG(FATAL) << "setsockopt failed " << strerror(errno);
+    }
     CHECK(ret >= 0);
     ret = ::bind(fd, (sockaddr *)(&serv), sizeof(serv));
+    if (ret < 0) {
+      LOG(FATAL) << "bind " << addr << ":" <<port << " failed " << strerror(errno);
+    }
     CHECK(ret >= 0);
   }
 
