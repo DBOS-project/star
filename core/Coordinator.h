@@ -219,7 +219,7 @@ public:
                  .count() < timeToRun);
 
     count = timeToRun - warmup - cooldown;
-
+    double abort_rate = (total_abort_lock) / (total_commit + total_abort_lock + 0.0);
     LOG(INFO) << "average commit: " << 1.0 * total_commit / count << " abort: "
               << 1.0 *
                      (total_abort_no_retry + total_abort_lock +
@@ -228,7 +228,8 @@ public:
               << " (" << 1.0 * total_abort_no_retry / count << "/"
               << 1.0 * total_abort_lock / count << "/"
               << 1.0 * total_abort_read_validation / count
-              << "), network size: " << total_network_size
+              << "), abort_rate: " << abort_rate
+              << ", network size: " << total_network_size
               << ", avg network size: "
               << 1.0 * total_network_size / total_commit
               << ", si_in_serializable: " << total_si_in_serializable << " "
