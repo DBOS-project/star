@@ -16,6 +16,79 @@
 #include <vector>
 
 namespace star {
+
+
+// A compressed form of lock_buckets for replication and determinstic replay of the SP transactions
+struct lock_bitmap {
+  inline uint64_t upAlignY(uint64_t x, uint64_t y)
+  {
+    return (x + (y-1)) & ~(y-1);
+  }
+
+  lock_bitmap() : num_locks_aligned(0), num_words(0), bitmap(num_words, 0), ref_cnt(0) {}
+
+  lock_bitmap(int num_locks): num_locks_aligned(upAlignY(num_locks, 64)), num_words(num_locks_aligned / 64), bitmap(num_words, 0), ref_cnt(0) {}
+  
+  ~lock_bitmap() {
+    CHECK(ref_cnt == 0);
+  }
+
+  void dec_ref() {
+    if (--ref_cnt == 0) {
+      delete this;
+    }
+  }
+
+  void inc_ref() {
+    ++ref_cnt;
+  }
+
+  bool get_bit(int lock_id) {
+    int word_idx = lock_id / 64;
+    int bit_idx = lock_id % 64;
+    return (bitmap[word_idx] & (1ull << bit_idx)) != 0;
+  }
+
+  void set_bit(int lock_id) {
+    int word_idx = lock_id / 64;
+    int bit_idx = lock_id % 64;
+    bitmap[word_idx] |= (1ull << bit_idx);
+  }
+
+  void clear_bit(int lock_id) {
+    int word_idx = lock_id / 64;
+    int bit_idx = lock_id % 64;
+    bitmap[word_idx] &= ~(1ull << bit_idx);
+  }
+
+  uint64_t num_locks_aligned;
+  uint64_t num_words;
+  std::vector<uint64_t> bitmap;
+  uint64_t ref_cnt = 0;
+
+  std::string serialize() {
+    std::string buf;
+    Encoder enc(buf);
+    enc << num_locks_aligned;
+    enc << num_words;
+    enc.write_n_bytes(&bitmap[0], sizeof(uint64_t) * num_words);
+    return buf;
+  }
+
+  static lock_bitmap* deserialize_from_raw(const std::string & data) {
+    Decoder decoder(data);
+    uint64_t num_locks_aligned;
+    uint64_t num_words;
+    decoder >> num_locks_aligned;
+    decoder >> num_words;
+    struct lock_bitmap * bm = new lock_bitmap();
+    bm->num_words = num_words;
+    bm->num_locks_aligned = num_locks_aligned;
+    bm->bitmap.resize(num_words, 0);
+    decoder.read_n_bytes(bm->bitmap.data(), sizeof(uint64_t) * num_words);
+    return bm;
+  }
+};
 class HStoreTransaction {
 
 public:
@@ -354,6 +427,7 @@ public:
   int64_t tries = 0;
   bool synchronous = true;
   bool abort_no_retry = false;
+  bool abort_lock_bm = false;
   bool finished_commit_phase = false;
   bool abort_lock_lock_released = false;
   bool release_lock_called = false;
@@ -374,5 +448,6 @@ public:
   bool command_written = false;
   int granules_left_to_lock = 0;
   int64_t position_in_log;
+  lock_bitmap * replay_bm_for_sp = nullptr;
 };
 } // namespace star

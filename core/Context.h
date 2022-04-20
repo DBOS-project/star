@@ -89,5 +89,6 @@ public:
   std::size_t granules_per_partition = 128;
   bool lotus_async_repl = false;
   bool hstore_active_active = false;
+  bool lotus_sp_parallel_exec_commit = false;
 };
 } // namespace star

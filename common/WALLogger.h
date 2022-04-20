@@ -213,7 +213,7 @@ public:
     waiting_syncs.fetch_add(1);
     while (sync_lsn.load() < lsn) {
       on_blocking();
-      std::this_thread::sleep_for(std::chrono::microseconds(10));
+      //std::this_thread::sleep_for(std::chrono::microseconds(10));
     }
   }
 
