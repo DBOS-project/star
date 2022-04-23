@@ -18,7 +18,7 @@ namespace star {
 
 
 struct TxnCommandBase {
-  int64_t tid; 
+  uint64_t tid; 
   int64_t position_in_log;
   star::HStoreTransaction * txn;
   int partition_id;
@@ -33,10 +33,6 @@ struct TxnCommand: public TxnCommandBase {
 };
 
 enum class HStoreMessage {
-  READ_LOCK_REQUEST = static_cast<int>(ControlMessage::NFIELDS),
-  READ_LOCK_RESPONSE,
-  WRITE_LOCK_REQUEST,
-  WRITE_LOCK_RESPONSE,
   ABORT_REQUEST,
   WRITE_REQUEST,
   WRITE_RESPONSE,
@@ -54,12 +50,12 @@ enum class HStoreMessage {
   COMMAND_REPLICATION_RESPONSE,
   COMMAND_REPLICATION_SP_REQUEST,
   COMMAND_REPLICATION_SP_RESPONSE,
-  ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST,
-  ACQUIRE_PARTITION_LOCK_AND_READ_RESPONSE,
+  ACQUIRE_LOCK_AND_READ_REQUEST,
+  ACQUIRE_LOCK_AND_READ_RESPONSE,
   WRITE_BACK_REQUEST,
   WRITE_BACK_RESPONSE,
-  RELEASE_PARTITION_LOCK_REQUEST,
-  RELEASE_PARTITION_LOCK_RESPONSE,
+  RELEASE_LOCK_REQUEST,
+  RELEASE_LOCK_RESPONSE,
   PERSIST_CMD_BUFFER_REQUEST,
   PERSIST_CMD_BUFFER_RESPONSE,
   GET_REPLAYED_LOG_POSITION_REQUEST,
@@ -132,8 +128,8 @@ public:
     return message_size;
   }
 
-  static std::size_t new_release_partition_lock_message(Message &message, ITable & table, uint32_t this_worker_id,
-                                                        uint32_t granule_id, bool sync, std::size_t ith_replica, 
+  static std::size_t new_release_lock_message(Message &message, ITable & table, uint32_t this_worker_id,
+                                                        uint32_t granule_id, bool write_lock, bool sync, std::size_t ith_replica, 
                                                         bool write_cmd_buffer, const TxnCommand & txn_cmd) {
 
     /*
@@ -141,17 +137,18 @@ public:
      */
 
     auto message_size =
-        MessagePiece::get_header_size() + sizeof(granule_id) + sizeof(uint32_t) + sizeof(bool) + sizeof(std::size_t) + sizeof(write_cmd_buffer);
+        MessagePiece::get_header_size() + sizeof(granule_id) + sizeof(uint32_t) + sizeof(write_lock) + sizeof(bool) + sizeof(std::size_t) + sizeof(write_cmd_buffer);
     if (write_cmd_buffer)
       message_size += sizeof(txn_cmd.is_mp) + sizeof(txn_cmd.command_data.size()) + txn_cmd.command_data.size() + sizeof(txn_cmd.tid) + sizeof(txn_cmd.partition_id);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(HStoreMessage::RELEASE_PARTITION_LOCK_REQUEST), message_size,
+        static_cast<uint32_t>(HStoreMessage::RELEASE_LOCK_REQUEST), message_size,
         table.tableID(), table.partitionID(), granule_id);
 
     Encoder encoder(message.data);
     encoder << message_piece_header;
     encoder << this_worker_id;
     encoder << granule_id;
+    encoder << write_lock;
     encoder << sync;
     encoder << ith_replica;
     encoder << write_cmd_buffer;
@@ -201,11 +198,13 @@ public:
     return message_size;
   }
 
-  static std::size_t new_acquire_partition_lock_and_read_message(Message &message, ITable &table,
+  static std::size_t new_acquire_lock_and_read_message(Message &message, ITable &table,
                                            const void *key,
                                            uint32_t key_offset,
                                            uint32_t this_worker_id,
                                            uint32_t granule_id,
+                                           bool write_lock, // If this lock request is write lock
+                                           bool request_lock, // If this lock request needs to be processed.
                                            std::size_t ith_replica,
                                            uint64_t tries) {
 
@@ -216,9 +215,10 @@ public:
     auto key_size = table.key_size();
 
     auto message_size =
-        MessagePiece::get_header_size() + key_size + sizeof(key_offset) + sizeof(granule_id) + sizeof(uint32_t) + sizeof(std::size_t) + sizeof(uint64_t);
+        MessagePiece::get_header_size() + key_size + sizeof(key_offset) + sizeof(granule_id) + 
+        sizeof(write_lock) + sizeof(request_lock) + sizeof(uint32_t) + sizeof(std::size_t) + sizeof(uint64_t);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(HStoreMessage::ACQUIRE_PARTITION_LOCK_AND_READ_REQUEST), message_size,
+        static_cast<uint32_t>(HStoreMessage::ACQUIRE_LOCK_AND_READ_REQUEST), message_size,
         table.tableID(), table.partitionID(), granule_id);
 
     // LOG(INFO) << "this_cluster_worker_id "<< this_worker_id << " new_acquire_partition_lock_and_read_message message on partition " 
@@ -229,6 +229,8 @@ public:
     encoder << key_offset;
     encoder << this_worker_id;
     encoder << granule_id;
+    encoder << write_lock;
+    encoder << request_lock;
     encoder << ith_replica;
     encoder << tries;
     message.set_is_replica(ith_replica > 0);
@@ -266,56 +268,6 @@ public:
     message.flush();
     message.set_gen_time(Time::now());
     message.set_message_gen_time(0);
-    return message_size;
-  }
-
-  static std::size_t new_read_lock_message(Message &message, ITable &table,
-                                           const void *key,
-                                           uint32_t key_offset) {
-
-    /*
-     * The structure of a read lock request: (primary key, key offset)
-     */
-
-    auto key_size = table.key_size();
-
-    auto message_size =
-        MessagePiece::get_header_size() + key_size + sizeof(key_offset);
-    auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(HStoreMessage::READ_LOCK_REQUEST), message_size,
-        table.tableID(), table.partitionID());
-
-    Encoder encoder(message.data);
-    encoder << message_piece_header;
-    encoder.write_n_bytes(key, key_size);
-    encoder << key_offset;
-    message.flush();
-    message.set_gen_time(Time::now());
-    return message_size;
-  }
-
-  static std::size_t new_write_lock_message(Message &message, ITable &table,
-                                            const void *key,
-                                            uint32_t key_offset) {
-
-    /*
-     * The structure of a write lock request: (primary key, key offset)
-     */
-
-    auto key_size = table.key_size();
-
-    auto message_size =
-        MessagePiece::get_header_size() + key_size + sizeof(key_offset);
-    auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(HStoreMessage::WRITE_LOCK_REQUEST), message_size,
-        table.tableID(), table.partitionID());
-
-    Encoder encoder(message.data);
-    encoder << message_piece_header;
-    encoder.write_n_bytes(key, key_size);
-    encoder << key_offset;
-    message.flush();
-    message.set_gen_time(Time::now());
     return message_size;
   }
 
@@ -447,233 +399,6 @@ class HStoreMessageHandler {
   using Transaction = HStoreTransaction;
 
 public:
-  static void read_lock_request_handler(MessagePiece inputPiece,
-                                        Message &responseMessage, ITable &table,
-                                        Transaction *txn) {
-    DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(HStoreMessage::READ_LOCK_REQUEST));
-    auto table_id = inputPiece.get_table_id();
-    auto partition_id = inputPiece.get_partition_id();
-    DCHECK(table_id == table.tableID());
-    DCHECK(partition_id == table.partitionID());
-    auto key_size = table.key_size();
-    auto value_size = table.value_size();
-
-    /*
-     * The structure of a read lock request: (primary key, key offset)
-     * The structure of a read lock response: (success?, key offset, value?,
-     * tid?)
-     */
-
-    auto stringPiece = inputPiece.toStringPiece();
-    uint32_t key_offset;
-
-    DCHECK(inputPiece.get_message_length() ==
-           MessagePiece::get_header_size() + key_size + sizeof(key_offset));
-
-    const void *key = stringPiece.data();
-    auto row = table.search(key);
-    std::atomic<uint64_t> &tid = *std::get<0>(row);
-
-    stringPiece.remove_prefix(key_size);
-    star::Decoder dec(stringPiece);
-    dec >> key_offset;
-
-    DCHECK(dec.size() == 0);
-
-    bool success;
-    uint64_t latest_tid = TwoPLHelper::read_lock(tid, success);
-
-    // prepare response message header
-    auto message_size =
-        MessagePiece::get_header_size() + sizeof(bool) + sizeof(key_offset);
-
-    if (success) {
-      message_size += value_size + sizeof(uint64_t);
-    }
-
-    auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(HStoreMessage::READ_LOCK_RESPONSE), message_size,
-        table_id, partition_id);
-
-    star::Encoder encoder(responseMessage.data);
-    encoder << message_piece_header;
-    encoder << success << key_offset;
-
-    if (success) {
-      // reserve size for read
-      responseMessage.data.append(value_size, 0);
-      void *dest =
-          &responseMessage.data[0] + responseMessage.data.size() - value_size;
-      // read to message buffer
-      TwoPLHelper::read(row, dest, value_size);
-      encoder << latest_tid;
-    }
-
-    responseMessage.flush();
-  }
-
-  static void read_lock_response_handler(MessagePiece inputPiece,
-                                         Message &responseMessage,
-                                         ITable &table, Transaction *txn) {
-    DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(HStoreMessage::READ_LOCK_RESPONSE));
-    auto table_id = inputPiece.get_table_id();
-    auto partition_id = inputPiece.get_partition_id();
-    DCHECK(table_id == table.tableID());
-    DCHECK(partition_id == table.partitionID());
-    auto key_size = table.key_size();
-    auto value_size = table.value_size();
-
-    /*
-     * The structure of a read lock response: (success?, key offset, value?,
-     * tid?)
-     */
-
-    bool success;
-    uint32_t key_offset;
-
-    StringPiece stringPiece = inputPiece.toStringPiece();
-    Decoder dec(stringPiece);
-    dec >> success >> key_offset;
-
-    if (success) {
-      DCHECK(inputPiece.get_message_length() ==
-             MessagePiece::get_header_size() + sizeof(success) +
-                 sizeof(key_offset) + value_size + sizeof(uint64_t));
-
-      TwoPLRWKey &readKey = txn->readSet[key_offset];
-      dec.read_n_bytes(readKey.get_value(), value_size);
-      uint64_t tid;
-      dec >> tid;
-      readKey.set_read_lock_bit();
-      readKey.set_tid(tid);
-    } else {
-      DCHECK(inputPiece.get_message_length() ==
-             MessagePiece::get_header_size() + sizeof(success) +
-                 sizeof(key_offset));
-
-      txn->abort_lock = true;
-    }
-
-    txn->pendingResponses--;
-    txn->network_size += inputPiece.get_message_length();
-  }
-
-  static void write_lock_request_handler(MessagePiece inputPiece,
-                                         Message &responseMessage,
-                                         ITable &table, Transaction *txn) {
-
-    DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(HStoreMessage::WRITE_LOCK_REQUEST));
-    auto table_id = inputPiece.get_table_id();
-    auto partition_id = inputPiece.get_partition_id();
-    DCHECK(table_id == table.tableID());
-    DCHECK(partition_id == table.partitionID());
-    auto key_size = table.key_size();
-    auto value_size = table.value_size();
-
-    /*
-     * The structure of a write lock request: (primary key, key offset)
-     * The structure of a write lock response: (success?, key offset, value?,
-     * tid?)
-     */
-
-    auto stringPiece = inputPiece.toStringPiece();
-    uint32_t key_offset;
-
-    DCHECK(inputPiece.get_message_length() ==
-           MessagePiece::get_header_size() + key_size + sizeof(key_offset));
-
-    const void *key = stringPiece.data();
-    auto row = table.search(key);
-    std::atomic<uint64_t> &tid = *std::get<0>(row);
-
-    stringPiece.remove_prefix(key_size);
-    star::Decoder dec(stringPiece);
-    dec >> key_offset;
-
-    DCHECK(dec.size() == 0);
-
-    bool success;
-    uint64_t latest_tid = TwoPLHelper::write_lock(tid, success);
-
-    // prepare response message header
-    auto message_size =
-        MessagePiece::get_header_size() + sizeof(bool) + sizeof(key_offset);
-
-    if (success) {
-      message_size += value_size + sizeof(uint64_t);
-    }
-
-    auto message_piece_header = MessagePiece::construct_message_piece_header(
-        static_cast<uint32_t>(HStoreMessage::WRITE_LOCK_RESPONSE), message_size,
-        table_id, partition_id);
-
-    star::Encoder encoder(responseMessage.data);
-    encoder << message_piece_header;
-    encoder << success << key_offset;
-
-    if (success) {
-      // reserve size for read
-      responseMessage.data.append(value_size, 0);
-      void *dest =
-          &responseMessage.data[0] + responseMessage.data.size() - value_size;
-      // read to message buffer
-      TwoPLHelper::read(row, dest, value_size);
-      encoder << latest_tid;
-    }
-
-    responseMessage.flush();
-  }
-
-  static void write_lock_response_handler(MessagePiece inputPiece,
-                                          Message &responseMessage,
-                                          ITable &table, Transaction *txn) {
-    DCHECK(inputPiece.get_message_type() ==
-           static_cast<uint32_t>(HStoreMessage::WRITE_LOCK_RESPONSE));
-    auto table_id = inputPiece.get_table_id();
-    auto partition_id = inputPiece.get_partition_id();
-    DCHECK(table_id == table.tableID());
-    DCHECK(partition_id == table.partitionID());
-    auto key_size = table.key_size();
-    auto value_size = table.value_size();
-
-    /*
-     * The structure of a read lock response: (success?, key offset, value?,
-     * tid?)
-     */
-
-    bool success;
-    uint32_t key_offset;
-
-    StringPiece stringPiece = inputPiece.toStringPiece();
-    Decoder dec(stringPiece);
-    dec >> success >> key_offset;
-
-    if (success) {
-      DCHECK(inputPiece.get_message_length() ==
-             MessagePiece::get_header_size() + sizeof(success) +
-                 sizeof(key_offset) + value_size + sizeof(uint64_t));
-
-      TwoPLRWKey &readKey = txn->readSet[key_offset];
-      dec.read_n_bytes(readKey.get_value(), value_size);
-      uint64_t tid;
-      dec >> tid;
-      readKey.set_write_lock_bit();
-      readKey.set_tid(tid);
-    } else {
-      DCHECK(inputPiece.get_message_length() ==
-             MessagePiece::get_header_size() + sizeof(success) +
-                 sizeof(key_offset));
-
-      txn->abort_lock = true;
-    }
-
-    txn->pendingResponses--;
-    txn->network_size += inputPiece.get_message_length();
-  }
-
   static void abort_request_handler(MessagePiece inputPiece,
                                     Message &responseMessage, ITable &table,
                                     Transaction *txn) {
@@ -972,10 +697,6 @@ public:
         std::function<void(MessagePiece, Message &, ITable &, Transaction *)>>
         v;
     v.resize(static_cast<int>(ControlMessage::NFIELDS));
-    v.push_back(read_lock_request_handler);
-    v.push_back(read_lock_response_handler);
-    v.push_back(write_lock_request_handler);
-    v.push_back(write_lock_response_handler);
     v.push_back(abort_request_handler);
     v.push_back(write_request_handler);
     v.push_back(write_response_handler);

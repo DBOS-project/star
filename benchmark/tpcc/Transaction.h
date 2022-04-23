@@ -74,6 +74,7 @@ public:
     uint32_t txn_type = 0;
     Encoder encoder(res);
     encoder << this->transaction_id << txn_type << this->straggler_wait_time << ith_replica << this->txn_random_seed_start << partition_id;
+    Transaction::serialize_lock_status(encoder);
     return res;
   }
 
@@ -367,6 +368,7 @@ public:
     uint32_t txn_type = 1;
     Encoder encoder(res);
     encoder << this->transaction_id <<  txn_type << this->straggler_wait_time << ith_replica << this->txn_random_seed_start << partition_id;
+    Transaction::serialize_lock_status(encoder);
     return res;
   }
 
