@@ -21,14 +21,14 @@ struct TxnCommandBase {
   uint64_t tid; 
   int64_t position_in_log;
   star::HStoreTransaction * txn;
+  uint64_t last_writer = std::numeric_limits<uint64_t>::max();
   int partition_id;
   int granule_id = -1;
   bool is_coordinator;
   bool is_mp;
-  bool is_sp_batch = false;
+  bool write_lock = false;
 };
 struct TxnCommand: public TxnCommandBase {
-  // if is_sp_batch == true, command_data = lock_bm + group of sp transactions
   std::string command_data;
 };
 
@@ -129,7 +129,7 @@ public:
   }
 
   static std::size_t new_release_lock_message(Message &message, ITable & table, uint32_t this_worker_id,
-                                                        uint32_t granule_id, bool write_lock, bool sync, std::size_t ith_replica, 
+                                                        uint32_t granule_id, uint64_t requested_last_writer, bool write_lock, bool sync, std::size_t ith_replica, 
                                                         bool write_cmd_buffer, const TxnCommand & txn_cmd) {
 
     /*
@@ -137,7 +137,7 @@ public:
      */
 
     auto message_size =
-        MessagePiece::get_header_size() + sizeof(granule_id) + sizeof(uint32_t) + sizeof(write_lock) + sizeof(bool) + sizeof(std::size_t) + sizeof(write_cmd_buffer);
+        MessagePiece::get_header_size() + sizeof(granule_id) + sizeof(uint32_t) + sizeof(requested_last_writer) + sizeof(write_lock) + sizeof(bool) + sizeof(std::size_t) + sizeof(write_cmd_buffer);
     if (write_cmd_buffer)
       message_size += sizeof(txn_cmd.is_mp) + sizeof(txn_cmd.command_data.size()) + txn_cmd.command_data.size() + sizeof(txn_cmd.tid) + sizeof(txn_cmd.partition_id);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
@@ -148,6 +148,7 @@ public:
     encoder << message_piece_header;
     encoder << this_worker_id;
     encoder << granule_id;
+    encoder << requested_last_writer;
     encoder << write_lock;
     encoder << sync;
     encoder << ith_replica;
@@ -203,6 +204,7 @@ public:
                                            uint32_t key_offset,
                                            uint32_t this_worker_id,
                                            uint32_t granule_id,
+                                           uint64_t requested_last_writer,
                                            bool write_lock, // If this lock request is write lock
                                            bool request_lock, // If this lock request needs to be processed.
                                            std::size_t ith_replica,
@@ -215,7 +217,7 @@ public:
     auto key_size = table.key_size();
 
     auto message_size =
-        MessagePiece::get_header_size() + key_size + sizeof(key_offset) + sizeof(granule_id) + 
+        MessagePiece::get_header_size() + key_size + sizeof(key_offset) + sizeof(granule_id) + sizeof(requested_last_writer) +
         sizeof(write_lock) + sizeof(request_lock) + sizeof(uint32_t) + sizeof(std::size_t) + sizeof(uint64_t);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(HStoreMessage::ACQUIRE_LOCK_AND_READ_REQUEST), message_size,
@@ -229,6 +231,7 @@ public:
     encoder << key_offset;
     encoder << this_worker_id;
     encoder << granule_id;
+    encoder << requested_last_writer;
     encoder << write_lock;
     encoder << request_lock;
     encoder << ith_replica;

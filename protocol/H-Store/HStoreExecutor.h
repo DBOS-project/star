@@ -120,7 +120,7 @@ public:
     Lock(): lock_word(0) {}
 
     std::string __attribute__ ((noinline)) to_string() {
-      return "[write-locked=" +std::to_string(write_locked()) + ", readers=" + std::to_string(reader_cnt()) << ", last-writer=" + std::to_string(get_last_writer()) + "]";
+      return "[write-locked=" +std::to_string(write_locked()) + ", readers=" + std::to_string(reader_cnt()) + ", last-writer=" + std::to_string(get_last_writer()) + "]";
     }
 
     uint64_t reader_cnt() {
@@ -423,7 +423,6 @@ public:
         LOG(INFO) << "HStore active active mode";
       }
       lock_buckets.resize(this->context.partition_num * this->context.granules_per_partition);
-      granule_is_in_replay_candidates.resize(this->context.partition_num * this->context.granules_per_partition, false);
       cluster_worker_messages.resize(cluster_worker_num);
       cluster_worker_messages_filled_in.resize(cluster_worker_num, false);
       for (int i = 0; i < (int)cluster_worker_num; ++i) {
@@ -479,6 +478,8 @@ public:
           } else {
             DCHECK(lock_buckets[lock_id].write_locked());
             DCHECK(lock_buckets[lock_id].get_last_writer() == txn.transaction_id);
+            DCHECK(txn.transaction_id != lock.get_last_writer());
+            lock_buckets[lock_id].set_last_writer(lock.get_last_writer()); // Restore the last writer stored in lock
             lock_buckets[lock_id].clear_write_lock();
           }
         } else {
@@ -497,52 +498,17 @@ public:
           txn_cmd.is_mp = true;
           bool write_lock = lock.get_mode() == TransactionType::LockStatus::LockMode::WRITE;
           DCHECK(0 <= owner_cluster_worker && owner_cluster_worker < cluster_worker_num);
+          uint64_t requested_last_writer = lock.get_last_writer(); // Restore the last writer with last txn that sucessfully committed while write-locked the granule
+          DCHECK(txn.transaction_id != requested_last_writer);
+          DCHECK(write_cmd_buffer == false);
           txn.network_size += MessageFactoryType::new_release_lock_message(
-              *messages[owner_cluster_worker], *table, this_cluster_worker_id, granule_id, write_lock, 
+              *messages[owner_cluster_worker], *table, this_cluster_worker_id, granule_id, requested_last_writer, write_lock, 
               false, txn.ith_replica, write_cmd_buffer, txn_cmd);
           //LOG(INFO) << "Abort release lock MP partition " << partition_id << " by cluster worker" << this_cluster_worker_id << " " << tid_to_string(txn.transaction_id) << " request sent";
           add_outgoing_message(owner_cluster_worker);
         }
         lock.set_released();
       }
-
-      // int partition_count = txn.get_partition_count();
-      // for (int i = 0; i < partition_count; ++i) {
-      //   int partition_id = txn.get_partition(i);
-      //   int granules_count = txn.get_partition_granule_count(i);
-      //   auto owner_cluster_worker = partition_owner_cluster_worker(partition_id, txn.ith_replica);
-      //   for (int j = 0; j < granules_count; ++j) {
-      //     int granule_id = txn.get_granule(i, j);
-          
-      //     if (owner_cluster_worker == this_cluster_worker_id) {
-      //       int lock_id = to_lock_id(partition_id, granule_id);
-      //       if (lock_buckets[lock_id] == txn.transaction_id) {
-      //         //LOG(INFO) << "Abort release lock MP partition " << lock_id_to_string(lock_id) << " by cluster worker" << this_cluster_worker_id << " " << tid_to_string(txn.transaction_id);
-      //         lock_buckets[lock_id] = -1; // unlock partitions
-      //         lock_bm.clear_bit(lock_id);
-      //       }
-      //     } else {
-      //       // send messages to other partitions to abort and unlock partitions
-      //       // No need to wait for the response.
-      //       //txn.pendingResponses++;
-      //       auto tableId = 0;
-      //       DCHECK(0 <= owner_cluster_worker && owner_cluster_worker < cluster_worker_num);
-      //       auto table = this->db.find_table(tableId, partition_id);
-      //       messages[owner_cluster_worker]->set_transaction_id(txn.transaction_id);
-            
-      //       txn_cmd.partition_id = partition_id;
-      //       txn_cmd.granule_id = granule_id;
-      //       txn_cmd.command_data = "";
-      //       txn_cmd.tid = txn.transaction_id;
-      //       txn_cmd.is_mp = true;
-      //       DCHECK(0 <= owner_cluster_worker && owner_cluster_worker < cluster_worker_num);
-      //       txn.network_size += MessageFactoryType::new_release_lock_message(
-      //           *messages[owner_cluster_worker], *table, this_cluster_worker_id, granule_id, false, txn.ith_replica, write_cmd_buffer, txn_cmd);
-      //       //LOG(INFO) << "Abort release lock MP partition " << partition_id << " by cluster worker" << this_cluster_worker_id << " " << tid_to_string(txn.transaction_id) << " request sent";
-      //       add_outgoing_message(owner_cluster_worker);
-      //     }
-      //   }
-      // }
       txn.message_flusher();
     } else {
       DCHECK(txn.pendingResponses == 0);
@@ -559,28 +525,14 @@ public:
           DCHECK(lock_buckets[lock_id].reader_cnt() >= 1);
           lock_buckets[lock_id].dec_reader_cnt();
         } else {
-          if (lock_buckets[lock_id].write_locked()) {
-            if (lock_buckets[lock_id].get_last_writer() == txn.transaction_id) {
-              lock_buckets[lock_id].clear_write_lock();
-            } else {
-              DCHECK(false);
-            }
-          }
+          DCHECK(lock_buckets[lock_id].write_locked());
+          DCHECK(lock_buckets[lock_id].get_last_writer() == txn.transaction_id);
+          DCHECK(txn.transaction_id != lock.get_last_writer());
+          lock_buckets[lock_id].set_last_writer(lock.get_last_writer()); // Restore the last writer with last txn that sucessfully committed while write-locked the granule
+          lock_buckets[lock_id].clear_write_lock();
         }
         lock.set_released();
       }
-
-      // auto partition_id = txn.get_partition(0);
-      // int granules_count = txn.get_partition_granule_count(0);
-      // for (int j = 0; j < granules_count; ++j) {
-      //   int granule_id = txn.get_granule(0, j);
-      //   auto lock_id = to_lock_id(partition_id, granule_id);
-      //   if (lock_buckets[lock_id] == txn.transaction_id) {
-      //     //LOG(INFO) << "Abort release lock local partition " << lock_id_to_string(lock_id) << " by cluster worker" << this_cluster_worker_id<< " " << tid_to_string(txn.transaction_id);
-      //     lock_buckets[lock_id] = -1;
-      //     lock_bm.clear_bit(lock_id);
-      //   }
-      // }
     }
     txn.abort_lock_lock_released = true;
   }
@@ -638,6 +590,8 @@ public:
       int granule_id = is_mp ? -1 : txn.get_granule(0, 0);
       bool is_coordinator = true;
       int64_t position_in_log = next_position_in_command_log++;
+      uint64_t last_writer = 0;
+      bool write_lock = false;
       minimum_coord_txn_written_log_position = position_in_log;
 
       size_t command_buffer_data_size = command_buffer_data.size();
@@ -648,6 +602,8 @@ public:
       enc << position_in_log;
       enc << partition_id;
       enc << granule_id;
+      enc << last_writer;
+      enc << write_lock;
       enc << txn_command_data.size();
       enc.write_n_bytes(txn_command_data.data(), txn_command_data.size());
       
@@ -722,6 +678,7 @@ public:
   void release_locks_async(TransactionType &txn, std::vector<std::unique_ptr<Message>> &messages, bool write_cmd_buffer, bool flush_message = true) {
     if (is_replica_worker) {
       DCHECK(txn.ith_replica != 0);
+      DCHECK(write_cmd_buffer == false);
     }
     txn.release_lock_called = true;
     if (txn.is_single_partition() == false) {
@@ -745,17 +702,18 @@ public:
           } else {
             if (lock.get_mode() == TransactionType::LockStatus::LockMode::READ) {
               DCHECK(lock_buckets[lock_id].reader_cnt() >= 1);
+              DCHECK(lock_buckets[lock_id].get_last_writer() == lock.get_last_writer());
               lock_buckets[lock_id].dec_reader_cnt();
             } else {
               DCHECK(lock_buckets[lock_id].write_locked());
               DCHECK(lock_buckets[lock_id].get_last_writer() == txn.transaction_id);
+              DCHECK(txn.transaction_id != lock.get_last_writer());
               lock_buckets[lock_id].clear_write_lock();
             }
           }
           if (is_replica_worker) {
             auto & q = get_partition_cmd_queue(lock_id);
             if (q.empty() == false) {
-              //add_to_replay_candidate_granules(lock_id);
               DCHECK(granule_command_queue_processing[granule_to_cmd_queue_index[lock_id]] == false);
               replay_commands_in_granule(lock_id);
             }
@@ -776,64 +734,21 @@ public:
           // send messages to unlock partitions;
           messages[owner_cluster_worker]->set_transaction_id(txn.transaction_id);
           DCHECK(0 <= owner_cluster_worker && owner_cluster_worker < cluster_worker_num);
+          uint64_t requested_last_writer = txn.transaction_id;
+          if (write_lock) {
+            requested_last_writer = txn.transaction_id;
+            DCHECK(requested_last_writer != lock.get_last_writer());
+          } else {
+            requested_last_writer = lock.get_last_writer();
+          }
           txn.network_size += MessageFactoryType::new_release_lock_message(
-              *messages[owner_cluster_worker], *table, this_cluster_worker_id, granule_id, write_lock, 
+              *messages[owner_cluster_worker], *table, this_cluster_worker_id, granule_id, requested_last_writer, write_lock, 
               false, txn.ith_replica, write_cmd_buffer, txn_cmd);
           add_outgoing_message(owner_cluster_worker);
         }
         lock.set_released();
       }
 
-      // int partition_count = txn.get_partition_count();
-      // for (int i = 0; i < partition_count; ++i) {
-      //   int partitionId = txn.get_partition(i);
-      //   int granules_count = txn.get_partition_granule_count(i);
-      //   auto owner_cluster_worker = partition_owner_cluster_worker(partitionId, txn.ith_replica);
-      //   for (int j = 0; j < granules_count; ++j) {
-      //     int granule_id = txn.get_granule(i, j);
-      //     if (owner_cluster_worker == this_cluster_worker_id) {
-      //       auto lock_id = to_lock_id(partitionId, granule_id);
-      //       DCHECK(lock_buckets[lock_id] != -1);
-      //       DCHECK(lock_buckets[lock_id] == txn.transaction_id);
-      //       //if (is_replica_worker)
-      //       //LOG(INFO) << "Commit MP release lock partition " <<  lock_id_to_string(lock_id) << " by cluster worker" << this_cluster_worker_id << " ith_replica " << txn.ith_replica << " txn " << tid_to_string(txn.transaction_id);;
-      //       if (this->context.hstore_active_active && is_replica_worker == false) {
-      //         hstore_active_active_granules_locked.push_back(lock_id);
-      //       } else {
-      //         lock_buckets[lock_id] = -1; // unlock partitions
-      //         lock_bm.clear_bit(lock_id);
-      //       }
-      //       if (is_replica_worker) {
-      //         auto & q = get_partition_cmd_queue(lock_id);
-      //         if (q.empty() == false) {
-      //           //add_to_replay_candidate_granules(lock_id);
-      //           DCHECK(granule_command_queue_processing[granule_to_cmd_queue_index[lock_id]] == false);
-      //           replay_commands_in_granule(lock_id);
-      //         }
-      //         auto & q2 = get_granule_lock_request_queue(lock_id);
-      //         if (q2.empty() == false) {
-      //           granule_lock_reqeust_candidates.push_back(lock_id);
-      //         }
-      //       }
-      //     } else {
-      //         auto tableId = 0;
-      //         auto table = this->db.find_table(tableId, partitionId);
-      //         txn_cmd.partition_id = partitionId;
-      //         txn_cmd.granule_id = granule_id;
-      //         txn_cmd.command_data = "";
-      //         txn_cmd.tid = txn.transaction_id;
-      //         txn_cmd.is_mp = true;
-      //         // send messages to unlock partitions;
-      //         messages[owner_cluster_worker]->set_transaction_id(txn.transaction_id);
-      //         DCHECK(0 <= owner_cluster_worker && owner_cluster_worker < cluster_worker_num);
-      //         txn.network_size += MessageFactoryType::new_release_lock_message(
-      //             *messages[owner_cluster_worker], *table, this_cluster_worker_id, granule_id, false, txn.ith_replica, write_cmd_buffer, txn_cmd);
-      //         add_outgoing_message(owner_cluster_worker);
-      //         //if (is_replica_worker)
-      //         //  LOG(INFO) << "Partition worker " << this_cluster_worker_id << " issueed lock release request on partition " << partitionId << " ith_replica " << txn.ith_replica << " txn " << tid_to_string(txn.transaction_id);;
-      //     }
-      //   }
-      // }
       if (flush_message) {
         txn.message_flusher();
       }
@@ -854,15 +769,13 @@ public:
         } else {
           if (lock.get_mode() == TransactionType::LockStatus::LockMode::READ) {
             DCHECK(lock_buckets[lock_id].reader_cnt() >= 1);
+            DCHECK(lock_buckets[lock_id].get_last_writer() == lock.get_last_writer());
             lock_buckets[lock_id].dec_reader_cnt();
           } else {
-            if (lock_buckets[lock_id].write_locked()) {
-              if (lock_buckets[lock_id].get_last_writer() == txn.transaction_id) {
-                lock_buckets[lock_id].clear_write_lock();
-              } else {
-                DCHECK(false);
-              }
-            }
+            DCHECK(lock_buckets[lock_id].write_locked());
+            DCHECK(lock_buckets[lock_id].get_last_writer() == txn.transaction_id);
+            DCHECK(txn.transaction_id != lock.get_last_writer());
+            lock_buckets[lock_id].clear_write_lock();
           }
         }
         lock.set_released();
@@ -870,7 +783,6 @@ public:
         if (is_replica_worker) {
           auto & q = get_partition_cmd_queue(lock_id);
           if (q.empty() == false) {
-            //add_to_replay_candidate_granules(lock_id);
             DCHECK(granule_command_queue_processing[granule_to_cmd_queue_index[lock_id]] == false);
             replay_commands_in_granule(lock_id);
           }
@@ -880,34 +792,6 @@ public:
           }
         }
       }
-      
-      // auto partition_id = txn.get_partition(0);
-      // int granules_count = txn.get_partition_granule_count(0);
-      // for (int j = 0; j < granules_count; ++j) {
-      //   int granule_id = txn.get_granule(0, j);
-      //   auto lock_id = to_lock_id(partition_id, granule_id);
-      //   DCHECK(lock_buckets[lock_id] == txn.transaction_id);
-      //   //if (is_replica_worker)
-      //   //LOG(INFO) << "Commit release lock partition " << lock_id << " by cluster worker " << this_cluster_worker_id << " ith_replica " << txn.ith_replica << " txn " << tid_to_string(txn.transaction_id);;
-      //   if (this->context.hstore_active_active && is_replica_worker == false) {
-      //     hstore_active_active_granules_locked.push_back(lock_id);
-      //   } else {
-      //     lock_buckets[lock_id] = -1; // unlock partitions
-      //     lock_bm.clear_bit(lock_id);
-      //   }
-      //   if (is_replica_worker) {
-      //     auto & q = get_partition_cmd_queue(lock_id);
-      //     if (q.empty() == false) {
-      //       //add_to_replay_candidate_granules(lock_id);
-      //       DCHECK(granule_command_queue_processing[granule_to_cmd_queue_index[lock_id]] == false);
-      //       replay_commands_in_granule(lock_id);
-      //     }
-      //     auto & q2 = get_granule_lock_request_queue(lock_id);
-      //     if (q2.empty() == false) {
-      //       granule_lock_reqeust_candidates.push_back(lock_id);
-      //     }
-      //   }
-      // }
     }
   }
 
@@ -983,7 +867,7 @@ public:
         return;
       }
       int owner_cluster_worker = partition_owner_cluster_worker(partition_id, txn.ith_replica);
-      if (local_index_read || (txn.is_single_partition() && this->context.granules_per_partition == 1) || (is_replica_worker && owner_cluster_worker == this_cluster_worker_id)) {
+      if (local_index_read || (txn.is_single_partition() && this->context.granules_per_partition == 1)) { //  || (is_replica_worker && owner_cluster_worker == this_cluster_worker_id)
         remote = false;
         success = true;
         this->search(table_id, partition_id, key, value);
@@ -1009,33 +893,47 @@ public:
         //   success = false;
         //   return;
         // }
-        if (success_state == TransactionType::LockStatus::SuccessState::INIT) { // fisrt lock attempt of this transaction on this granule
+        if (is_replica_worker) {
           if (write_lock) {
-            if (lock_buckets[lock_id].reader_cnt() > 0) {
-              success = false;
-              return;
-            } else if (lock_buckets[lock_id].write_locked() == false) { // No reader and not write locked
-              lock_buckets[lock_id].set_last_writer(txn.transaction_id);
-              lock_buckets[lock_id].set_write_lock();
-            } else if (lock_buckets[lock_id].get_last_writer() != txn.transaction_id){ // Write locked by others
-              success = false; 
-              return;
-            } else {
-              // Locked by `txn.transaction_id`
-            }
+            DCHECK(lock_buckets[lock_id].get_last_writer() == txn.transaction_id);
+            DCHECK(lock_buckets[lock_id].write_locked());
           } else {
-            // Read lock
-            if (lock_buckets[lock_id].write_locked()) { // write-locked
-              success = false;
-              return;
-            } else {
-              lock_buckets[lock_id].inc_reader_cnt();
-            }
+            DCHECK(lock_buckets[lock_id].get_last_writer() == txn.lock_status.get_lock(lock_index).get_last_writer());
+            DCHECK(lock_buckets[lock_id].reader_cnt() > 0);
           }
-        } else if (success_state == TransactionType::LockStatus::SuccessState::FAILED) {
-          success = false;
-          return;
+        } else {
+          if (success_state == TransactionType::LockStatus::SuccessState::INIT) { // fisrt lock attempt of this transaction on this granule
+            auto lock_bucket_last_writer = lock_buckets[lock_id].get_last_writer();
+            if (write_lock) {
+              if (lock_buckets[lock_id].reader_cnt() > 0) {
+                success = false;
+                return;
+              } else if (lock_buckets[lock_id].write_locked() == false) { // No reader and not write locked
+                txn.lock_status.get_lock(lock_index).set_last_writer(lock_bucket_last_writer);
+                lock_buckets[lock_id].set_last_writer(txn.transaction_id);
+                lock_buckets[lock_id].set_write_lock();
+              } else if (lock_buckets[lock_id].get_last_writer() != txn.transaction_id){ // Write locked by others
+                success = false; 
+                return;
+              } else {
+                // Locked by `txn.transaction_id`
+              }
+            } else {
+              // Read lock
+              if (lock_buckets[lock_id].write_locked()) { // write-locked
+                success = false;
+                return;
+              } else {
+                lock_buckets[lock_id].inc_reader_cnt();
+                txn.lock_status.get_lock(lock_index).set_last_writer(lock_bucket_last_writer);
+              }
+            }
+          } else if (success_state == TransactionType::LockStatus::SuccessState::FAILED) {
+            success = false;
+            return;
+          }
         }
+
         // if (lock_buckets[lock_id] == -1 && is_replica_worker)
         //    LOG(INFO) << "Tranasction from worker " << this_cluster_worker_id << " locked partition " << lock_id << " txn " << tid_to_string(txn.transaction_id);;
         // if (lock_buckets[lock_id] == -1) {
@@ -1068,9 +966,14 @@ public:
         DCHECK(success_state != TransactionType::LockStatus::SuccessState::FAILED);
         DCHECK(success_state != TransactionType::LockStatus::SuccessState::SUCCEED);
         bool request_lock = success_state == TransactionType::LockStatus::SuccessState::INIT;
+        uint64_t granule_last_writer = txn.lock_status.get_lock(lock_index).get_last_writer();
+        if (is_replica_worker && write_lock) {
+          DCHECK(granule_last_writer != std::numeric_limits<uint64_t>::max());
+          granule_last_writer = txn.transaction_id; // for write lock request, the last successful writer is the transaction itself.
+        }
         txn.network_size += MessageFactoryType::new_acquire_lock_and_read_message(
               *(cluster_worker_messages[owner_cluster_worker]), *table, key, key_offset, this_cluster_worker_id, 
-              granule_id, write_lock, request_lock, txn.ith_replica, 0);
+              granule_id, granule_last_writer, write_lock, request_lock, txn.ith_replica, 0);
         add_outgoing_message(owner_cluster_worker);
         txn.distributed_transaction = true;
         txn.pendingResponses++;
@@ -1108,21 +1011,22 @@ public:
     uint32_t granule_id;
     auto stringPiece = inputPiece.toStringPiece();
     uint32_t key_offset;
+    uint64_t requested_last_writer;
     bool write_lock = false;
     bool request_lock = false;
     std::size_t ith_replica;
 
     DCHECK(inputPiece.get_message_length() ==
-           MessagePiece::get_header_size() + key_size + sizeof(key_offset) + sizeof(write_lock) + sizeof(request_lock) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(std::size_t) + sizeof(uint64_t));
+           MessagePiece::get_header_size() + key_size + sizeof(key_offset) + sizeof(requested_last_writer) + sizeof(write_lock) + sizeof(request_lock) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(std::size_t) + sizeof(uint64_t));
 
     const void *key = stringPiece.data();
     //uint64_t ts3 = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()).time_since_epoch().count();
     uint64_t ts3 = 0;
     uint64_t ts1;
-    uint64_t last_writer = 0;
+    uint64_t lock_bucket_last_writer = 0;
     stringPiece.remove_prefix(key_size);
     star::Decoder dec(stringPiece);
-    dec >> key_offset >> request_remote_worker_id >> granule_id >> write_lock >> request_lock >> ith_replica >> ts1;
+    dec >> key_offset >> request_remote_worker_id >> granule_id >> requested_last_writer >> write_lock >> request_lock >> ith_replica >> ts1;
 
     DCHECK(granule_id == inputPiece.get_granule_id());
     if (ith_replica > 0)
@@ -1133,10 +1037,40 @@ public:
     DCHECK(dec.size() == 0);
     char success = 0;
     auto lock_id = to_lock_id(partition_id, granule_id);
+    lock_bucket_last_writer = lock_buckets[lock_id].get_last_writer();
     if (is_replica_worker) {
       success = 1;
-      CHECK(false);
       // TODO: replay lock_buckets
+      if (write_lock) {
+        if (lock_buckets[lock_id].write_locked() == false || lock_buckets[lock_id].get_last_writer() != requested_last_writer) {
+          success = 0;
+        }
+      } else {
+        if (lock_buckets[lock_id].write_locked() ||
+            lock_buckets[lock_id].reader_cnt() == 0 || 
+            lock_buckets[lock_id].get_last_writer() != requested_last_writer) {
+          success = 0;
+        }
+      }
+      if (success == 0) {
+        success = 1;
+        replay_commands_in_granule(lock_id);
+        if (write_lock) {
+          if (lock_buckets[lock_id].write_locked() == false || lock_buckets[lock_id].get_last_writer() != requested_last_writer) {
+            success = 0;
+          }
+        } else {
+          if (lock_buckets[lock_id].write_locked() ||
+              lock_buckets[lock_id].reader_cnt() == 0 || 
+              lock_buckets[lock_id].get_last_writer() != requested_last_writer) {
+            success = 0;
+          }
+        }
+      }
+      //LOG(INFO) << "This cluster worker " << this_cluster_worker_id << ", processed lock_request on lock_id " << lock_id << " for txn " << tid << ", success " << (int)success << ", lock status " << lock_buckets[lock_id].to_string();
+      if (success != 1) {
+        return false;
+      }
       // if (lock_buckets[lock_id] != tid) {
       //   //LOG(INFO) << "Transaction " << tid << " failed to lock partition " <<  lock_id << " locked by transaction " << lock_buckets[lock_id];
       //   replay_sp_commands(lock_id);
@@ -1193,10 +1127,9 @@ public:
         success = 1;
       }
     }
-    last_writer = lock_buckets[lock_id].get_last_writer();
     // prepare response message header
     auto message_size =
-        MessagePiece::get_header_size() + sizeof(success) + sizeof(key_offset) + sizeof(last_writer) + 
+        MessagePiece::get_header_size() + sizeof(success) + sizeof(key_offset) + sizeof(lock_bucket_last_writer) + 
         sizeof(write_lock) + sizeof(request_lock) + sizeof(uint64_t) * 3;
 
     if (success == 1) {
@@ -1213,7 +1146,7 @@ public:
 
     star::Encoder encoder(responseMessage.data);
     encoder << message_piece_header;
-    encoder << success << key_offset << last_writer << write_lock << request_lock << ts1 << ts3;
+    encoder << success << key_offset << lock_bucket_last_writer << write_lock << request_lock << ts1 << ts3;
 
     if (success == 1) {
       auto row = table.search(key);
@@ -1238,7 +1171,7 @@ public:
     return success == 1;
   }
 // TODO: replay lock_buckets
-/*
+
   void spread_replicated_commands(const std::string & buffer) {
     DCHECK(is_replica_worker);
     Decoder dec(buffer);
@@ -1280,9 +1213,15 @@ public:
             cmd_mp.position_in_log = cmd.position_in_log;
             cmd_mp.is_mp = true;
             cmd_mp.txn = mp_txn;
-            
+            DCHECK(mp_txn->lock_status.num_locks() > 0);
+            auto lock_index = mp_txn->lock_status.get_lock_index_no_write(lock_id);
+            DCHECK(lock_index != -1);
+            cmd_mp.last_writer = mp_txn->lock_status.get_lock(lock_index).get_last_writer();
+            DCHECK(cmd_mp.last_writer != std::numeric_limits<uint64_t>::max());
+            cmd_mp.write_lock = mp_txn->lock_status.get_lock(lock_index).get_mode() == TransactionType::LockStatus::LockMode::WRITE;
+
             q.emplace_back(std::move(cmd_mp));
-            if (lock_buckets[lock_id] == -1) {
+            if (lock_buckets[lock_id].write_locked() == false) {
               DCHECK(granule_command_queue_processing[granule_to_cmd_queue_index[lock_id]] == false);
               replay_commands_in_granule(lock_id);
             }
@@ -1301,6 +1240,8 @@ public:
       dec >> cmd.position_in_log;
       dec >> cmd.partition_id;
       dec >> cmd.granule_id;
+      dec >> cmd.last_writer;
+      dec >> cmd.write_lock;
       std::size_t command_data_size;
       dec >> command_data_size;
       std::string command_data = std::string(dec.get_raw_ptr(), command_data_size);
@@ -1317,9 +1258,7 @@ public:
         cmd.txn = nullptr;
         q.emplace_back(std::move(cmd));
 
-        // if (lock_buckets[lock_id] == -1)
-        //   add_to_replay_candidate_granules(lock_id);
-        if (lock_buckets[lock_id] == -1) {
+        if (lock_buckets[lock_id].write_locked() == false) {
           DCHECK(granule_command_queue_processing[granule_to_cmd_queue_index[lock_id]] == false);
           replay_commands_in_granule(lock_id);
         }
@@ -1344,13 +1283,13 @@ public:
           std::string command_data(dec_sp_data.get_raw_ptr(), command_data_size);
           dec_sp_data.remove_prefix(command_data_size);
           auto mp_txn = this->workload.deserialize_from_raw(this->context, command_data).release();
+          mp_txn->context = &this->context;
           CHECK(mp_txn->is_single_partition());
           bm->inc_ref();
           mp_txn->replay_bm_for_sp = bm;
           TxnCommandBase cmd_mp_txn = cmd;
           cmd_mp_txn.tid = mp_txn->transaction_id;
           cmd_mp_txn.is_coordinator = true;
-          cmd_mp_txn.is_sp_batch = true;
           cmd_mp_txn.txn = mp_txn;
           cmd_mp_txn.is_mp = true;
           enqueue_mp_transaction(cmd_mp_txn, mp_txn);
@@ -1358,21 +1297,12 @@ public:
       } else { // place into multiple partition command queues for replay
         DCHECK(cmd.partition_id == -1);
         auto mp_txn = this->workload.deserialize_from_raw(this->context, command_data).release();
+        mp_txn->context = &this->context;
         enqueue_mp_transaction(cmd, mp_txn);
       }
     }
     DCHECK(dec.size() == 0);
     spread_cnt.add(cmd_cnt);
-  }
-*/
-
-  std::deque<int> replay_candidate_granules;
-  std::vector<bool> granule_is_in_replay_candidates;
-  void add_to_replay_candidate_granules(int lock_id) {
-    if (granule_is_in_replay_candidates[lock_id])
-      return;
-    replay_candidate_granules.push_back(lock_id);
-    granule_is_in_replay_candidates[lock_id] = true;
   }
 
   void command_replication_request_handler(const Message & inputMessage, MessagePiece inputPiece,
@@ -1404,7 +1334,7 @@ public:
       spread_time.add(us);
     });
 // TODO: replay lock_buckets
-    //spread_replicated_commands(data);
+    spread_replicated_commands(data);
 
     // if (persist_cmd_buffer) {
     //   persist_and_clear_command_buffer(true);
@@ -1489,7 +1419,17 @@ public:
       }
       if (requested_lock) {
         DCHECK(lstatus.get_success() == TransactionType::LockStatus::SuccessState::REQUESTED);
-        lstatus.set_last_writer(last_writer);
+        if (is_replica_worker == false) {
+          DCHECK(last_writer != txn->transaction_id);
+          lstatus.set_last_writer(last_writer);
+        } else {
+          if (write_lock) {
+            DCHECK(last_writer == txn->transaction_id);
+          } else {
+            DCHECK(last_writer != txn->transaction_id);
+          }
+          DCHECK(lstatus.get_last_writer() != txn->transaction_id);
+        }
       }
       lstatus.set_success(TransactionType::LockStatus::SuccessState::SUCCEED);
     } else {
@@ -1508,6 +1448,7 @@ public:
       lstatus.set_success(TransactionType::LockStatus::SuccessState::FAILED);
     }
     txn->pendingResponses--;
+    DCHECK(txn->pendingResponses >= 0);
     txn->network_size += inputPiece.get_message_length();
     if (txn->lock_request_responded == false) {
       txn->lock_request_responded = true;
@@ -1826,6 +1767,7 @@ public:
      */
     uint32_t request_remote_worker;
     uint32_t granule_id;
+    uint64_t requested_last_writer;
     bool write_lock;
     bool sync, write_cmd_buffer;
     std::size_t ith_replica;
@@ -1833,15 +1775,17 @@ public:
     auto stringPiece = inputPiece.toStringPiece();
 
     Decoder dec(stringPiece);
-    dec >> request_remote_worker >> granule_id >> write_lock >> sync >> ith_replica >> write_cmd_buffer;
-
+    dec >> request_remote_worker >> granule_id >> requested_last_writer >> write_lock >> sync >> ith_replica >> write_cmd_buffer;
+    auto lock_id = to_lock_id(partition_id, granule_id);
+    
+    //auto last_writer = lock_buckets[lock_id].get_last_writer();
     DCHECK(granule_id == inputPiece.get_granule_id());
     if (write_cmd_buffer) {
       std::string txn_command_data;
       std::size_t txn_command_data_size;
       int partition_id;
       bool is_mp;
-      int64_t tid;
+      uint64_t tid;
       dec >> partition_id;
       dec >> tid;
       dec >> is_mp;
@@ -1861,6 +1805,14 @@ public:
       enc << position_in_log;
       enc << partition_id;
       enc << granule_id;
+      enc << requested_last_writer;
+      enc << write_lock;
+      if (write_lock) {
+        DCHECK(lock_buckets[lock_id].get_last_writer() == requested_last_writer);
+        DCHECK(requested_last_writer == tid);
+      } else {
+        DCHECK(lock_buckets[lock_id].get_last_writer() != tid);
+      }
       enc << txn_command_data_size;
       enc.write_n_bytes(txn_command_data.data(), txn_command_data_size);
       command_buffer_outgoing_data.insert(command_buffer_outgoing_data.end(), command_buffer_data.begin() + command_buffer_data_size, command_buffer_data.end());
@@ -1870,7 +1822,7 @@ public:
     if (ith_replica > 0)
       DCHECK(is_replica_worker);
     bool success;
-    auto lock_id = to_lock_id(partition_id, granule_id);
+    
     // if (lock_buckets[lock_id] != tid) {
     //   success = false;
     // } else {
@@ -1887,17 +1839,11 @@ public:
       lock_buckets[lock_id].dec_reader_cnt();
       success = true;
     } else {
-      if (lock_buckets[lock_id].write_locked()) {
-        DCHECK(lock_buckets[lock_id].get_last_writer() == tid);
-        lock_buckets[lock_id].clear_write_lock();
-        success = true;
-      } else {
-        if (lock_buckets[lock_id].get_last_writer() == tid) {
-          success = true;
-        } else {
-          DCHECK(false);
-        }
-      }
+      DCHECK(lock_buckets[lock_id].write_locked());
+      DCHECK(lock_buckets[lock_id].get_last_writer() == tid);
+      lock_buckets[lock_id].set_last_writer(requested_last_writer);
+      lock_buckets[lock_id].clear_write_lock();
+      success = true;
     }
 
     if (is_replica_worker) {
@@ -1905,7 +1851,6 @@ public:
       if (q.empty() == false) {
         DCHECK(granule_command_queue_processing[granule_to_cmd_queue_index[lock_id]] == false);
         replay_commands_in_granule(lock_id);
-        //add_to_replay_candidate_granules(lock_id);
       }
       auto & q2 = get_granule_lock_request_queue(lock_id);
       if (q2.empty() == false) {
@@ -2151,7 +2096,8 @@ public:
 
   void process_execution_async_single_mp_txn(TransactionType* txn) {
     setupHandlers(*txn);
-    txn->reset();
+    //txn->reset();
+    DCHECK(txn->lock_status.num_locks() > 0);
     txn->execution_phase = false;
     txn->synchronous = false;
     active_txns[txn->transaction_id] = txn;
@@ -2785,116 +2731,113 @@ public:
   bool processing_mp = false;
 
   // TODO: replay lock_buckets
-  // void replay_sp_queue_commands_unprotected(std::deque<TxnCommandBase> & q) {
-  //   while (q.empty() == false) {
-  //     auto & cmd = q.front();
-  //     if (cmd.is_coordinator == false) {
-  //       //DCHECK(false);
-  //       auto partition_id = cmd.partition_id;
-  //       auto granule_id = cmd.granule_id;
-  //       auto lock_id = to_lock_id(partition_id, granule_id);
-  //       if (lock_buckets[lock_id] == -1) {
-  //         // The transaction owns the partition.
-  //         // Wait for coordinator transaction finish reading/writing and unlock the partiiton.
-  //         lock_buckets[lock_id] = cmd.tid;
-  //         lock_bm.set_bit(lock_id);
-  //         if (cmd.position_in_log != -1) {
-  //           DCHECK(get_partition_last_replayed_position_in_log(lock_id) <= cmd.position_in_log);
-  //           get_partition_last_replayed_position_in_log(lock_id) = cmd.position_in_log;
-  //           //respond_to_active_replica_with_replay_position(cmd.position_in_log);
-  //         }
-  //         // cmd_stall_time.add(std::chrono::duration_cast<std::chrono::microseconds>(
-  //         //     std::chrono::steady_clock::now() - cmd.queue_ts)
-  //         //     .count());
-  //         if (cmd.txn != nullptr && --cmd.txn->granules_left_to_lock == 0) {
-  //           txns_candidate_for_reexecution.push_back(cmd.txn);
-  //         }
-  //         q.pop_front();
-  //         // auto & q2 = get_granule_lock_request_queue(lock_id);
-  //         // if (q2.empty() == false) {
-  //         //   granule_lock_reqeust_candidates.push_back(lock_id);
-  //         // }
-  //       } else {
+  void replay_sp_queue_commands_unprotected(std::deque<TxnCommandBase> & q) {
+    while (q.empty() == false) {
+      auto & cmd = q.front();
+      if (cmd.is_coordinator == false) {
+        //DCHECK(false);
+        auto partition_id = cmd.partition_id;
+        auto granule_id = cmd.granule_id;
+        auto lock_id = to_lock_id(partition_id, granule_id);
+        DCHECK(cmd.last_writer != std::numeric_limits<uint64_t>::max());
+        if (cmd.write_lock) {
+          if (lock_buckets[lock_id].free()) { // only acquire the lock when there is no readers and writer
+            lock_buckets[lock_id].set_last_writer(cmd.tid);
+            lock_buckets[lock_id].set_write_lock();
 
-  //         // The partition is being locked by front transaction executing, try next time.
-  //         //add_to_replay_candidate_granules(lock_id);
-  //         break;
-  //       }
-  //     } else if (cmd.is_mp == false) {
-  //       DCHECK(cmd.txn != nullptr);
-  //       // if (cmd.txn->being_replayed == false) {
-  //       //   auto queue_time =
-  //       //   std::chrono::duration_cast<std::chrono::microseconds>(
-  //       //       std::chrono::steady_clock::now() - cmd.txn->startTime)
-  //       //       .count();
-  //       //   cmd.txn->being_replayed = true;
-  //       //   cmd.txn->startTime = std::chrono::steady_clock::now();
-  //       //   cmd.txn->record_commit_prepare_time(queue_time);
-  //       // }
-  //       auto partition_id = cmd.partition_id;
-  //       auto granule_id = cmd.granule_id;
-  //       auto lock_id = to_lock_id(partition_id, granule_id);
-  //       if (lock_buckets[lock_id] == -1) {
-  //         // The transaction owns the partition.
-  //         // Start executing the sp transaction.
-  //         auto sp_txn = cmd.txn;
-  //         DCHECK(get_partition_last_replayed_position_in_log(lock_id) <= cmd.position_in_log);
-  //         get_partition_last_replayed_position_in_log(lock_id) = cmd.position_in_log;
-  //         lock_buckets[lock_id] = sp_txn->transaction_id;
-  //         lock_bm.set_bit(lock_id);
-  //         txns_candidate_for_reexecution.push_back(sp_txn);
-  //         q.pop_front();
-  //         // DCHECK(sp_txn->transaction_id);
-  //         // DCHECK(sp_txn);
-  //         // auto res = process_single_transaction(sp_txn);
-  //         // DCHECK(res);
-  //         // if (res) {
-  //         //   auto latency =
-  //         //   std::chrono::duration_cast<std::chrono::microseconds>(
-  //         //       std::chrono::steady_clock::now() - sp_txn->startTime)
-  //         //       .count();
-  //         //   this->percentile.add(latency);
-  //         //   this->local_latency.add(latency);
-  //         //   this->record_txn_breakdown_stats(*sp_txn);
-  //         //   DCHECK(get_partition_last_replayed_position_in_log(lock_id) <= cmd.position_in_log);
-  //         //   get_partition_last_replayed_position_in_log(lock_id) = cmd.position_in_log;
-  //         //   respond_to_active_replica_with_replay_position(cmd.position_in_log);
-  //         //   // Make sure it is unlocked
-  //         //   DCHECK(lock_buckets[lock_id] == -1);
-  //         //   delete sp_txn;
-  //         //   q.pop_front();
-  //         // } else {
-  //         //   // Make sure it is unlocked
-  //         //   DCHECK(lock_buckets[lock_id] == -1);
-  //         // }
-  //       } else {
-  //         //add_to_replay_candidate_granules(lock_id);
-  //         // The partition is being locked by front transaction executing, try next time.
-  //         break;
-  //       }
-  //     } else {
-  //       break;
-  //     }
-  //   }
-  // }
+            if (cmd.txn != nullptr && --cmd.txn->granules_left_to_lock == 0) {
+              txns_candidate_for_reexecution.push_back(cmd.txn);
+            }
+            q.pop_front();
+          } else {
+            break;
+          }
+        } else {
+          if (lock_buckets[lock_id].write_locked() || lock_buckets[lock_id].get_last_writer() != cmd.last_writer) {
+            break;
+          }
+          DCHECK(lock_buckets[lock_id].get_last_writer() == cmd.last_writer);
+          lock_buckets[lock_id].inc_reader_cnt();
+          if (cmd.txn != nullptr && --cmd.txn->granules_left_to_lock == 0) {
+            txns_candidate_for_reexecution.push_back(cmd.txn);
+          }
+          //LOG(INFO) << "This cluster worker " << this_cluster_worker_id << " replayed participant read lock record of txn " << cmd.tid << " on lock_id " << lock_id << " with last writer " << cmd.last_writer;
+          q.pop_front();
+        }
+      } else if (cmd.is_mp == false) {
+        DCHECK(false);
+        // DCHECK(cmd.txn != nullptr);
+        // // if (cmd.txn->being_replayed == false) {
+        // //   auto queue_time =
+        // //   std::chrono::duration_cast<std::chrono::microseconds>(
+        // //       std::chrono::steady_clock::now() - cmd.txn->startTime)
+        // //       .count();
+        // //   cmd.txn->being_replayed = true;
+        // //   cmd.txn->startTime = std::chrono::steady_clock::now();
+        // //   cmd.txn->record_commit_prepare_time(queue_time);
+        // // }
+        // auto partition_id = cmd.partition_id;
+        // auto granule_id = cmd.granule_id;
+        // auto lock_id = to_lock_id(partition_id, granule_id);
+        // if (lock_buckets[lock_id] == -1) {
+        //   // The transaction owns the partition.
+        //   // Start executing the sp transaction.
+        //   auto sp_txn = cmd.txn;
+        //   DCHECK(get_partition_last_replayed_position_in_log(lock_id) <= cmd.position_in_log);
+        //   get_partition_last_replayed_position_in_log(lock_id) = cmd.position_in_log;
+        //   lock_buckets[lock_id] = sp_txn->transaction_id;
+        //   lock_bm.set_bit(lock_id);
+        //   txns_candidate_for_reexecution.push_back(sp_txn);
+        //   q.pop_front();
+        //   // DCHECK(sp_txn->transaction_id);
+        //   // DCHECK(sp_txn);
+        //   // auto res = process_single_transaction(sp_txn);
+        //   // DCHECK(res);
+        //   // if (res) {
+        //   //   auto latency =
+        //   //   std::chrono::duration_cast<std::chrono::microseconds>(
+        //   //       std::chrono::steady_clock::now() - sp_txn->startTime)
+        //   //       .count();
+        //   //   this->percentile.add(latency);
+        //   //   this->local_latency.add(latency);
+        //   //   this->record_txn_breakdown_stats(*sp_txn);
+        //   //   DCHECK(get_partition_last_replayed_position_in_log(lock_id) <= cmd.position_in_log);
+        //   //   get_partition_last_replayed_position_in_log(lock_id) = cmd.position_in_log;
+        //   //   respond_to_active_replica_with_replay_position(cmd.position_in_log);
+        //   //   // Make sure it is unlocked
+        //   //   DCHECK(lock_buckets[lock_id] == -1);
+        //   //   delete sp_txn;
+        //   //   q.pop_front();
+        //   // } else {
+        //   //   // Make sure it is unlocked
+        //   //   DCHECK(lock_buckets[lock_id] == -1);
+        //   // }
+        // } else {
+        //   // The partition is being locked by front transaction executing, try next time.
+        //   break;
+        // }
+      } else {
+        break;
+      }
+    }
+  }
 // TODO: replay lock_buckets
-  // bool replay_sp_queue_commands(int queue_index) {
-  //   int i = queue_index;
-  //   if (granule_command_queue_processing[i])
-  //       return false;
-  //   auto & q = granule_command_queues[i];
-  //   if (q.empty())
-  //     return false;
-  //   granule_command_queue_processing[i] = true;
-  //   replay_sp_queue_commands_unprotected(q);
-  //   granule_command_queue_processing[i] = false;
-  //   return true;
-  // }
+  bool replay_sp_queue_commands(int queue_index) {
+    int i = queue_index;
+    if (granule_command_queue_processing[i])
+        return false;
+    auto & q = granule_command_queues[i];
+    if (q.empty())
+      return false;
+    granule_command_queue_processing[i] = true;
+    replay_sp_queue_commands_unprotected(q);
+    granule_command_queue_processing[i] = false;
+    return true;
+  }
 
   bool replay_sp_commands(int partition) {
     // TODO: replay lock_buckets
-    //return replay_sp_queue_commands(granule_to_cmd_queue_index[partition]);
-    return false;
+    return replay_sp_queue_commands(granule_to_cmd_queue_index[partition]);
   }
 
   uint64_t cross_node_mp_txn = 0;
@@ -2903,17 +2846,18 @@ public:
   int active_mps = 0;
   int active_mp_limit = 100000;
   void replay_commands_in_granule(int lock_id) {
-    // TODO: replay lock_buckets
-    // int i = granule_to_cmd_queue_index[lock_id];
-    // if (granule_command_queue_processing[i])
-    //     return;
-    // replay_sp_queue_commands(i);
-    // return; 
+    //TODO: replay lock_buckets
+    int i = granule_to_cmd_queue_index[lock_id];
+    if (granule_command_queue_processing[i])
+        return;
+    replay_sp_queue_commands(i);
+    return; 
   }
 
   void replay_loop() {
     auto complete_mp = [&, this](TransactionType* mp_txn) {
       DCHECK(active_txns.count(mp_txn->transaction_id) == 0);
+      //LOG(INFO) << "This cluster worker " << this_cluster_worker_id << " completes MP transaction " << mp_txn->transaction_id;
       //DCHECK(mp_txn->is_single_partition() == false);
       auto lock_id = mp_txn->replay_queue_lock_id;
       auto replay_queue_idx = granule_to_cmd_queue_index[mp_txn->replay_queue_lock_id];
@@ -2926,7 +2870,7 @@ public:
             .count();
         this->percentile.add(latency);
         this->dist_latency.add(latency);
-        DCHECK(mp_txn->tries >= 1);
+        DCHECK(mp_txn->tries == 1);
         this->record_txn_breakdown_stats(*mp_txn);
         respond_to_active_replica_with_replay_position(mp_txn->position_in_log);
         //granule_command_queue_processing[replay_queue_idx] = false;
@@ -2938,7 +2882,7 @@ public:
       } else {
         DCHECK(false);
       }
-      
+
       --active_mps;
     };
     process_to_commit(async_txns_to_commit, complete_mp);
@@ -2948,8 +2892,10 @@ public:
       auto replay_queue_idx = granule_to_cmd_queue_index[txn->replay_queue_lock_id];
       DCHECK(granule_command_queue_processing[replay_queue_idx] == false);
       //granule_command_queue_processing[replay_queue_idx] = true;
+      txn->tries++;
       ++active_mps;
       if (txn->is_single_partition()) {
+        DCHECK(txn->lock_status.num_locks() > 0);
         if (sp_parallel_exec_commit) {
           CHECK(txn->replay_bm_for_sp != nullptr);
         }
@@ -3070,6 +3016,7 @@ public:
     }
   }
 
+  std::vector<MessagePiece> failed_lock_requests;
   std::size_t handle_requests(bool should_replay_commands = true) {
     if (is_replica_worker) {
       process_queued_lock_requests();
@@ -3081,6 +3028,7 @@ public:
     int msg_count = 0;
     std::size_t size = 0;
     while (!this->in_queue.empty()) {
+      failed_lock_requests.clear();
       ++size;
       std::unique_ptr<Message> message(this->in_queue.front());
       bool ok = this->in_queue.pop();
@@ -3141,6 +3089,9 @@ public:
                                                  *cluster_worker_messages[message->get_source_cluster_worker_id()], *table,
                                                  txn);
           if (res == false) {
+            if (is_replica_worker) {
+              failed_lock_requests.emplace_back(messagePiece);
+            }
             acquire_partition_lock_requests_successful = false;
           }
         } else if (type == (int)HStoreMessage::ACQUIRE_LOCK_AND_READ_RESPONSE) {
@@ -3219,26 +3170,24 @@ public:
       add_outgoing_message(message->get_source_cluster_worker_id());
       }
       if (is_replica_worker && acquire_partition_lock_requests_successful == false) {
-        DCHECK(false);
+        //DCHECK(false);
         //cluster_worker_messages[message->get_source_cluster_worker_id()]->clear_message_pieces();
         // Save the requests for now
 
-        // DCHECK(message->ref_cnt == 0);
-        // for (auto it = message->begin(); it != message->end(); it++, ++msg_idx) {
-        //   MessagePiece messagePiece = *it;
-        //   auto type = messagePiece.get_message_type();
-        //   //LOG(INFO) << "Message type " << type;
-        //   auto lock_id = to_lock_id(messagePiece.get_partition_id(), messagePiece.get_granule_id());
-        //   if (lock_buckets[lock_id] != message->get_transaction_id()) {
-        //     messagePiece.message_ptr = message.get();
-        //     message->ref_cnt++;
-        //     get_granule_lock_request_queue(lock_id).push_back(messagePiece);
-        //     granule_lock_reqeust_candidates.push_back(lock_id);
-        //   }
-        // }
-        // DCHECK(message->ref_cnt > 0);
-        // flush_messages();
-        // message.release();
+        DCHECK(message->ref_cnt == 0);
+        DCHECK(failed_lock_requests.size() > 0);
+        for (size_t i = 0; i < failed_lock_requests.size(); ++i) {
+          MessagePiece messagePiece = failed_lock_requests[i];
+          auto lock_id = to_lock_id(messagePiece.get_partition_id(), messagePiece.get_granule_id());
+          messagePiece.message_ptr = message.get();
+          message->ref_cnt++;
+          get_granule_lock_request_queue(lock_id).push_back(messagePiece);
+          granule_lock_reqeust_candidates.push_back(lock_id);
+        }
+
+        DCHECK(message->ref_cnt > 0);
+        flush_messages();
+        message.release();
       } else {
         size += message->get_message_count();
         flush_messages();
@@ -3329,7 +3278,7 @@ public:
     } else {
       auto partition_id = managed_partitions[this->random.next() % managed_partitions.size()];
       auto granule_id = this->random.next() % this->context.granules_per_partition;
-      auto txn = this->workload.next_transaction(this->context, partition_id, this->id, granule_id).release();
+      auto txn = this->workload.next_transaction(this->context, partition_id, this->this_cluster_worker_id, granule_id).release();
       txn->context = &this->context;
       auto total_batch_size = this->partitioner->num_coordinator_for_one_replica() * this->context.batch_size;
       if (this->context.stragglers_per_batch) {

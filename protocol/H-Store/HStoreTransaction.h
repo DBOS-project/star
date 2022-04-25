@@ -440,7 +440,7 @@ public:
 public:
   std::size_t coordinator_id, partition_id;
   std::chrono::steady_clock::time_point startTime;
-  std::size_t pendingResponses;
+  int64_t pendingResponses;
   std::size_t network_size;
   bool abort_lock, abort_read_validation, local_validated, si_in_serializable;
   bool distributed_transaction;
@@ -530,7 +530,16 @@ public:
   struct LockStatusManager {
     std::vector<LockStatus> locks_states;
 
-    std::size_t get_lock_index(int lock_id) {
+    int32_t get_lock_index_no_write(int lock_id) {
+      for (std::size_t i = 0; i < locks_states.size(); ++i) {
+        if (locks_states[i].lock_id == lock_id) {
+          return i;
+        }
+      }
+      return -1;
+    }
+
+    int32_t get_lock_index(int lock_id) {
       for (std::size_t i = 0; i < locks_states.size(); ++i) {
         if (locks_states[i].lock_id == lock_id) {
           return i;

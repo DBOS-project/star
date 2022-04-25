@@ -29,11 +29,12 @@ public:
         partitioner(partitioner) {}
 
     
-  static uint64_t next_transaction_id(uint64_t coordinator_id) {
-    constexpr int coordinator_id_offset = 32;
+  static uint64_t next_transaction_id(uint64_t coordinator_id, uint64_t cluster_worker_id) {
+    constexpr int coordinator_id_offset = 40;
+    constexpr int worker_id_offset = 32;
     static std::atomic<int64_t> tid_static{1};
     auto tid = tid_static.fetch_add(1);
-    return (coordinator_id << coordinator_id_offset) | tid;
+    return (coordinator_id << coordinator_id_offset) | (cluster_worker_id << worker_id_offset) | tid;
   }
 
   std::unique_ptr<TransactionType> next_transaction(ContextType &context,
@@ -54,7 +55,7 @@ public:
         std::make_unique<ReadModifyWrite<Transaction>>(
             coordinator_id, partition_id, granule_id, db, context, random, partitioner);
     p->txn_random_seed_start = random_seed;
-    p->transaction_id = next_transaction_id(coordinator_id);
+    p->transaction_id = next_transaction_id(coordinator_id, worker_id);
     return p;
   }
 
