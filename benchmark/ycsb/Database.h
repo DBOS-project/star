@@ -78,7 +78,11 @@ public:
 
     for (auto partitionID = 0u; partitionID < partitionNum; partitionID++) {
       auto ycsbTableID = ycsb::tableID;
-      if (context.protocol != "HStore") {
+      if (context.protocol == "Sundial"){
+        tbl_ycsb_vec.push_back(
+          std::make_unique<Table<9973, ycsb::key, ycsb::value, MetaInitFuncSundial>>(ycsbTableID,
+                                                                partitionID));
+      } else if (context.protocol != "HStore") {
         tbl_ycsb_vec.push_back(
           std::make_unique<Table<9973, ycsb::key, ycsb::value>>(ycsbTableID,
                                                                 partitionID));

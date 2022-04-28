@@ -1,5 +1,5 @@
 //
-// Created by Yi Lu on 8/31/18.
+// Created by Xinjing Zhou Lu on 04/26/22.
 //
 
 #pragma once
@@ -11,25 +11,25 @@
 
 #include "core/Partitioner.h"
 #include "core/Table.h"
-#include "protocol/Silo/SiloHelper.h"
-#include "protocol/Silo/SiloMessage.h"
-#include "protocol/Silo/SiloTransaction.h"
+#include "protocol/Sundial/SundialHelper.h"
+#include "protocol/Sundial/SundialMessage.h"
+#include "protocol/Sundial/SundialTransaction.h"
 #include <glog/logging.h>
 
 namespace star {
 
-template <class Database> class Silo {
+template <class Database> class Sundial {
 public:
   using DatabaseType = Database;
   using MetaDataType = std::atomic<uint64_t>;
   using ContextType = typename DatabaseType::ContextType;
-  using MessageType = SiloMessage;
-  using TransactionType = SiloTransaction;
+  using MessageType = SundialMessage;
+  using TransactionType = SundialTransaction;
 
-  using MessageFactoryType = SiloMessageFactory;
-  using MessageHandlerType = SiloMessageHandler;
+  using MessageFactoryType = SundialMessageFactory;
+  using MessageHandlerType = SundialMessageHandler;
 
-  Silo(DatabaseType &db, const ContextType &context, Partitioner &partitioner)
+  Sundial(DatabaseType &db, const ContextType &context, Partitioner &partitioner)
       : db(db), context(context), partitioner(partitioner) {}
 
   uint64_t search(std::size_t table_id, std::size_t partition_id,
@@ -58,13 +58,13 @@ public:
       auto table = db.find_table(tableId, partitionId);
       if (partitioner.has_master_partition(partitionId)) {
         auto key = writeKey.get_key();
-        std::atomic<uint64_t> &tid = table->search_metadata(key);
-        SiloHelper::unlock(tid);
+        auto row = table->search(key);
+        SundialHelper::unlock(row, txn.transaction_id);
       } else {
         auto coordinatorID = partitioner.master_coordinator(partitionId);
         messages[coordinatorID]->set_transaction_id(txn.transaction_id);
-        txn.network_size += MessageFactoryType::new_abort_message(
-            *messages[coordinatorID], *table, writeKey.get_key());
+        txn.network_size += MessageFactoryType::new_unlock_message(
+            *messages[coordinatorID], *table, writeKey.get_key(), txn.transaction_id, i);
       }
     }
 
@@ -90,6 +90,7 @@ public:
           return false;
         }
       } else {
+        CHECK(false);
         // commit phase 2, read validation
         if (!validate_read_set(txn, messages)) {
           abort(txn, messages);
@@ -152,37 +153,32 @@ private:
       auto tableId = writeKey.get_table_id();
       auto partitionId = writeKey.get_partition_id();
       auto table = db.find_table(tableId, partitionId);
-
+      auto key_offset = i;
       // lock local records
       if (partitioner.has_master_partition(partitionId)) {
         auto key = writeKey.get_key();
-        std::atomic<uint64_t> &tid = table->search_metadata(key);
-        bool success;
-        uint64_t latestTid = SiloHelper::lock(tid, success);
 
-        if (!success) {
+        auto row = table->search(key);
+
+        std::pair<uint64_t, uint64_t> rwts;
+        bool success = SundialHelper::write_lock(row, rwts, txn.transaction_id);
+        auto wts = rwts.first;
+        auto rts = rwts.second;
+        auto read_set_pos = writeKey.get_read_set_pos();
+        if (success == false || (read_set_pos != -1 && txn.readSet[read_set_pos].get_wts() != wts)) {
           txn.abort_lock = true;
           break;
+        } else {
+          writeKey.set_write_lock_bit();
+          txn.commit_ts = std::max(txn.commit_ts, rts + 1);
         }
-
-        writeKey.set_write_lock_bit();
-        writeKey.set_tid(latestTid);
-
-        auto readKeyPtr = txn.get_read_key(key);
-        // assume no blind write
-        DCHECK(readKeyPtr != nullptr);
-        uint64_t tidOnRead = readKeyPtr->get_tid();
-        if (latestTid != tidOnRead) {
-          txn.abort_lock = true;
-          break;
-        }
-
       } else {
         txn.pendingResponses++;
         auto coordinatorID = partitioner.master_coordinator(partitionId);
+        DCHECK(txn.transaction_id != 0);
         messages[coordinatorID]->set_transaction_id(txn.transaction_id);
-        txn.network_size += MessageFactoryType::new_lock_message(
-            *messages[coordinatorID], *table, writeKey.get_key(), i);
+        txn.network_size += MessageFactoryType::new_write_lock_message(
+            *messages[coordinatorID], *table, txn.transaction_id, writeKey.get_key(), key_offset);
       }
     }
 
@@ -197,7 +193,7 @@ private:
     auto &readSet = txn.readSet;
     auto &writeSet = txn.writeSet;
 
-    auto isKeyInWriteSet = [&writeSet](const void *key) {
+    auto isKeyInWriteSet = [](const std::vector<SundialRWKey> & writeSet, const void *key) {
       for (auto &writeKey : writeSet) {
         if (writeKey.get_key() == key) {
           return true;
@@ -214,25 +210,26 @@ private:
           continue; // read only index does not need to validate
         }
 
-        bool in_write_set = isKeyInWriteSet(readKey.get_key());
+        bool in_write_set = isKeyInWriteSet(writeSet, readKey.get_key());
         if (in_write_set) {
           continue; // already validated in lock write set
         }
 
+        if (txn.commit_ts <= readKey.get_rts()) {
+          continue;
+        }
         auto tableId = readKey.get_table_id();
         auto partitionId = readKey.get_partition_id();
         auto table = db.find_table(tableId, partitionId);
         auto key = readKey.get_key();
-        auto tid = readKey.get_tid();
-
+        auto wts = readKey.get_wts();
+        auto commit_ts = txn.commit_ts;
         DCHECK(partitioner.has_master_partition(partitionId));
 
-        uint64_t latest_tid = table->search_metadata(key).load();
-        if (SiloHelper::remove_lock_bit(latest_tid) != tid) {
-          txn.abort_read_validation = true;
-          break;
-        }
-        if (SiloHelper::is_locked(latest_tid)) { // must be locked by others
+        auto row = table->search(key);
+        bool success = SundialHelper::renew_lease(row, wts, commit_ts);
+  
+        if (success == false) { // renew_lease failed
           txn.abort_read_validation = true;
           break;
         }
@@ -240,34 +237,39 @@ private:
 
       DCHECK(txn.pendingResponses == 0);
 
-      // Redo logging
-      for (size_t j = 0; j < writeSet.size(); ++j) {
-        auto &writeKey = writeSet[j];
-        auto tableId = writeKey.get_table_id();
-        auto partitionId = writeKey.get_partition_id();
-        auto table = db.find_table(tableId, partitionId);
-        auto key_size = table->key_size();
-        auto value_size = table->value_size();
-        auto key = writeKey.get_key();
-        auto value = writeKey.get_value();
+      if (txn.abort_read_validation == false && txn.abort_lock == false) {
+        // Redo logging
+        for (size_t j = 0; j < writeSet.size(); ++j) {
+          auto &writeKey = writeSet[j];
+          auto tableId = writeKey.get_table_id();
+          auto partitionId = writeKey.get_partition_id();
+          auto table = db.find_table(tableId, partitionId);
+          auto key_size = table->key_size();
+          auto value_size = table->value_size();
+          auto key = writeKey.get_key();
+          auto value = writeKey.get_value();
 
-        std::ostringstream ss;
-        ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
-        auto output = ss.str();
-        txn.get_logger()->write(output.c_str(), output.size(), false);
+          std::ostringstream ss;
+          ss << tableId << partitionId << key_size << std::string((char*)key, key_size) << value_size << std::string((char*)value, value_size);
+          auto output = ss.str();
+          txn.get_logger()->write(output.c_str(), output.size(), false);
+        }
       }
     } else {
-      std::vector<std::vector<SiloRWKey>> readSetGroupByCoordinator(context.coordinator_num);
-      std::vector<std::vector<SiloRWKey>> writeSetGroupByCoordinator(context.coordinator_num);
+      std::vector<std::vector<SundialRWKey>> readSetGroupByCoordinator(context.coordinator_num);
+      std::vector<std::vector<SundialRWKey>> writeSetGroupByCoordinator(context.coordinator_num);
 
       for (auto i = 0u; i < readSet.size(); ++i) {
         auto &readKey = readSet[i];
         if (readKey.get_local_index_read_bit()) {
           continue; // read only index does not need to validate
         }
-        bool in_write_set = isKeyInWriteSet(readKey.get_key());
+        bool in_write_set = isKeyInWriteSet(writeSet, readKey.get_key());
         if (in_write_set) {
           continue; // already validated in lock write set
+        }
+        if (txn.commit_ts <= readKey.get_rts()) {
+          continue;
         }
         auto partitionId = readKey.get_partition_id();
         auto coordinatorId = partitioner.master_coordinator(partitionId);
@@ -290,23 +292,25 @@ private:
             if (readKey.get_local_index_read_bit()) {
               continue; // read only index does not need to validate
             }
-            bool in_write_set = isKeyInWriteSet(readKey.get_key());
+            bool in_write_set = isKeyInWriteSet(writeSet, readKey.get_key());
+            DCHECK(in_write_set == false);
             if (in_write_set) {
               continue; // already validated in lock write set
             }
+            DCHECK(txn.commit_ts > readKey.get_rts());
 
             auto tableId = readKey.get_table_id();
             auto partitionId = readKey.get_partition_id();
             auto table = db.find_table(tableId, partitionId);
             auto key = readKey.get_key();
-            auto tid = readKey.get_tid();
-            
-            uint64_t latest_tid = table->search_metadata(key).load();
-            if (SiloHelper::remove_lock_bit(latest_tid) != tid) {
-              txn.abort_read_validation = true;
-              break;
-            }
-            if (SiloHelper::is_locked(latest_tid)) { // must be locked by others
+            auto wts = readKey.get_wts();
+            auto commit_ts = txn.commit_ts;
+            DCHECK(partitioner.has_master_partition(partitionId));
+
+            auto row = table->search(key);
+            bool success = SundialHelper::renew_lease(row, wts, commit_ts);
+      
+            if (success == false) { // renew_lease failed
               txn.abort_read_validation = true;
               break;
             }
@@ -336,7 +340,7 @@ private:
           auto coordinatorID = i;
           messages[coordinatorID]->set_transaction_id(txn.transaction_id);
           txn.network_size += MessageFactoryType::new_read_validation_and_redo_message(
-              *messages[coordinatorID], readSet, writeSet, db);
+              *messages[coordinatorID], readSet, writeSet, txn.commit_ts, db);
         }
       }
 
@@ -357,7 +361,7 @@ private:
     auto &readSet = txn.readSet;
     auto &writeSet = txn.writeSet;
 
-    auto isKeyInWriteSet = [&writeSet](const void *key) {
+    auto isKeyInWriteSet = [](const std::vector<SundialRWKey> & writeSet, const void *key) {
       for (auto &writeKey : writeSet) {
         if (writeKey.get_key() == key) {
           return true;
@@ -373,7 +377,7 @@ private:
         continue; // read only index does not need to validate
       }
 
-      bool in_write_set = isKeyInWriteSet(readKey.get_key());
+      bool in_write_set = isKeyInWriteSet(writeSet, readKey.get_key());
       if (in_write_set) {
         continue; // already validated in lock write set
       }
@@ -514,14 +518,16 @@ private:
       if (partitioner.has_master_partition(partitionId)) {
         auto key = writeKey.get_key();
         auto value = writeKey.get_value();
-        table->update(key, value);
+        auto value_size = table->value_size();
+        auto row = table->search(key);
+        SundialHelper::update(row, value, value_size, txn.commit_ts, txn.transaction_id);
       } else {
         txn.pendingResponses++;
         auto coordinatorID = partitioner.master_coordinator(partitionId);
         messages[coordinatorID]->set_transaction_id(txn.transaction_id);
         txn.network_size += MessageFactoryType::new_write_message(
             *messages[coordinatorID], *table, writeKey.get_key(),
-            writeKey.get_value(), commit_tid, persist_commit_record[i]);
+            writeKey.get_value(), txn.commit_ts, txn.transaction_id, persist_commit_record[i]);
       }
 
       // value replicate
@@ -546,20 +552,16 @@ private:
         if (k == txn.coordinator_id) {
           auto key = writeKey.get_key();
           auto value = writeKey.get_value();
-          std::atomic<uint64_t> &tid = table->search_metadata(key);
+          auto row = table->search(key);
 
-          uint64_t last_tid = SiloHelper::lock(tid);
-          DCHECK(last_tid < commit_tid);
-          table->update(key, value);
-          SiloHelper::unlock(tid, commit_tid);
-
+          SundialHelper::replica_update(row, value, table->value_size(), txn.commit_ts);
         } else {
           txn.pendingResponses++;
           auto coordinatorID = k;
           messages[coordinatorID]->set_transaction_id(txn.transaction_id);
           txn.network_size += MessageFactoryType::new_replication_message(
               *messages[coordinatorID], *table, writeKey.get_key(),
-              writeKey.get_value(), commit_tid, persist_replication[i][k]);
+              writeKey.get_value(), txn.commit_ts, persist_replication[i][k]);
         }
       }
 
@@ -579,19 +581,18 @@ private:
       auto tableId = writeKey.get_table_id();
       auto partitionId = writeKey.get_partition_id();
       auto table = db.find_table(tableId, partitionId);
-
+      DCHECK(writeKey.get_write_lock_bit());
       // write
       if (partitioner.has_master_partition(partitionId)) {
         auto key = writeKey.get_key();
         auto value = writeKey.get_value();
-        std::atomic<uint64_t> &tid = table->search_metadata(key);
-        table->update(key, value);
-        SiloHelper::unlock(tid, commit_tid);
+        auto row = table->search(key);
+        SundialHelper::unlock(row, txn.transaction_id);
       } else {
         auto coordinatorID = partitioner.master_coordinator(partitionId);
         messages[coordinatorID]->set_transaction_id(txn.transaction_id);
-        txn.network_size += MessageFactoryType::new_release_lock_message(
-            *messages[coordinatorID], *table, writeKey.get_key(), commit_tid);
+        txn.network_size += MessageFactoryType::new_unlock_message(
+            *messages[coordinatorID], *table, writeKey.get_key(), txn.transaction_id, i);
       }
     }
 

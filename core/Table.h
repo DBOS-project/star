@@ -56,7 +56,22 @@ public:
   virtual std::size_t partitionID() = 0;
 };
 
-template <std::size_t N, class KeyType, class ValueType>
+class MetaInitFuncNothing {
+public:
+  uint64_t operator() () {
+    return 0;
+  }
+};
+
+extern uint64_t SundialMetadataInit();
+class MetaInitFuncSundial {
+public:
+  uint64_t operator() () {
+    return SundialMetadataInit();
+  }
+};
+
+template <std::size_t N, class KeyType, class ValueType, class MetaInitFunc = MetaInitFuncNothing>
 class Table : public ITable {
 public:
   using MetaDataType = std::atomic<uint64_t>;
@@ -92,7 +107,7 @@ public:
     bool ok = map_.contains(k);
     DCHECK(ok == false);
     auto &row = map_[k];
-    std::get<0>(row).store(0);
+    std::get<0>(row).store(MetaInitFunc()());
     std::get<1>(row) = v;
   }
 

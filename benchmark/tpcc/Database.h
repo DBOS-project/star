@@ -137,10 +137,14 @@ public:
 
     for (auto partitionID = 0u; partitionID < partitionNum; partitionID++) {
       auto warehouseTableID = warehouse::tableID;
-      if (context.protocol != "HStore") {
+      if (context.protocol == "Sundial"){
+        tbl_warehouse_vec.push_back(
+          std::make_unique<Table<997, warehouse::key, warehouse::value, MetaInitFuncSundial>>(
+              warehouseTableID, partitionID));
+      } else if (context.protocol != "HStore") {
         tbl_warehouse_vec.push_back(
           std::make_unique<Table<997, warehouse::key, warehouse::value>>(
-              warehouseTableID, partitionID));
+            warehouseTableID, partitionID));
       } else {
         tbl_warehouse_vec.push_back(
           std::make_unique<HStoreTable<warehouse::key, warehouse::value>>(
@@ -148,7 +152,11 @@ public:
       }
       
       auto districtTableID = district::tableID;
-      if (context.protocol != "HStore") {
+      if (context.protocol == "Sundial"){
+        tbl_district_vec.push_back(
+          std::make_unique<Table<997, district::key, district::value, MetaInitFuncSundial>>(
+              districtTableID, partitionID));
+      } else if (context.protocol != "HStore") {
         tbl_district_vec.push_back(
           std::make_unique<Table<997, district::key, district::value>>(
               districtTableID, partitionID));
@@ -159,7 +167,11 @@ public:
       }
 
       auto customerTableID = customer::tableID;
-      if (context.protocol != "HStore") {
+      if (context.protocol == "Sundial"){
+        tbl_customer_vec.push_back(
+            std::make_unique<Table<997, customer::key, customer::value, MetaInitFuncSundial>>(
+                customerTableID, partitionID));
+      } else if (context.protocol != "HStore") {
         tbl_customer_vec.push_back(
             std::make_unique<Table<997, customer::key, customer::value>>(
                 customerTableID, partitionID));
@@ -170,20 +182,24 @@ public:
       }
 
       auto customerNameIdxTableID = customer_name_idx::tableID;
-      //if (context.protocol != "HStore") {
+      if (context.protocol == "Sundial"){
+        tbl_customer_name_idx_vec.push_back(
+          std::make_unique<
+              Table<997, customer_name_idx::key, customer_name_idx::value, MetaInitFuncSundial>>(
+              customerNameIdxTableID, partitionID));
+      } else {
         tbl_customer_name_idx_vec.push_back(
           std::make_unique<
               Table<997, customer_name_idx::key, customer_name_idx::value>>(
               customerNameIdxTableID, partitionID));
-      // } else {
-      //   tbl_customer_name_idx_vec.push_back(
-      //     std::make_unique<
-      //         HStoreTable<customer_name_idx::key, customer_name_idx::value>>(
-      //         customerNameIdxTableID, partitionID));
-      // }
+      }
 
       auto historyTableID = history::tableID;
-      if (context.protocol != "HStore") {
+      if (context.protocol == "Sundial"){
+        tbl_history_vec.push_back(
+          std::make_unique<Table<997, history::key, history::value, MetaInitFuncSundial>>(
+              historyTableID, partitionID));
+      } else if (context.protocol != "HStore") {
         tbl_history_vec.push_back(
           std::make_unique<Table<997, history::key, history::value>>(
               historyTableID, partitionID));
@@ -194,7 +210,11 @@ public:
       }
 
       auto newOrderTableID = new_order::tableID;
-      if (context.protocol != "HStore") {
+      if (context.protocol == "Sundial"){
+        tbl_new_order_vec.push_back(
+          std::make_unique<Table<997, new_order::key, new_order::value, MetaInitFuncSundial>>(
+              newOrderTableID, partitionID));
+      } else if (context.protocol != "HStore") {
         tbl_new_order_vec.push_back(
           std::make_unique<Table<997, new_order::key, new_order::value>>(
               newOrderTableID, partitionID));
@@ -205,7 +225,11 @@ public:
       }
 
       auto orderTableID = order::tableID;
-      if (context.protocol != "HStore") {
+      if (context.protocol == "Sundial"){
+        tbl_order_vec.push_back(
+          std::make_unique<Table<997, order::key, order::value, MetaInitFuncSundial>>(
+              orderTableID, partitionID));
+      } else if (context.protocol != "HStore") {
         tbl_order_vec.push_back(
           std::make_unique<Table<997, order::key, order::value>>(
               orderTableID, partitionID));
@@ -215,7 +239,11 @@ public:
               orderTableID, partitionID));
       }
       auto orderLineTableID = order_line::tableID;
-      if (context.protocol != "HStore") {
+      if (context.protocol == "Sundial"){
+        tbl_order_line_vec.push_back(
+          std::make_unique<Table<997, order_line::key, order_line::value, MetaInitFuncSundial>>(
+              orderLineTableID, partitionID));
+      } else if (context.protocol != "HStore") {
         tbl_order_line_vec.push_back(
           std::make_unique<Table<997, order_line::key, order_line::value>>(
               orderLineTableID, partitionID));
@@ -226,7 +254,11 @@ public:
       }
 
       auto stockTableID = stock::tableID;
-      if (context.protocol != "HStore") {
+      if (context.protocol == "Sundial"){
+        tbl_stock_vec.push_back(
+          std::make_unique<Table<997, stock::key, stock::value, MetaInitFuncSundial>>(stockTableID,
+                                                                 partitionID));
+      } else if (context.protocol != "HStore") {
         tbl_stock_vec.push_back(
           std::make_unique<Table<997, stock::key, stock::value>>(stockTableID,
                                                                  partitionID));
@@ -237,7 +269,10 @@ public:
       }
     }
     auto itemTableID = item::tableID;
-    if (context.protocol != "HStore") {
+    if (context.protocol == "Sundial"){
+      tbl_item_vec.push_back(
+        std::make_unique<Table<997, item::key, item::value, MetaInitFuncSundial>>(itemTableID, 0));
+    } else if (context.protocol != "HStore") {
       tbl_item_vec.push_back(
         std::make_unique<Table<997, item::key, item::value>>(itemTableID, 0));
     } else {
