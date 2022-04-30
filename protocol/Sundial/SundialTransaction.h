@@ -208,6 +208,7 @@ public:
     readKey.set_value(&value);
 
     readKey.set_read_request_bit();
+    readKey.set_write_request_bit();
 
     add_to_read_set(readKey);
   }
@@ -227,6 +228,7 @@ public:
 
     auto read_set_pos = get_read_key_pos(&key);
     DCHECK(read_set_pos != -1);
+    //DCHECK(readSet[read_set_pos].get_write_lock_bit());
     writeKey.set_read_set_pos(read_set_pos);
     
     add_to_write_set(writeKey);
@@ -239,15 +241,18 @@ public:
     // cannot use unsigned type in reverse iteration
     for (int i = int(readSet.size()) - 1; i >= 0; i--) {
       // early return
-      if (!readSet[i].get_read_request_bit()) {
+      if (!readSet[i].get_read_request_bit() &&
+          !readSet[i].get_write_request_bit()) {
         break;
       }
 
       const SundialRWKey &readKey = readSet[i];
       readRequestHandler(readKey.get_table_id(), readKey.get_partition_id(),
                              i, readKey.get_key(), readKey.get_value(),
-                             readKey.get_local_index_read_bit());
+                             readKey.get_local_index_read_bit(),
+                             readKey.get_write_request_bit());
       readSet[i].clear_read_request_bit();
+      readSet[i].clear_write_request_bit();
     }
 
     t_local_work.end();
@@ -304,7 +309,7 @@ public:
   bool execution_phase;
   // table id, partition id, key, value, local index read?, write_lock?
   std::function<void(std::size_t, std::size_t, uint32_t, const void *,
-                         void *, bool)>
+                         void *, bool, bool)>
       readRequestHandler;
   // processed a request?
   std::function<std::size_t(std::size_t)> remote_request_handler;

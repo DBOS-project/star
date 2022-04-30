@@ -44,6 +44,22 @@ public:
     return (bitvec >> READ_REQUEST_BIT_OFFSET) & READ_REQUEST_BIT_MASK;
   }
 
+  // write request bit
+
+  void set_write_request_bit() {
+    clear_write_request_bit();
+    bitvec |= WRITE_REQUEST_BIT_MASK << WRITE_REQUEST_BIT_OFFSET;
+  }
+
+  void clear_write_request_bit() {
+    bitvec &= ~(WRITE_REQUEST_BIT_MASK << WRITE_REQUEST_BIT_OFFSET);
+  }
+
+  uint64_t get_write_request_bit() const {
+    return (bitvec >> WRITE_REQUEST_BIT_OFFSET) & WRITE_REQUEST_BIT_MASK;
+  }
+
+
   // write lock bit
   void set_write_lock_bit() {
     clear_write_lock_bit();
@@ -114,7 +130,7 @@ public:
 
   void set_read_set_pos(int32_t pos) { 
     DCHECK(this->read_set_pos = -1);
-    this->read_set_pos = -1; 
+    this->read_set_pos = pos; 
   }
 private:
   /*
@@ -144,7 +160,10 @@ public:
   static constexpr uint64_t PARTITION_ID_OFFSET = 19;
 
   static constexpr uint64_t WRITE_LOCK_BIT_MASK = 0x1;
-  static constexpr uint64_t WRITE_LOCK_BIT_OFFSET = 2;
+  static constexpr uint64_t WRITE_LOCK_BIT_OFFSET = 3;
+
+  static constexpr uint64_t WRITE_REQUEST_BIT_MASK = 0x1;
+  static constexpr uint64_t WRITE_REQUEST_BIT_OFFSET = 2;
 
   static constexpr uint64_t READ_REQUEST_BIT_MASK = 0x1;
   static constexpr uint64_t READ_REQUEST_BIT_OFFSET = 1;

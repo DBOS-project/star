@@ -45,13 +45,28 @@ public:
              std::vector<std::unique_ptr<Message>> &messages) {
 
     auto &writeSet = txn.writeSet;
-
+    auto &readSet = txn.readSet;
+    auto isKeyInWriteSet = [](const std::vector<SundialRWKey> & writeSet, const void *key) {
+      for (auto &writeKey : writeSet) {
+        if (writeKey.get_key() == key) {
+          return true;
+        }
+      }
+      return false;
+    };
+    for (auto i = 0u; i < readSet.size(); ++i) {
+      auto &readKey = readSet[i];
+      if (readKey.get_write_lock_bit()) {
+        DCHECK(isKeyInWriteSet(writeSet, readKey.get_key()));
+      }
+    }
     // unlock locked records
 
     for (auto i = 0u; i < writeSet.size(); i++) {
       auto &writeKey = writeSet[i];
       // only unlock locked records
-      if (!writeKey.get_write_lock_bit())
+      auto read_set_pos = writeKey.get_read_set_pos();
+      if (!writeKey.get_write_lock_bit() && (read_set_pos == -1 || readSet[read_set_pos].get_write_lock_bit() == false))
         continue;
       auto tableId = writeKey.get_table_id();
       auto partitionId = writeKey.get_partition_id();
@@ -78,7 +93,7 @@ public:
         txn.record_commit_prepare_time(us);
       });
       // lock write set
-      if (lock_write_set(txn, messages)) {
+      if (txn.abort_lock || lock_write_set(txn, messages)) {
         abort(txn, messages);
         return false;
       }
@@ -106,7 +121,7 @@ public:
       ScopedTimer t([&, this](uint64_t us) {
         txn.record_local_work_time(us);
       });
-      commit_tid = generate_tid(txn);
+      commit_tid = txn.commit_ts;
     }
 
     {
@@ -153,6 +168,14 @@ private:
       auto tableId = writeKey.get_table_id();
       auto partitionId = writeKey.get_partition_id();
       auto table = db.find_table(tableId, partitionId);
+      if (writeKey.get_read_set_pos() != -1) {
+        auto read_set_pos = writeKey.get_read_set_pos();
+        if (txn.readSet[read_set_pos].get_write_lock_bit()) {
+          writeKey.set_write_lock_bit(); // Already locked
+          txn.commit_ts = std::max(txn.commit_ts, txn.readSet[read_set_pos].get_rts() + 1);
+          continue;
+        }
+      }
       auto key_offset = i;
       // lock local records
       if (partitioner.has_master_partition(partitionId)) {
@@ -181,7 +204,7 @@ private:
             *messages[coordinatorID], *table, txn.transaction_id, writeKey.get_key(), key_offset);
       }
     }
-
+    CHECK(txn.pendingResponses == 0);
     sync_messages(txn);
 
     return txn.abort_lock;
@@ -212,6 +235,7 @@ private:
 
         bool in_write_set = isKeyInWriteSet(writeSet, readKey.get_key());
         if (in_write_set) {
+          DCHECK(readKey.get_write_lock_bit());
           continue; // already validated in lock write set
         }
 
@@ -266,6 +290,7 @@ private:
         }
         bool in_write_set = isKeyInWriteSet(writeSet, readKey.get_key());
         if (in_write_set) {
+          DCHECK(readKey.get_write_lock_bit());
           continue; // already validated in lock write set
         }
         if (txn.commit_ts <= readKey.get_rts()) {
@@ -298,6 +323,7 @@ private:
               continue; // already validated in lock write set
             }
             DCHECK(txn.commit_ts > readKey.get_rts());
+            DCHECK(readKey.get_write_lock_bit() == false);
 
             auto tableId = readKey.get_table_id();
             auto partitionId = readKey.get_partition_id();
@@ -513,7 +539,10 @@ private:
       auto table = db.find_table(tableId, partitionId);
       auto key_size = table->key_size();
       auto field_size = table->field_size();
-
+      DCHECK(writeKey.get_write_lock_bit());
+      if (writeKey.get_read_set_pos() != -1) {
+        DCHECK(txn.readSet[writeKey.get_read_set_pos()].get_write_lock_bit());
+      }
       // write
       if (partitioner.has_master_partition(partitionId)) {
         auto key = writeKey.get_key();
@@ -575,7 +604,20 @@ private:
 
     auto &readSet = txn.readSet;
     auto &writeSet = txn.writeSet;
-
+    auto isKeyInWriteSet = [](const std::vector<SundialRWKey> & writeSet, const void *key) {
+      for (auto &writeKey : writeSet) {
+        if (writeKey.get_key() == key) {
+          return true;
+        }
+      }
+      return false;
+    };
+    for (auto i = 0u; i < readSet.size(); ++i) {
+      auto &readKey = readSet[i];
+      if (readKey.get_write_lock_bit()) {
+        DCHECK(isKeyInWriteSet(writeSet, readKey.get_key()));
+      }
+    }
     for (auto i = 0u; i < writeSet.size(); i++) {
       auto &writeKey = writeSet[i];
       auto tableId = writeKey.get_table_id();

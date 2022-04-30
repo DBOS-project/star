@@ -382,6 +382,7 @@ public:
 
     int32_t D_ID = query.D_ID;
     int32_t C_ID = query.C_ID;
+    uint32_t old_CID = C_ID;
     int32_t C_D_ID = query.C_D_ID;
     int32_t C_W_ID = query.C_W_ID;
     float H_AMOUNT = query.H_AMOUNT;

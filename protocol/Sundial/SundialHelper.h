@@ -13,6 +13,17 @@
 
 namespace star {
 
+enum SundialLockResult {WAITING, SUCCEEDED, FAILED};
+
+// struct LockWaiterMeta {
+//   bool local_request;
+//   std::atomic_flag done{false};
+//   SundialLockResult res;
+//   int request_coordinator_id;
+//   uint64_t request_transaction_id;
+//   uint32_t request_key_offset;
+// };
+
 struct SundialMetadata {
   std::atomic<uint64_t> latch{0};
   void lock() {
@@ -35,17 +46,18 @@ struct SundialMetadata {
   uint64_t wts{0};
   uint64_t rts{0};
   uint64_t owner{0};
-  std::list<uint64_t> waitlist;
+  //std::list<LockWaiterMeta*> waitlist;
 };
 
 uint64_t SundialMetadataInit() {
   return reinterpret_cast<uint64_t>(new SundialMetadata());
 }
 
+
 class SundialHelper {
 
 public:
-  
+
   using MetaDataType = std::atomic<uint64_t>;
 
   // static uint64_t read(const std::tuple<MetaDataType *, void *> &row,

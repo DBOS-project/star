@@ -47,16 +47,16 @@ class SundialMessageFactory {
 public:
 
   static std::size_t new_read_message(Message &message, ITable &table,
-                                        const void *key, uint32_t key_offset) {
+                                        const void *key, uint64_t transaction_id, bool write_lock, uint32_t key_offset) {
 
     /*
-     * The structure of a read request: (primary key, read key offset)
+     * The structure of a read request: (primary key, write_lock, read key offset)
      */
 
     auto key_size = table.key_size();
 
     auto message_size =
-        MessagePiece::get_header_size() + key_size + sizeof(key_offset);
+        MessagePiece::get_header_size() + key_size + sizeof(transaction_id) + sizeof(write_lock) + sizeof(key_offset);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(SundialMessage::READ_REQUEST), message_size,
         table.tableID(), table.partitionID());
@@ -64,6 +64,8 @@ public:
     Encoder encoder(message.data);
     encoder << message_piece_header;
     encoder.write_n_bytes(key, key_size);
+    encoder << transaction_id;
+    encoder << write_lock;
     encoder << key_offset;
     message.flush();
     message.set_gen_time(Time::now());
@@ -1073,11 +1075,13 @@ public:
      */
 
     auto stringPiece = inputPiece.toStringPiece();
+    bool write_lock;
     uint32_t key_offset;
+    uint64_t transaction_id;
     uint64_t rts, wts;
 
     DCHECK(inputPiece.get_message_length() ==
-           MessagePiece::get_header_size() + key_size + sizeof(key_offset));
+           MessagePiece::get_header_size() + key_size + sizeof(transaction_id) + sizeof(write_lock) + sizeof(key_offset));
 
     // get row and offset
     const void *key = stringPiece.data();
@@ -1085,12 +1089,12 @@ public:
 
     stringPiece.remove_prefix(key_size);
     star::Decoder dec(stringPiece);
-    dec >> key_offset;
+    dec >> transaction_id >> write_lock >> key_offset;
 
     DCHECK(dec.size() == 0);
 
     // prepare response message header
-    auto message_size = MessagePiece::get_header_size() + value_size +
+    auto message_size = MessagePiece::get_header_size() + value_size + sizeof(bool) + sizeof(bool)
                         + sizeof(rts) + sizeof(wts) + sizeof(key_offset);
     auto message_piece_header = MessagePiece::construct_message_piece_header(
         static_cast<uint32_t>(SundialMessage::READ_RESPONSE), message_size,
@@ -1100,13 +1104,22 @@ public:
     encoder << message_piece_header;
 
     // reserve size for read
+    bool success = true;
+    std::pair<uint64_t, uint64_t> rwts;
+    if (write_lock) {
+      success = SundialHelper::write_lock(row, rwts, transaction_id);
+    }
+
     responseMessage.data.append(value_size, 0);
     void *dest =
-        &responseMessage.data[0] + responseMessage.data.size() - value_size;
+          &responseMessage.data[0] + responseMessage.data.size() - value_size;
     // read to message buffer
-    auto rwts = SundialHelper::read(row, dest, value_size);
+    auto read_rwts = SundialHelper::read(row, dest, value_size);
+    if (success && write_lock) {
+      DCHECK(read_rwts == rwts);
+    }
+    encoder << success << write_lock << read_rwts.first << read_rwts.second << key_offset;
 
-    encoder << rwts.first << rwts.second << key_offset;
     responseMessage.flush();
   }
 
@@ -1130,24 +1143,37 @@ public:
     auto stringPiece = inputPiece.toStringPiece();
     uint32_t key_offset;
     uint64_t rts, wts;
+    bool write_lock, success;
 
     DCHECK(inputPiece.get_message_length() ==
-           MessagePiece::get_header_size() + value_size + sizeof(wts) + sizeof(rts) + sizeof(key_offset));
+           MessagePiece::get_header_size() + value_size + sizeof(write_lock) + sizeof(success) + sizeof(wts) + sizeof(rts) + sizeof(key_offset));
 
     stringPiece.remove_prefix(value_size);
     Decoder dec(stringPiece);
-    dec >> wts >> rts >> key_offset;
+    dec >> success >> write_lock >> wts >> rts >> key_offset;
 
     SundialRWKey &readKey = txn->readSet[key_offset];
     dec = Decoder(inputPiece.toStringPiece());
     dec.read_n_bytes(readKey.get_value(), value_size);
-    readKey.set_wts(wts);
-    readKey.set_rts(rts);
 
-    DCHECK(dec.size() == sizeof(wts) + sizeof(rts) + sizeof(key_offset));
+    DCHECK(dec.size() == sizeof(success) + sizeof(write_lock) + sizeof(wts) + sizeof(rts) + sizeof(key_offset));
     txn->pendingResponses--;
 
-    txn->commit_ts = std::max(txn->commit_ts, wts);
+    if (write_lock == false) {
+      DCHECK(success == true);
+      readKey.set_wts(wts);
+      readKey.set_rts(rts);
+      txn->commit_ts = std::max(txn->commit_ts, wts);
+    } else {
+      if (success == false) {
+        txn->abort_lock = true;
+      } else {
+        readKey.set_wts(wts);
+        readKey.set_rts(rts);
+        readKey.set_write_lock_bit();
+        txn->commit_ts = std::max(txn->commit_ts, wts);
+      }
+    }
   }
 
   static void write_lock_request_handler(MessagePiece inputPiece,

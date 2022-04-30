@@ -35,9 +35,7 @@ public:
       : base_type(coordinator_id, id, db, context, worker_status,
                   n_complete_workers, n_started_workers) {}
 
-  ~
-
-      SundialExecutor() = default;
+  ~SundialExecutor() = default;
 
   void setupHandlers(TransactionType &txn)
 
@@ -45,7 +43,7 @@ public:
     txn.readRequestHandler =
         [this, &txn](std::size_t table_id, std::size_t partition_id,
                      uint32_t key_offset, const void *key, void *value,
-                     bool local_index_read) {
+                     bool local_index_read, bool write_lock) {
       bool local_read = false;
 
       if (this->partitioner->has_master_partition(partition_id) ||
@@ -59,16 +57,32 @@ public:
         ITable *table = this->db.find_table(table_id, partition_id);
         auto value_size = table->value_size();
         auto row = table->search(key);
-        auto rwts = SundialHelper::read(row, value, value_size);
-        txn.readSet[key_offset].set_wts(rwts.first);
-        txn.readSet[key_offset].set_rts(rwts.second);
+        bool success = true;
+
+        std::pair<uint64_t, uint64_t> rwts;
+        if (write_lock) {
+          DCHECK(local_index_read == false);
+          success = SundialHelper::write_lock(row, rwts, txn.transaction_id);
+        }
+        auto read_rwts = SundialHelper::read(row, value, value_size);
+        txn.readSet[key_offset].set_wts(read_rwts.first);
+        txn.readSet[key_offset].set_rts(read_rwts.second);
+        if (write_lock) {
+          DCHECK(local_index_read == false);
+          if (success) {
+            DCHECK(rwts == read_rwts);
+            txn.readSet[key_offset].set_write_lock_bit();
+          } else {
+            txn.abort_lock = true;
+          }
+        }
         return;
       } else {
         ITable *table = this->db.find_table(table_id, partition_id);
         auto coordinatorID =
             this->partitioner->master_coordinator(partition_id);
         txn.network_size += MessageFactoryType::new_read_message(
-            *(this->messages[coordinatorID]), *table, key, key_offset);
+            *(this->messages[coordinatorID]), *table, key, txn.transaction_id, write_lock, key_offset);
         txn.pendingResponses++;
         txn.distributed_transaction = true;
         return;
