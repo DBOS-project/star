@@ -16,6 +16,44 @@
 #include <set>
 namespace star {
 
+enum class ExecutorStage {
+  NORMAL,
+  // The coordiantor has issued the checkpoint instruction. 
+  // It waits for all executors to quiesce transaction processing.
+  CHECKPOINT_START,
+  // Executor enters the copy-on-write mode where foreground threads continue transaction processing on the tables in copy-on-write mode 
+  // and an background thread dumps data.
+  CHECKPOINT_COW,
+  CHECKPOINT_COW_DUMP_FINISHED,
+  // When a executor finishes dumping data, it enters this stage. 
+  // The coordinator waits for all partitions finish dumping and next switches to NORMAL stage.
+  CHECKPOINT_DONE,
+};
+
+
+std::string to_string(ExecutorStage stage) {
+  switch (stage) {
+    case ExecutorStage::NORMAL: return "NORMAL";
+    case ExecutorStage::CHECKPOINT_START: return "CHECKPOINT_START";
+    case ExecutorStage::CHECKPOINT_COW: return "CHECKPOINT_COW";
+    case ExecutorStage::CHECKPOINT_COW_DUMP_FINISHED: return "CHECKPOINT_COW_DUMP_FINISHED";
+    case ExecutorStage::CHECKPOINT_DONE: return "CHECKPOINT_DONE";
+    default: CHECK(false);
+  }
+  return "";
+}
+
+enum class CheckpointAction {
+  SWITCH_TO_NORMAL,
+  CHECKPOINT_START_REQUEST,
+  CHECKPOINT_START_RESP,
+  CHECKPOINT_COW,
+  CHECKPOINT_COW_DUMP_FINISHED,
+  CHECKPOINT_DONE_REQUEST,
+  CHECKPOINT_DONE_RESP
+};
+
+
 template <class Workload>
 class HStoreExecutor
     : public Executor<Workload, HStore<typename Workload::DatabaseType>>
@@ -29,6 +67,7 @@ private:
   std::vector<Message*> group_cluster_worker_messages;
   int cluster_worker_num = -1;
   int active_replica_worker_num_end = -1;
+  ExecutorStage stage = ExecutorStage::NORMAL;
   Percentile<uint64_t> txn_try_times;
   Percentile<int64_t> round_concurrency;
   Percentile<int64_t> effective_round_concurrency;
@@ -254,6 +293,7 @@ public:
   std::vector<std::deque<MessagePiece>> granule_lock_request_queues;
   std::deque<int> granule_lock_reqeust_candidates;
   std::size_t replica_num;
+  std::vector<int> lock_ids_by_this_replica_executor;
   bool sp_parallel_exec_commit = false;
   int64_t get_minimum_replayed_log_position() {
     int64_t minv = granule_replayed_log_index[0];
@@ -294,20 +334,20 @@ public:
     return buffer;
   }
 
-  std::deque<TxnCommandBase> & get_partition_cmd_queue(int partition) {
+  std::deque<TxnCommandBase> & get_granule_lock_cmd_queue(int lock_id) {
     DCHECK(is_replica_worker);
-    DCHECK(granule_to_cmd_queue_index[partition] != -1);
-    DCHECK(granule_to_cmd_queue_index[partition] >= 0);
-    DCHECK(granule_to_cmd_queue_index[partition] < (int)granule_command_queues.size());
-    return granule_command_queues[granule_to_cmd_queue_index[partition]];
+    DCHECK(granule_to_cmd_queue_index[lock_id] != -1);
+    DCHECK(granule_to_cmd_queue_index[lock_id] >= 0);
+    DCHECK(granule_to_cmd_queue_index[lock_id] < (int)granule_command_queues.size());
+    return granule_command_queues[granule_to_cmd_queue_index[lock_id]];
   }
 
-  std::deque<MessagePiece> & get_granule_lock_request_queue(int partition) {
+  std::deque<MessagePiece> & get_granule_lock_request_queue(int lock_id) {
     DCHECK(is_replica_worker);
-    DCHECK(granule_to_cmd_queue_index[partition] != -1);
-    DCHECK(granule_to_cmd_queue_index[partition] >= 0);
-    DCHECK(granule_to_cmd_queue_index[partition] < (int)granule_lock_request_queues.size());
-    return granule_lock_request_queues[granule_to_cmd_queue_index[partition]];
+    DCHECK(granule_to_cmd_queue_index[lock_id] != -1);
+    DCHECK(granule_to_cmd_queue_index[lock_id] >= 0);
+    DCHECK(granule_to_cmd_queue_index[lock_id] < (int)granule_lock_request_queues.size());
+    return granule_lock_request_queues[granule_to_cmd_queue_index[lock_id]];
   }
 
   int64_t & get_partition_last_replayed_position_in_log(int partition) {
@@ -317,6 +357,12 @@ public:
     DCHECK(granule_to_cmd_queue_index[partition] < (int)granule_command_queues.size());
     return granule_replayed_log_index[granule_to_cmd_queue_index[partition]];
   }
+
+  struct ReplicaCheckpointMeta {
+    bool cow_begin;
+    bool cow_end;
+    int ref_cnt;
+  };
 
   HStoreExecutor(std::size_t coordinator_id, std::size_t worker_id, DatabaseType &db,
                 const ContextType &context,
@@ -395,6 +441,7 @@ public:
               managed_replica_granules_str += std::to_string(p) + ",";
               for (size_t j = 0; j < this->context.granules_per_partition; ++j) {
                 auto lock_id = to_lock_id(p, j);
+                lock_ids_by_this_replica_executor.push_back(lock_id);
                 granule_command_queues.push_back(std::deque<TxnCommandBase>());
                 granule_lock_request_queues.push_back(std::deque<MessagePiece>());
                 granule_command_queue_processing.push_back(false);
@@ -592,6 +639,8 @@ public:
       int64_t position_in_log = next_position_in_command_log++;
       uint64_t last_writer = 0;
       bool write_lock = false;
+      bool is_cow_begin = false;
+      bool is_cow_end = false;
       minimum_coord_txn_written_log_position = position_in_log;
 
       size_t command_buffer_data_size = command_buffer_data.size();
@@ -604,6 +653,8 @@ public:
       enc << granule_id;
       enc << last_writer;
       enc << write_lock;
+      enc << is_cow_begin;
+      enc << is_cow_end;
       enc << txn_command_data.size();
       enc.write_n_bytes(txn_command_data.data(), txn_command_data.size());
       
@@ -712,7 +763,7 @@ public:
             }
           }
           if (is_replica_worker) {
-            auto & q = get_partition_cmd_queue(lock_id);
+            auto & q = get_granule_lock_cmd_queue(lock_id);
             if (q.empty() == false) {
               DCHECK(granule_command_queue_processing[granule_to_cmd_queue_index[lock_id]] == false);
               replay_commands_in_granule(lock_id);
@@ -781,7 +832,7 @@ public:
         lock.set_released();
 
         if (is_replica_worker) {
-          auto & q = get_partition_cmd_queue(lock_id);
+          auto & q = get_granule_lock_cmd_queue(lock_id);
           if (q.empty() == false) {
             DCHECK(granule_command_queue_processing[granule_to_cmd_queue_index[lock_id]] == false);
             replay_commands_in_granule(lock_id);
@@ -1052,21 +1103,21 @@ public:
           success = 0;
         }
       }
-      if (success == 0) {
-        success = 1;
-        replay_commands_in_granule(lock_id);
-        if (write_lock) {
-          if (lock_buckets[lock_id].write_locked() == false || lock_buckets[lock_id].get_last_writer() != requested_last_writer) {
-            success = 0;
-          }
-        } else {
-          if (lock_buckets[lock_id].write_locked() ||
-              lock_buckets[lock_id].reader_cnt() == 0 || 
-              lock_buckets[lock_id].get_last_writer() != requested_last_writer) {
-            success = 0;
-          }
-        }
-      }
+      // if (success == 0) {
+      //   success = 1;
+      //   replay_commands_in_granule(lock_id);
+      //   if (write_lock) {
+      //     if (lock_buckets[lock_id].write_locked() == false || lock_buckets[lock_id].get_last_writer() != requested_last_writer) {
+      //       success = 0;
+      //     }
+      //   } else {
+      //     if (lock_buckets[lock_id].write_locked() ||
+      //         lock_buckets[lock_id].reader_cnt() == 0 || 
+      //         lock_buckets[lock_id].get_last_writer() != requested_last_writer) {
+      //       success = 0;
+      //     }
+      //   }
+      // }
       //LOG(INFO) << "This cluster worker " << this_cluster_worker_id << ", processed lock_request on lock_id " << lock_id << " for txn " << tid << ", success " << (int)success << ", lock status " << lock_buckets[lock_id].to_string();
       if (success != 1) {
         return false;
@@ -1204,7 +1255,7 @@ public:
             DCHECK(granule_id >= 0 && granule_id < (int)this->context.granules_per_partition);
             auto lock_id = to_lock_id(partition_id, granule_id);
             first_lock_id_by_this_worker = lock_id;
-            auto & q = get_partition_cmd_queue(lock_id);
+            auto & q = get_granule_lock_cmd_queue(lock_id);
             TxnCommandBase cmd_mp;
             cmd_mp.tid = cmd.tid;
             cmd_mp.is_coordinator = false;
@@ -1212,7 +1263,9 @@ public:
             cmd_mp.granule_id = granule_id;
             cmd_mp.position_in_log = cmd.position_in_log;
             cmd_mp.is_mp = true;
-            cmd_mp.txn = mp_txn;
+            cmd_mp.txn = (void*)mp_txn;
+            cmd_mp.is_cow_begin = false;
+            cmd_mp.is_cow_end = false;
             DCHECK(mp_txn->lock_status.num_locks() > 0);
             auto lock_index = mp_txn->lock_status.get_lock_index_no_write(lock_id);
             DCHECK(lock_index != -1);
@@ -1242,12 +1295,34 @@ public:
       dec >> cmd.granule_id;
       dec >> cmd.last_writer;
       dec >> cmd.write_lock;
+      dec >> cmd.is_cow_begin;
+      dec >> cmd.is_cow_end;
       std::size_t command_data_size;
       dec >> command_data_size;
       std::string command_data = std::string(dec.get_raw_ptr(), command_data_size);
       dec.remove_prefix(command_data_size);
-      
-      if (!cmd.is_coordinator) { // place into one partition command queue for replay
+      if (cmd.is_cow_begin || cmd.is_cow_end) {
+        std::string tag = cmd.is_cow_begin ? "COW_BEGIN" : "COW_END";
+        LOG(INFO) << "Replica worker " << this_cluster_worker_id << " found a " << tag;
+        ReplicaCheckpointMeta *ckpt_meta = new ReplicaCheckpointMeta{cmd.is_cow_begin, cmd.is_cow_end, 0};
+        for (auto lock_id : lock_ids_by_this_replica_executor) {
+          auto lock_index = granule_to_cmd_queue_index[lock_id];
+          auto & q = granule_command_queues[lock_index];
+          auto cmd_copy = cmd;
+          cmd_copy.txn = (void*)ckpt_meta;
+          ckpt_meta->ref_cnt++;
+          q.push_back(cmd_copy);
+        }
+
+        for (auto lock_id : lock_ids_by_this_replica_executor) {
+          DCHECK(granule_command_queue_processing[granule_to_cmd_queue_index[lock_id]] == false);
+          replay_commands_in_granule(lock_id);
+          auto & q2 = get_granule_lock_request_queue(lock_id);
+          if (q2.empty() == false) {
+            granule_lock_reqeust_candidates.push_back(lock_id);
+          }
+        }
+      } else if (!cmd.is_coordinator) { // place into one partition command queue for replay
         auto partition = cmd.partition_id;
         auto granule_id = cmd.granule_id;
         DCHECK(granule_id >= 0 && granule_id < (int)this->context.granules_per_partition);
@@ -1290,7 +1365,7 @@ public:
           TxnCommandBase cmd_mp_txn = cmd;
           cmd_mp_txn.tid = mp_txn->transaction_id;
           cmd_mp_txn.is_coordinator = true;
-          cmd_mp_txn.txn = mp_txn;
+          cmd_mp_txn.txn = (void*)mp_txn;
           cmd_mp_txn.is_mp = true;
           enqueue_mp_transaction(cmd_mp_txn, mp_txn);
         }
@@ -1333,36 +1408,8 @@ public:
     ScopedTimer t([&, this](uint64_t us) {
       spread_time.add(us);
     });
-// TODO: replay lock_buckets
+
     spread_replicated_commands(data);
-
-    // if (persist_cmd_buffer) {
-    //   persist_and_clear_command_buffer(true);
-    // }
-    // std::unique_ptr<TransactionType> new_txn = this->workload.deserialize_from_raw(this->context, data);
-    // new_txn->initiating_cluster_worker_id = initiating_cluster_worker_id;
-    // new_txn->initiating_transaction_id = inputMessage.get_transaction_id();
-    // new_txn->transaction_id = WorkloadType::next_transaction_id(this->context.coordinator_id);
-    // auto partition_id = new_txn->partition_id;
-    // DCHECK((int)partition_owner_cluster_worker(partition_id, ith_replica) == this_cluster_worker_id);
-
-    // // auto txn_command_data = new_txn->serialize(ith_replica);
-    // // // Persist txn command
-    // // this->logger->write(txn_command_data.c_str(), txn_command_data.size(), true, [&, this]() {process_request();});
-
-    // queuedTxns.emplace_back(new_txn.release());
-
-    // // auto message_size = MessagePiece::get_header_size();
-
-    // // auto message_piece_header = MessagePiece::construct_message_piece_header(
-    // //     static_cast<uint32_t>(HStoreMessage::COMMAND_REPLICATION_RESPONSE), message_size,
-    // //     0, 0);
-
-    // // star::Encoder encoder(responseMessage.data);
-    // // encoder << message_piece_header;
-  
-    // // responseMessage.flush();
-    //// // responseMessage.set_gen_time(Time::now());
   }
 
   void command_replication_response_handler(const Message & inputMessage, MessagePiece inputPiece,
@@ -1799,6 +1846,8 @@ public:
       int64_t position_in_log = next_position_in_command_log++;
       size_t command_buffer_data_size = command_buffer_data.size();
       Encoder enc(command_buffer_data);
+      bool is_cow_begin = false;
+      bool is_cow_end = false;
       enc << tid;
       enc << is_coordinator;
       enc << is_mp;
@@ -1807,6 +1856,8 @@ public:
       enc << granule_id;
       enc << requested_last_writer;
       enc << write_lock;
+      enc << is_cow_begin;
+      enc << is_cow_end;
       if (write_lock) {
         DCHECK(lock_buckets[lock_id].get_last_writer() == requested_last_writer);
         DCHECK(requested_last_writer == tid);
@@ -1847,7 +1898,7 @@ public:
     }
 
     if (is_replica_worker) {
-      auto & q = get_partition_cmd_queue(lock_id);
+      auto & q = get_granule_lock_cmd_queue(lock_id);
       if (q.empty() == false) {
         DCHECK(granule_command_queue_processing[granule_to_cmd_queue_index[lock_id]] == false);
         replay_commands_in_granule(lock_id);
@@ -2734,7 +2785,25 @@ public:
   void replay_sp_queue_commands_unprotected(std::deque<TxnCommandBase> & q) {
     while (q.empty() == false) {
       auto & cmd = q.front();
-      if (cmd.is_coordinator == false) {
+      if (cmd.is_cow_end || cmd.is_cow_begin) {
+        if (cmd.is_cow_cmd_processed) {
+          break;
+        }
+        --((ReplicaCheckpointMeta*)cmd.txn)->ref_cnt;
+        cmd.is_cow_cmd_processed = true;
+        if (((ReplicaCheckpointMeta*)cmd.txn)->ref_cnt == 0) {
+          std::string tag = cmd.is_cow_begin ? "COW_BEGIN" : "COW_END";
+          LOG(INFO) << "Replica worker " << this_cluster_worker_id << " " << tag << " finished";
+          for (auto lock_id : lock_ids_by_this_replica_executor) {
+            DCHECK(get_granule_lock_cmd_queue(lock_id).empty() == false);
+            DCHECK(get_granule_lock_cmd_queue(lock_id).front().txn == cmd.txn);
+            DCHECK(((ReplicaCheckpointMeta*)(get_granule_lock_cmd_queue(lock_id).front().txn))->ref_cnt == 0);
+            DCHECK(get_granule_lock_cmd_queue(lock_id).front().is_cow_begin || get_granule_lock_cmd_queue(lock_id).front().is_cow_end);
+            get_granule_lock_cmd_queue(lock_id).pop_front();
+          }
+        }
+        break;
+      } else if (cmd.is_coordinator == false) {
         //DCHECK(false);
         auto partition_id = cmd.partition_id;
         auto granule_id = cmd.granule_id;
@@ -2745,8 +2814,8 @@ public:
             lock_buckets[lock_id].set_last_writer(cmd.tid);
             lock_buckets[lock_id].set_write_lock();
 
-            if (cmd.txn != nullptr && --cmd.txn->granules_left_to_lock == 0) {
-              txns_candidate_for_reexecution.push_back(cmd.txn);
+            if (cmd.txn != nullptr && --((TransactionType*)cmd.txn)->granules_left_to_lock == 0) {
+              txns_candidate_for_reexecution.push_back((TransactionType*)cmd.txn);
             }
             q.pop_front();
           } else {
@@ -2758,8 +2827,8 @@ public:
           }
           DCHECK(lock_buckets[lock_id].get_last_writer() == cmd.last_writer);
           lock_buckets[lock_id].inc_reader_cnt();
-          if (cmd.txn != nullptr && --cmd.txn->granules_left_to_lock == 0) {
-            txns_candidate_for_reexecution.push_back(cmd.txn);
+          if (cmd.txn != nullptr && --((TransactionType*)cmd.txn)->granules_left_to_lock == 0) {
+            txns_candidate_for_reexecution.push_back((TransactionType*)cmd.txn);
           }
           //LOG(INFO) << "This cluster worker " << this_cluster_worker_id << " replayed participant read lock record of txn " << cmd.tid << " on lock_id " << lock_id << " with last writer " << cmd.last_writer;
           q.pop_front();
@@ -3160,6 +3229,10 @@ public:
           .count(); 
           rtt_request_sent = false;
           rtt_stat.add(rtt);
+        } else if (type == (int)HStoreMessage::CHECKPOINT_INST) { 
+          checkpoint_inst_handler(*message, messagePiece, *cluster_worker_messages[message->get_source_cluster_worker_id()], 
+                                                *table, 
+                                                txn);
         } else {
           CHECK(false);
         }
@@ -3216,15 +3289,238 @@ public:
   std::chrono::steady_clock::time_point rtt_request_sent_time;
   bool rtt_request_sent = false;
 
+  std::chrono::steady_clock::time_point last_checkpoint_time = std::chrono::steady_clock::now();
+  std::chrono::steady_clock::time_point last_cow_dump_start_time = std::chrono::steady_clock::now();
+  bool time_to_checkpoint() {
+    auto now = std::chrono::steady_clock::now();
+    if (std::chrono::duration_cast<std::chrono::seconds>(now - last_checkpoint_time).count() >= 5) {
+      return true;
+    }
+    return false;
+  }
+
+  bool cow_dump_finished() {
+    auto now = std::chrono::steady_clock::now();
+    if (std::chrono::duration_cast<std::chrono::seconds>(now - last_cow_dump_start_time).count() >= 2) {
+      return true;
+    }
+    return false;
+  }
+
+  struct CheckpointInstruction {
+    int source_cluster_id;
+    CheckpointAction action;
+  };
+  std::deque<CheckpointInstruction> checkpoint_insts;
+
+  void checkpoint_inst_handler(const Message & inputMessage, MessagePiece inputPiece,
+                                   Message &responseMessage,
+                                   ITable &table, Transaction *txn) {
+    DCHECK(inputPiece.get_message_type() ==
+           static_cast<uint32_t>(HStoreMessage::CHECKPOINT_INST));
+
+    auto key_size = table.key_size();
+    auto value_size = table.value_size();
+    /*
+     * The structure of a write command replication request: (ith_replica, txn data)
+     * The structure of a write lock response: (success?, key offset, value?)
+     */
+    int ith_replica;
+    int from_cluster_worker_id;
+    auto stringPiece = inputPiece.toStringPiece();
+    int instrcution;
+    DCHECK(inputPiece.get_message_length() ==
+             MessagePiece::get_header_size() + sizeof(from_cluster_worker_id) + sizeof(ith_replica) + sizeof(instrcution));
+    Decoder dec(stringPiece);
+    dec >> from_cluster_worker_id >> ith_replica >> instrcution;
+
+    checkpoint_insts.push_back({from_cluster_worker_id, (CheckpointAction)instrcution});
+  }
+  
+  int checkpointPendingResponses = 0;
+
+  void send_to_checkpoint_coordiantor(CheckpointAction action) {
+    cluster_worker_messages[0]->set_transaction_id(0);
+    MessageFactoryType::new_checkpoint_instruction_message(*cluster_worker_messages[0], (int)action, 0, this_cluster_worker_id);
+    add_outgoing_message(0);
+    flush_messages();
+  }
+
+
+  void send_to_checkpoint_participants(CheckpointAction action, bool need_response) {
+    for (int i = 1; i < active_replica_worker_num_end; ++i) {
+      cluster_worker_messages[i]->set_transaction_id(0);
+      MessageFactoryType::new_checkpoint_instruction_message(*cluster_worker_messages[i], (int)action, 0, this_cluster_worker_id);
+      if (need_response) {
+        checkpointPendingResponses++;
+      }
+      add_outgoing_message(i);
+      flush_messages();
+    }
+  }
+
+  enum class CheckpointCowOperation {
+    BEGIN,
+    END
+  };
+
+  void log_cow_operation(CheckpointCowOperation op) {
+      std::string txn_command_data = "";
+      int64_t tid = -1;
+      bool is_mp = false;
+      int partition_id = -1;
+      int granule_id = -1;
+      bool is_coordinator = true;
+      int64_t position_in_log = next_position_in_command_log++;
+      uint64_t last_writer = 0;
+      bool write_lock = false;
+      bool is_cow_begin = op == CheckpointCowOperation::BEGIN;
+      bool is_cow_end = op == CheckpointCowOperation::END;
+      minimum_coord_txn_written_log_position = position_in_log;
+
+      size_t command_buffer_data_size = command_buffer_data.size();
+      Encoder enc(command_buffer_data);
+      enc << tid;
+      enc << is_coordinator;
+      enc << is_mp;
+      enc << position_in_log;
+      enc << partition_id;
+      enc << granule_id;
+      enc << last_writer;
+      enc << write_lock;
+      enc << is_cow_begin;
+      enc << is_cow_end;
+      enc << txn_command_data.size();
+      enc.write_n_bytes(txn_command_data.data(), txn_command_data.size());
+      
+      command_buffer_outgoing_data.insert(command_buffer_outgoing_data.end(), command_buffer_data.begin() + command_buffer_data_size, command_buffer_data.end());
+      persist_and_clear_command_buffer(false);
+      if (this->context.lotus_async_repl == true) {
+        send_commands_to_replica();
+      }
+  }
+
+  void process_checkpoint_instructions() {
+    while (checkpoint_insts.empty() == false) {
+      auto inst = checkpoint_insts.front();
+      checkpoint_insts.pop_front();
+      auto action = inst.action;
+      if (this_cluster_worker_id == 0) { // checkpoint coordinator
+        if (stage == ExecutorStage::CHECKPOINT_START) {
+          CHECK(inst.source_cluster_id != this_cluster_worker_id);
+          CHECK(action == CheckpointAction::CHECKPOINT_START_RESP);
+          CHECK(checkpointPendingResponses > 0);
+          LOG(INFO) << "Checkpoint coordinator worker[stage=" << to_string(stage) << "]  " << this->this_cluster_worker_id << " received a CHECKPOINT_START_RESP from " << inst.source_cluster_id << ", checkpointPendingResponses " << checkpointPendingResponses;
+          if (--checkpointPendingResponses == 0) {
+            LOG(INFO) << "Checkpoint coordinator worker[stage=" << to_string(stage) << "]  swtich to " << to_string(ExecutorStage::CHECKPOINT_COW);
+            stage = ExecutorStage::CHECKPOINT_COW;
+            //TODO: log cow operation
+            last_cow_dump_start_time = std::chrono::steady_clock::now();
+            send_to_checkpoint_participants(CheckpointAction::CHECKPOINT_COW, true);
+            log_cow_operation(CheckpointCowOperation::BEGIN);
+            checkpointPendingResponses += 1; // Need to wait for this worker too.
+            CHECK(this->context.worker_num * this->partitioner->num_coordinator_for_one_replica() == checkpointPendingResponses);
+          }
+        } else if (stage == ExecutorStage::CHECKPOINT_COW || stage == ExecutorStage::CHECKPOINT_COW_DUMP_FINISHED) {
+          CHECK(action == CheckpointAction::CHECKPOINT_COW_DUMP_FINISHED);
+          CHECK(checkpointPendingResponses > 0);
+          LOG(INFO) << "Checkpoint coordinator worker[stage=" << to_string(stage) << "]  " << this->this_cluster_worker_id << " received a CHECKPOINT_COW_DUMP_FINISHED from " << inst.source_cluster_id << ", checkpointPendingResponses " << checkpointPendingResponses;
+          if (--checkpointPendingResponses == 0) { // All workers finish dumping data
+            LOG(INFO) << "Checkpoint coordinator worker[stage=" << to_string(stage) << "]  swtich to " << to_string(ExecutorStage::CHECKPOINT_DONE);
+            stage = ExecutorStage::CHECKPOINT_DONE;
+            send_to_checkpoint_participants(CheckpointAction::CHECKPOINT_DONE_REQUEST, true);
+            CHECK(this->context.worker_num * this->partitioner->num_coordinator_for_one_replica() - 1 == checkpointPendingResponses);
+          }
+        } else if (stage == ExecutorStage::CHECKPOINT_DONE) {
+          CHECK(action == CheckpointAction::CHECKPOINT_DONE_RESP);
+          CHECK(checkpointPendingResponses > 0);
+          LOG(INFO) << "Checkpoint coordinator worker[stage=" << to_string(stage) << "]  " << this->this_cluster_worker_id << " received a CHECKPOINT_DONE_RESP from " << inst.source_cluster_id << ", checkpointPendingResponses " << checkpointPendingResponses;
+          if (--checkpointPendingResponses == 0) { // All workers synchornized, switch to normal mode
+            LOG(INFO) << "Checkpoint coordinator worker[stage=" << to_string(stage) << "]  swtich to " << to_string(ExecutorStage::NORMAL);
+            stage = ExecutorStage::NORMAL;
+            //TODO: log switch operation
+            send_to_checkpoint_participants(CheckpointAction::SWITCH_TO_NORMAL, false);
+            log_cow_operation(CheckpointCowOperation::END);
+          }
+        }
+      } else { // checkpoint participants
+        if (stage == ExecutorStage::NORMAL) {
+          CHECK(action == CheckpointAction::CHECKPOINT_START_REQUEST);
+          LOG(INFO) << "Checkpoint participant worker[stage=" << to_string(stage) << "]  swtich to " << to_string(ExecutorStage::CHECKPOINT_START);
+          // No residual transactions
+          stage = ExecutorStage::CHECKPOINT_START;
+          // Send a CheckpointAction::CHECKPOINT_START_RESP message to coordinator saying we are ready to switch to COW
+          send_to_checkpoint_coordiantor(CheckpointAction::CHECKPOINT_START_RESP);
+        } else if (stage == ExecutorStage::CHECKPOINT_START) {
+          CHECK(action == CheckpointAction::CHECKPOINT_COW);
+          // TODO: switch to COW mode and log the cow operation.
+          LOG(INFO) << "Checkpoint participant worker[stage=" << to_string(stage) << "]  swtich to " << to_string(ExecutorStage::CHECKPOINT_COW);
+          last_cow_dump_start_time = std::chrono::steady_clock::now();
+          stage = ExecutorStage::CHECKPOINT_COW;
+          log_cow_operation(CheckpointCowOperation::BEGIN);
+        } else if (stage == ExecutorStage::CHECKPOINT_COW) {
+          // Coordiantor instructed this node to be ready for going back to normal mode.
+          // This happens after all the background dumping workers finishes their work.
+          CHECK(action == CheckpointAction::CHECKPOINT_COW_DUMP_FINISHED);
+          LOG(INFO) << "Checkpoint participant worker[stage=" << to_string(stage) << "]  swtich to " << to_string(ExecutorStage::CHECKPOINT_COW_DUMP_FINISHED);
+          stage = ExecutorStage::CHECKPOINT_COW_DUMP_FINISHED;
+          send_to_checkpoint_coordiantor(CheckpointAction::CHECKPOINT_COW_DUMP_FINISHED);
+        } else if (stage == ExecutorStage::CHECKPOINT_COW_DUMP_FINISHED) {
+          CHECK(action == CheckpointAction::CHECKPOINT_DONE_REQUEST);
+          LOG(INFO) << "Checkpoint participant worker[stage=" << to_string(stage) << "]  swtich to " << to_string(ExecutorStage::CHECKPOINT_DONE);
+          stage = ExecutorStage::CHECKPOINT_DONE;
+          send_to_checkpoint_coordiantor(CheckpointAction::CHECKPOINT_DONE_RESP);
+        } else if (stage == ExecutorStage::CHECKPOINT_DONE) {
+          // TODO: Coordiantor instructed this node to switch to normal operation.
+          // Also log the switch operation.
+          LOG(INFO) << "Checkpoint participant worker[stage=" << to_string(stage) << "]  swtich to " << to_string(ExecutorStage::NORMAL);
+          CHECK(action == CheckpointAction::SWITCH_TO_NORMAL);
+          stage = ExecutorStage::NORMAL;
+          log_cow_operation(CheckpointCowOperation::END);
+        }
+      }
+    }
+  }
+
   void drive_event_loop(bool new_transaction = true) {
     handle_requests(false);
-    if (new_transaction && is_replica_worker == false) {
-      process_new_transactions();
+    if (is_replica_worker == false) {
+      if (stage == ExecutorStage::NORMAL) {
+        if (new_transaction && is_replica_worker == false) {
+          process_new_transactions();
+        }
+        if (this_cluster_worker_id == 0 && this->context.lotus_checkpoint &&  time_to_checkpoint()) {
+          LOG(INFO) << "Checkpoint coordinator worker[stage=" << to_string(stage) << "]  swtich to " << to_string(ExecutorStage::CHECKPOINT_START);
+          stage = ExecutorStage::CHECKPOINT_START;
+          last_checkpoint_time = std::chrono::steady_clock::now();
+          send_to_checkpoint_participants(CheckpointAction::CHECKPOINT_START_REQUEST, true);
+          CHECK(this->context.worker_num * this->partitioner->num_coordinator_for_one_replica() - 1 == checkpointPendingResponses);
+        }
+      } else if (stage == ExecutorStage::CHECKPOINT_COW) {
+        if (new_transaction && is_replica_worker == false) {
+          process_new_transactions();
+        }
+        if (cow_dump_finished()) {
+          if (this_cluster_worker_id == 0) {
+            LOG(INFO) << "Checkpoint coordinator worker[stage=" << to_string(stage) << "]  finished COW dump, switching to CHECKPOINT_COW_DUMP_FINISHED stage";
+            stage = ExecutorStage::CHECKPOINT_COW_DUMP_FINISHED;
+          }
+          checkpoint_insts.push_back({this_cluster_worker_id, CheckpointAction::CHECKPOINT_COW_DUMP_FINISHED});
+        }
+      } else if (stage == ExecutorStage::CHECKPOINT_COW_DUMP_FINISHED) {
+        if (new_transaction && is_replica_worker == false) {
+          process_new_transactions();
+        }
+      } else {
+        // Do not initiate new transactions
+      }
+      process_checkpoint_instructions();
+    } else {
+      if (replica_num > 1) {
+        replay_loop();
+      }
     }
 
-    if (replica_num > 1 && is_replica_worker) {
-      replay_loop();
-    }
     if (replica_num > 1 && is_replica_worker == false && command_buffer_outgoing_data.empty() == false) {
       if (this->context.lotus_async_repl == true) {
         send_commands_to_replica();

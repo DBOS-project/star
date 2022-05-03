@@ -20,13 +20,16 @@ namespace star {
 struct TxnCommandBase {
   uint64_t tid; 
   int64_t position_in_log;
-  star::HStoreTransaction * txn;
+  void * txn;
   uint64_t last_writer = std::numeric_limits<uint64_t>::max();
   int partition_id;
   int granule_id = -1;
   bool is_coordinator;
   bool is_mp;
   bool write_lock = false;
+  bool is_cow_begin = false;
+  bool is_cow_end = false;
+  bool is_cow_cmd_processed = false;
 };
 struct TxnCommand: public TxnCommandBase {
   std::string command_data;
@@ -62,12 +65,32 @@ enum class HStoreMessage {
   GET_REPLAYED_LOG_POSITION_RESPONSE,
   RTT_REQUEST,
   RTT_RESPONSE,
+  CHECKPOINT_INST,
   NFIELDS
 };
 
 class HStoreMessageFactory {
 
 public:
+  static std::size_t new_checkpoint_instruction_message(Message&message, int inst, int ith_replica, int cluster_worker_id) {
+    /*
+     * The structure of a execute stage change request: ()
+     */
+
+    auto message_size =
+        MessagePiece::get_header_size() + sizeof(cluster_worker_id) + sizeof(ith_replica) + sizeof(inst);
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(HStoreMessage::CHECKPOINT_INST), message_size,
+        0, 0);
+
+    Encoder encoder(message.data);
+    encoder << message_piece_header << cluster_worker_id << ith_replica << inst;
+    message.set_is_replica(ith_replica > 0);
+    message.flush();
+    message.set_message_gen_time(0);
+    message.set_gen_time(Time::now());
+    return message_size;
+  }
 
   static std::size_t new_rtt_message(Message &message, int ith_replica, int cluster_worker_id) {
     /*
