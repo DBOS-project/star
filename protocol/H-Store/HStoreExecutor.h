@@ -362,6 +362,7 @@ public:
     bool cow_begin;
     bool cow_end;
     int ref_cnt;
+    int checkpoint_step;
   };
 
   HStoreExecutor(std::size_t coordinator_id, std::size_t worker_id, DatabaseType &db,
@@ -1222,7 +1223,7 @@ public:
     return success == 1;
   }
 // TODO: replay lock_buckets
-
+  int checkpoint_step = 0;
   void spread_replicated_commands(const std::string & buffer) {
     DCHECK(is_replica_worker);
     Decoder dec(buffer);
@@ -1284,6 +1285,7 @@ public:
       DCHECK(first_lock_id_by_this_worker != -1);
       mp_txn->replay_queue_lock_id = first_lock_id_by_this_worker;
     };
+    
     while(dec.size() > 0) {
       ++cmd_cnt;
       TxnCommandBase cmd;
@@ -1303,12 +1305,16 @@ public:
       dec.remove_prefix(command_data_size);
       if (cmd.is_cow_begin || cmd.is_cow_end) {
         std::string tag = cmd.is_cow_begin ? "COW_BEGIN" : "COW_END";
-        LOG(INFO) << "Replica worker " << this_cluster_worker_id << " found a " << tag;
+        
         ReplicaCheckpointMeta *ckpt_meta = new ReplicaCheckpointMeta{cmd.is_cow_begin, cmd.is_cow_end, 0};
+        ckpt_meta->checkpoint_step = ++checkpoint_step;
+        LOG(INFO) << "Replica worker " << this_cluster_worker_id << " found a " << tag << " at step " << ckpt_meta->checkpoint_step;
         for (auto lock_id : lock_ids_by_this_replica_executor) {
           auto lock_index = granule_to_cmd_queue_index[lock_id];
           auto & q = granule_command_queues[lock_index];
           auto cmd_copy = cmd;
+          cmd.partition_id = lock_id_to_partition(lock_id);
+          cmd.granule_id = lock_id_to_granule(lock_id);
           cmd_copy.txn = (void*)ckpt_meta;
           ckpt_meta->ref_cnt++;
           q.push_back(cmd_copy);
@@ -2791,16 +2797,27 @@ public:
         }
         --((ReplicaCheckpointMeta*)cmd.txn)->ref_cnt;
         cmd.is_cow_cmd_processed = true;
+        auto cmd_lock_id = to_lock_id(cmd.partition_id, cmd.granule_id);
         if (((ReplicaCheckpointMeta*)cmd.txn)->ref_cnt == 0) {
           std::string tag = cmd.is_cow_begin ? "COW_BEGIN" : "COW_END";
-          LOG(INFO) << "Replica worker " << this_cluster_worker_id << " " << tag << " finished";
+          LOG(INFO) << "Replica worker " << this_cluster_worker_id << " " << tag << " at step " << ((ReplicaCheckpointMeta*)cmd.txn)->checkpoint_step << " started";
+          if (tag == "COW_BEGIN") {
+            this->db.start_checkpoint_process(managed_partitions);
+          } else {
+            while (this->db.checkpoint_work_finished(managed_partitions) == false);
+            this->db.stop_checkpoint_process(managed_partitions);
+          }
           for (auto lock_id : lock_ids_by_this_replica_executor) {
             DCHECK(get_granule_lock_cmd_queue(lock_id).empty() == false);
             DCHECK(get_granule_lock_cmd_queue(lock_id).front().txn == cmd.txn);
             DCHECK(((ReplicaCheckpointMeta*)(get_granule_lock_cmd_queue(lock_id).front().txn))->ref_cnt == 0);
             DCHECK(get_granule_lock_cmd_queue(lock_id).front().is_cow_begin || get_granule_lock_cmd_queue(lock_id).front().is_cow_end);
             get_granule_lock_cmd_queue(lock_id).pop_front();
+            if (cmd_lock_id != lock_id) {
+              replay_sp_queue_commands_unprotected(get_granule_lock_cmd_queue(lock_id));
+            }
           }
+          LOG(INFO) << "Replica worker " << this_cluster_worker_id << " " << tag << " at step " << ((ReplicaCheckpointMeta*)cmd.txn)->checkpoint_step <<" finished";
         }
         break;
       } else if (cmd.is_coordinator == false) {
@@ -3293,15 +3310,7 @@ public:
   std::chrono::steady_clock::time_point last_cow_dump_start_time = std::chrono::steady_clock::now();
   bool time_to_checkpoint() {
     auto now = std::chrono::steady_clock::now();
-    if (std::chrono::duration_cast<std::chrono::seconds>(now - last_checkpoint_time).count() >= 5) {
-      return true;
-    }
-    return false;
-  }
-
-  bool cow_dump_finished() {
-    auto now = std::chrono::steady_clock::now();
-    if (std::chrono::duration_cast<std::chrono::seconds>(now - last_cow_dump_start_time).count() >= 2) {
+    if (std::chrono::duration_cast<std::chrono::seconds>(now - last_checkpoint_time).count() >= 10) {
       return true;
     }
     return false;
@@ -3418,6 +3427,7 @@ public:
             last_cow_dump_start_time = std::chrono::steady_clock::now();
             send_to_checkpoint_participants(CheckpointAction::CHECKPOINT_COW, true);
             log_cow_operation(CheckpointCowOperation::BEGIN);
+            this->db.start_checkpoint_process(managed_partitions);
             checkpointPendingResponses += 1; // Need to wait for this worker too.
             CHECK(this->context.worker_num * this->partitioner->num_coordinator_for_one_replica() == checkpointPendingResponses);
           }
@@ -3438,9 +3448,11 @@ public:
           if (--checkpointPendingResponses == 0) { // All workers synchornized, switch to normal mode
             LOG(INFO) << "Checkpoint coordinator worker[stage=" << to_string(stage) << "]  swtich to " << to_string(ExecutorStage::NORMAL);
             stage = ExecutorStage::NORMAL;
+            last_checkpoint_time = std::chrono::steady_clock::now();
             //TODO: log switch operation
             send_to_checkpoint_participants(CheckpointAction::SWITCH_TO_NORMAL, false);
             log_cow_operation(CheckpointCowOperation::END);
+            this->db.stop_checkpoint_process(managed_partitions);
           }
         }
       } else { // checkpoint participants
@@ -3458,6 +3470,7 @@ public:
           last_cow_dump_start_time = std::chrono::steady_clock::now();
           stage = ExecutorStage::CHECKPOINT_COW;
           log_cow_operation(CheckpointCowOperation::BEGIN);
+          this->db.start_checkpoint_process(managed_partitions);
         } else if (stage == ExecutorStage::CHECKPOINT_COW) {
           // Coordiantor instructed this node to be ready for going back to normal mode.
           // This happens after all the background dumping workers finishes their work.
@@ -3477,6 +3490,7 @@ public:
           CHECK(action == CheckpointAction::SWITCH_TO_NORMAL);
           stage = ExecutorStage::NORMAL;
           log_cow_operation(CheckpointCowOperation::END);
+          this->db.stop_checkpoint_process(managed_partitions);
         }
       }
     }
@@ -3500,7 +3514,7 @@ public:
         if (new_transaction && is_replica_worker == false) {
           process_new_transactions();
         }
-        if (cow_dump_finished()) {
+        if (this->db.checkpoint_work_finished(managed_partitions)) {
           if (this_cluster_worker_id == 0) {
             LOG(INFO) << "Checkpoint coordinator worker[stage=" << to_string(stage) << "]  finished COW dump, switching to CHECKPOINT_COW_DUMP_FINISHED stage";
             stage = ExecutorStage::CHECKPOINT_COW_DUMP_FINISHED;
