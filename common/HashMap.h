@@ -69,8 +69,7 @@ public:
   }
 
   void iterate(std::function<void(const KeyType &, const ValueType &)> processor, std::function<void()> unlock_processor) {
-    std::vector<int> bucket_counts(N);
-    std::vector<int> bucket_scan_idxes(N, 0);
+    std::vector<std::size_t> bucket_counts(N);
     std::size_t max_bucket_count = 0;
     for (std::size_t i = 0; i < N; ++i) {
       //locks_[i].lock();

@@ -120,6 +120,6 @@ DEFINE_bool(hstore_active_active, false, "H-Store style active-active replicatio
   context.granules_per_partition = FLAGS_granule_count;                        \
   context.lotus_async_repl = FLAGS_lotus_async_repl;                           \
   context.lotus_checkpoint = FLAGS_lotus_checkpoint;                           \
-  context.lotus_checkpoint_location = FLAGS_lotus_checkpoint_location;                           \
+  context.lotus_checkpoint_location = FLAGS_lotus_checkpoint_location;         \
   context.hstore_active_active = FLAGS_hstore_active_active;                   \
   context.set_star_partitioner();

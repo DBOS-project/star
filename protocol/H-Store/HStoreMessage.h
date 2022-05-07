@@ -66,6 +66,7 @@ enum class HStoreMessage {
   RTT_REQUEST,
   RTT_RESPONSE,
   CHECKPOINT_INST,
+  WRITE_PARTICIPANT_COMMAND_REQUEST,
   NFIELDS
 };
 
@@ -151,13 +152,39 @@ public:
     return message_size;
   }
 
+  static std::size_t new_write_participant_command_message(Message &message, ITable & table, uint32_t this_worker_id,
+                                                        uint32_t granule_id, uint64_t requested_last_writer, bool write_lock, std::size_t ith_replica, 
+                                                        const TxnCommand & txn_cmd) {
+    auto message_size =
+    MessagePiece::get_header_size() + sizeof(granule_id) + sizeof(uint32_t) + sizeof(requested_last_writer) + sizeof(write_lock) + sizeof(ith_replica);
+    message_size += sizeof(txn_cmd.is_mp) + sizeof(txn_cmd.command_data.size()) + txn_cmd.command_data.size() + sizeof(txn_cmd.tid) + sizeof(txn_cmd.partition_id);
+    auto message_piece_header = MessagePiece::construct_message_piece_header(
+        static_cast<uint32_t>(HStoreMessage::WRITE_PARTICIPANT_COMMAND_REQUEST), message_size,
+        table.tableID(), table.partitionID(), granule_id);
+    
+    Encoder encoder(message.data);
+    encoder << message_piece_header;
+    encoder << this_worker_id;
+    encoder << granule_id;
+    encoder << requested_last_writer;
+    encoder << write_lock;
+    encoder << ith_replica;
+    encoder << txn_cmd.partition_id;
+    encoder << txn_cmd.tid;
+    encoder << txn_cmd.is_mp;
+    encoder << txn_cmd.command_data.size();
+    if (txn_cmd.command_data.size())
+      encoder.write_n_bytes(txn_cmd.command_data.data(), txn_cmd.command_data.size());
+    message.set_is_replica(ith_replica > 0);
+    message.flush();
+    message.set_gen_time(Time::now());
+    message.set_message_gen_time(0);
+    return message_size;
+  }
+
   static std::size_t new_release_lock_message(Message &message, ITable & table, uint32_t this_worker_id,
                                                         uint32_t granule_id, uint64_t requested_last_writer, bool write_lock, bool sync, std::size_t ith_replica, 
                                                         bool write_cmd_buffer, const TxnCommand & txn_cmd) {
-
-    /*
-     * The structure of a partition lock request: (remote_worker_id)
-     */
 
     auto message_size =
         MessagePiece::get_header_size() + sizeof(granule_id) + sizeof(uint32_t) + sizeof(requested_last_writer) + sizeof(write_lock) + sizeof(bool) + sizeof(std::size_t) + sizeof(write_cmd_buffer);
