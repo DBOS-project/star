@@ -50,6 +50,8 @@ public:
   std::size_t id;
   std::atomic<uint64_t> n_commit, n_abort_no_retry, n_abort_lock,
       n_abort_read_validation, n_local, n_si_in_serializable, n_network_size;
+
+  std::atomic<uint64_t> last_window_persistence_latency;
 };
 
 } // namespace star

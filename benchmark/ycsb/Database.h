@@ -171,6 +171,12 @@ public:
       threadpools[partitionID % 6]->enqueue(cleanup_work);
     }
   }
+
+  ~Database() {
+    for (size_t i = 0; i < threadpools.size(); ++i) {
+      delete threadpools[i];
+    }
+  }
 private:
   void ycsbInit(const Context &context, std::size_t partitionID) {
 

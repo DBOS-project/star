@@ -564,6 +564,11 @@ public:
     }
   }
 
+  ~Database() {
+    for (size_t i = 0; i < threadpools.size(); ++i) {
+      delete threadpools[i];
+    }
+  }
 private:
   void warehouseInit(std::size_t partitionID) {
 

@@ -154,7 +154,7 @@ public:
     }
 
     // run timeToRun seconds
-    auto timeToRun = 30, warmup = 5, cooldown = 0;
+    auto timeToRun = 120, warmup = 5, cooldown = 0;
     auto startTime = std::chrono::steady_clock::now();
 
     uint64_t total_commit = 0, total_abort_no_retry = 0, total_abort_lock = 0,
@@ -168,6 +168,7 @@ public:
       uint64_t n_commit = 0, n_abort_no_retry = 0, n_abort_lock = 0,
                n_abort_read_validation = 0, n_local = 0,
                n_si_in_serializable = 0, n_network_size = 0;
+      uint64_t total_persistence_latency = 0;
 
       for (auto i = 0u; i < workers.size(); i++) {
 
@@ -191,13 +192,16 @@ public:
 
         n_network_size += workers[i]->n_network_size.load();
         workers[i]->n_network_size.store(0);
+
+        total_persistence_latency += workers[i]->last_window_persistence_latency.load();
       }
 
       LOG(INFO) << "commit: " << n_commit << " abort: "
                 << n_abort_no_retry + n_abort_lock + n_abort_read_validation
                 << " (" << n_abort_no_retry << "/" << n_abort_lock << "/"
                 << n_abort_read_validation
-                << "), network size: " << n_network_size
+                << "), persistence latency " << total_persistence_latency / (workers.size() - 1)
+                << " network size: " << n_network_size
                 << ", avg network size: " << 1.0 * n_network_size / n_commit
                 << ", si_in_serializable: " << n_si_in_serializable << " "
                 << 100.0 * n_si_in_serializable / n_commit << " %"

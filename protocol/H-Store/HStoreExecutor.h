@@ -5,6 +5,7 @@
 #pragma once
 #include <vector>
 
+#include "core/Macros.h"
 #include "common/DeferCode.h"
 #include "core/Executor.h"
 #include "protocol/H-Store/HStore.h"
@@ -53,6 +54,26 @@ enum class CheckpointAction {
   CHECKPOINT_DONE_RESP
 };
 
+class WindowAverage {
+public:
+  WindowAverage(std::size_t window_size) : window_size(window_size) {}
+  void add(uint64_t v) {
+    values.push_back(v);
+    sum += v;
+    if (values.size() > window_size) {
+      sum -= values.front();
+      values.pop_front();
+    }
+  }
+
+  uint64_t average() {
+    return sum / (values.size() + 1);
+  }
+private:
+  std::size_t window_size;
+  uint64_t sum;
+  std::deque<uint64_t> values;
+};
 
 template <class Workload>
 class HStoreExecutor
@@ -64,7 +85,6 @@ private:
   std::vector<std::unique_ptr<Message>> cluster_worker_messages;
   std::vector<bool> cluster_worker_messages_filled_in;
   std::deque<int> cluster_worker_messages_ready;
-  std::vector<Message*> group_cluster_worker_messages;
   int cluster_worker_num = -1;
   int active_replica_worker_num_end = -1;
   ExecutorStage stage = ExecutorStage::NORMAL;
@@ -121,6 +141,7 @@ private:
   Percentile<int64_t> execution_phase_time;
   Percentile<int64_t> serialize_cmd_time;
   Percentile<int64_t> execution_after_commit_time;
+  WindowAverage window_persistence_latency;
   int rtt_test_target_cluster_worker = -1;
 
   std::vector<int> transaction_lengths;
@@ -132,6 +153,26 @@ public:
 
   const std::string tid_to_string(uint64_t tid) {
     return "[coordinator=" + std::to_string(tid >> 56) + ", tid=" + std::to_string(tid & ~(1ULL << 56)) + "]";
+  }
+
+  const std::string memory_usage_from_stats() {
+    std::stringstream ss;
+    ss << "cluster_worker_messages_ready " << cluster_worker_messages_ready.size() << "\n"
+       << "lock_buckets " << lock_buckets.size() << "\n"
+       << "managed_partitions " << managed_partitions.size() << "\n"
+       << "active_txns " << active_txns.size() << "\n"
+       << "pending_txns " << pending_txns.size() << "\n"
+       << "granule_command_queues " << granule_command_queues.size() << "\n"
+       << "granule_command_queue_processing " << granule_command_queue_processing.size() << "\n"
+       << "txns_candidate_for_reexecution " << txns_candidate_for_reexecution.size() << "\n"
+       << "granule_replayed_log_index " << granule_replayed_log_index.size() << "\n"
+       << "granule_lock_request_queues " << granule_lock_request_queues.size() << "\n"
+       << "granule_lock_reqeust_candidates " << granule_lock_reqeust_candidates.size() << "\n"
+       << "lock_ids_by_this_replica_executor " << lock_ids_by_this_replica_executor.size() << "\n"
+       << "checkpoint_insts " << checkpoint_insts.size() << "\n"
+       << "command_buffer_data " << command_buffer_data.size() << "\n"
+       << "command_buffer_outgoing_data " << command_buffer_outgoing_data.size() << "\n";
+    return ss.str();
   }
 
   using WorkloadType = Workload;
@@ -227,7 +268,6 @@ public:
   // Second level: granule
   std::vector<Lock> lock_buckets; // Holds the transaction id that currently is owning the lock
   std::vector<int> managed_partitions;
-  std::deque<std::unique_ptr<TransactionType>> queuedTxns;
   bool is_replica_worker = false;
   std::unordered_map<long long, TransactionType*> active_txns;
   std::deque<TransactionType*> pending_txns;
@@ -371,7 +411,8 @@ public:
                 std::atomic<uint32_t> &n_complete_workers,
                 std::atomic<uint32_t> &n_started_workers)
       : base_type(coordinator_id, worker_id, db, context, worker_status,
-                  n_complete_workers, n_started_workers), lock_bm(this->context.partition_num * this->context.granules_per_partition) {
+                  n_complete_workers, n_started_workers), lock_bm(this->context.partition_num * this->context.granules_per_partition),
+                  window_persistence_latency(2000) {
                         transaction_lengths.resize(context.straggler_num_txn_len);
       sp_parallel_exec_commit = context.lotus_sp_parallel_exec_commit;
       transaction_lengths_count.resize(context.straggler_num_txn_len);
@@ -659,7 +700,10 @@ public:
       enc << txn_command_data.size();
       enc.write_n_bytes(txn_command_data.data(), txn_command_data.size());
       
-      command_buffer_outgoing_data.insert(command_buffer_outgoing_data.end(), command_buffer_data.begin() + command_buffer_data_size, command_buffer_data.end());
+      if (this->replica_num > 1) {
+        command_buffer_outgoing_data.insert(command_buffer_outgoing_data.end(), command_buffer_data.begin() + command_buffer_data_size, command_buffer_data.end());
+      }
+      
       //command_buffer.push_back(cmd);
       //command_buffer_outgoing.push_back(cmd);
       txn.command_written = true;
@@ -1872,7 +1916,9 @@ public:
       }
       enc << txn_command_data_size;
       enc.write_n_bytes(txn_command_data.data(), txn_command_data_size);
-      command_buffer_outgoing_data.insert(command_buffer_outgoing_data.end(), command_buffer_data.begin() + command_buffer_data_size, command_buffer_data.end());
+      if (this->replica_num > 1) {
+        command_buffer_outgoing_data.insert(command_buffer_outgoing_data.end(), command_buffer_data.begin() + command_buffer_data_size, command_buffer_data.end());
+      }
     }
 
     DCHECK(this_cluster_worker_id == (int)partition_owner_cluster_worker(partition_id, ith_replica));
@@ -2423,172 +2469,172 @@ public:
     }
   }
 
-  // void execute_transaction_batch_haa(const std::vector<TransactionType*> all_txns,
-  //                                const std::vector<TransactionType*> & sp_txns, 
-  //                                std::vector<TransactionType*> & mp_txns) {
-  //   last_commit = std::chrono::steady_clock::now();
-  //   std::vector<bool> workers_need_persist_cmd_buffer(this->active_replica_worker_num_end, false);
-  //   if (this->context.hstore_active_active) {
-  //     DCHECK(all_txns.size() == 1);
-  //     hstore_active_active_granules_locked.clear();
-  //     find_partition_owners(all_txns, workers_need_persist_cmd_buffer);
-  //   }
-  //   int64_t txn_id = 0;
-  //   int cnt = 0;
-  //   {
-  //     ScopedTimer t0([&, this](uint64_t us) {
-  //       execution_phase_time.add(us);
-  //     });
+  void execute_transaction_batch_haa(const std::vector<TransactionType*> all_txns,
+                                 const std::vector<TransactionType*> & sp_txns, 
+                                 std::vector<TransactionType*> & mp_txns) {
+    last_commit = std::chrono::steady_clock::now();
+    std::vector<bool> workers_need_persist_cmd_buffer(this->active_replica_worker_num_end, false);
+    if (this->context.hstore_active_active) {
+      DCHECK(all_txns.size() == 1);
+      hstore_active_active_granules_locked.clear();
+      find_partition_owners(all_txns, workers_need_persist_cmd_buffer);
+    }
+    int64_t txn_id = 0;
+    int cnt = 0;
+    {
+      ScopedTimer t0([&, this](uint64_t us) {
+        execution_phase_time.add(us);
+      });
 
-  //     int cnt = 0;
-  //     process_mp_transactions(mp_txns);
-  //     for (size_t i = 0; i < sp_txns.size(); ++i) {
-  //       auto txn = sp_txns[i];
-  //       txn->reset();
-  //       txn_id = txn->transaction_id;
-  //       if (!process_single_transaction(txn)) {
-  //         txn->abort_lock = true;
-  //         this->n_abort_lock.fetch_add(1);
-  //       }
-  //       handle_requests();
-  //       if (++cnt % 2 == 0 && replica_num > 1 && is_replica_worker == false) {
-  //         if (this->context.lotus_async_repl == false) {
-  //           send_commands_to_replica(true);
-  //         }
-  //       }
-  //     }
-  //   }
-  //   ScopedTimer t0([&, this](uint64_t us) {
-  //     execution_after_commit_time.add(us);
-  //   });
+      int cnt = 0;
+      process_mp_transactions(mp_txns);
+      for (size_t i = 0; i < sp_txns.size(); ++i) {
+        auto txn = sp_txns[i];
+        txn->reset();
+        txn_id = txn->transaction_id;
+        if (!process_single_transaction(txn)) {
+          txn->abort_lock = true;
+          this->n_abort_lock.fetch_add(1);
+        }
+        handle_requests();
+        if (++cnt % 2 == 0 && replica_num > 1 && is_replica_worker == false) {
+          if (this->context.lotus_async_repl == false) {
+            send_commands_to_replica(true);
+          }
+        }
+      }
+    }
+    ScopedTimer t0([&, this](uint64_t us) {
+      execution_after_commit_time.add(us);
+    });
     
-  //   if (replica_num > 1 && is_replica_worker == false) {
-  //     if (this->context.lotus_async_repl == false) {
-  //       send_commands_to_replica(true);
-  //     }
-  //   }
-  //   uint64_t commit_persistence_us = 0;
-  //   uint64_t commit_replication_us = 0;
-  //   {
-  //     bool cmd_buffer_flushed = false;
-  //     if (is_replica_worker == false && replica_num > 1) {
-  //       ScopedTimer t1([&, this](uint64_t us) {
-  //         commit_replication_us = us;
-  //         replication_time.add(us);
-  //       });
-  //       int first_account = 0;
-  //       int communication_rounds = 0;
-  //       auto minimum_coord_txn_written_log_position_snap = minimum_coord_txn_written_log_position;
-  //       while (minimum_replayed_log_position < minimum_coord_txn_written_log_position_snap) {
-  //         if (this->context.lotus_async_repl) {
-  //           break;
-  //         }
-  //         ScopedTimer t2([&, this](uint64_t us) {
-  //           this->replica_progress_query_latency.add(us);
-  //         });
-  //         // Keep querying the replica for its replayed log position until minimum_replayed_log_position >= minimum_coord_txn_written_log_position_snap
-  //         DCHECK(0 <= replica_cluster_worker_id && replica_cluster_worker_id < cluster_worker_num);
-  //         cluster_worker_messages[replica_cluster_worker_id]->set_transaction_id(txn_id);
-  //         MessageFactoryType::new_get_replayed_log_posistion_message(*cluster_worker_messages[replica_cluster_worker_id], minimum_coord_txn_written_log_position_snap, 1, this_cluster_worker_id);
-  //         add_outgoing_message(replica_cluster_worker_id);
-  //         flush_messages();
-  //         get_replica_replay_log_position_requests++;
+    if (replica_num > 1 && is_replica_worker == false) {
+      if (this->context.lotus_async_repl == false) {
+        send_commands_to_replica(true);
+      }
+    }
+    uint64_t commit_persistence_us = 0;
+    uint64_t commit_replication_us = 0;
+    {
+      bool cmd_buffer_flushed = false;
+      if (is_replica_worker == false && replica_num > 1) {
+        ScopedTimer t1([&, this](uint64_t us) {
+          commit_replication_us = us;
+          replication_time.add(us);
+        });
+        int first_account = 0;
+        int communication_rounds = 0;
+        auto minimum_coord_txn_written_log_position_snap = minimum_coord_txn_written_log_position;
+        while (minimum_replayed_log_position < minimum_coord_txn_written_log_position_snap) {
+          if (this->context.lotus_async_repl) {
+            break;
+          }
+          ScopedTimer t2([&, this](uint64_t us) {
+            this->replica_progress_query_latency.add(us);
+          });
+          // Keep querying the replica for its replayed log position until minimum_replayed_log_position >= minimum_coord_txn_written_log_position_snap
+          DCHECK(0 <= replica_cluster_worker_id && replica_cluster_worker_id < cluster_worker_num);
+          cluster_worker_messages[replica_cluster_worker_id]->set_transaction_id(txn_id);
+          MessageFactoryType::new_get_replayed_log_posistion_message(*cluster_worker_messages[replica_cluster_worker_id], minimum_coord_txn_written_log_position_snap, 1, this_cluster_worker_id);
+          add_outgoing_message(replica_cluster_worker_id);
+          flush_messages();
+          get_replica_replay_log_position_requests++;
           
-  //         while (get_replica_replay_log_position_responses < get_replica_replay_log_position_requests) {
-  //           if (cmd_buffer_flushed == false && this->context.hstore_active_active == false) {
-  //             ScopedTimer t0([&, this](uint64_t us) {
-  //               commit_persistence_us = us;
-  //             });
-  //             persist_and_clear_command_buffer(true);
-  //             cmd_buffer_flushed = true;
-  //           }
-  //           handle_requests();
-  //           if (replica_num > 1 && is_replica_worker == false) {
-  //             if (this->context.lotus_async_repl == false) {
-  //               send_commands_to_replica(true);
-  //             }
-  //           }
-  //         }
-  //         DCHECK(get_replica_replay_log_position_responses == get_replica_replay_log_position_requests);
-  //         if (first_account == 0) {
-  //           //if (minimum_replayed_log_position < minimum_coord_txn_written_log_position_snap) {
-  //             auto gap = std::max((int64_t)0, minimum_coord_txn_written_log_position_snap - minimum_replayed_log_position);
-  //             this->replication_gap_after_active_replica_execution.add(gap);
-  //           //}
-  //           first_account = 1;
-  //         }
-  //         communication_rounds++;
-  //       }
-  //       this->replication_sync_comm_rounds.add(communication_rounds);
-  //     }
+          while (get_replica_replay_log_position_responses < get_replica_replay_log_position_requests) {
+            if (cmd_buffer_flushed == false && this->context.hstore_active_active == false) {
+              ScopedTimer t0([&, this](uint64_t us) {
+                commit_persistence_us = us;
+              });
+              persist_and_clear_command_buffer(true);
+              cmd_buffer_flushed = true;
+            }
+            handle_requests();
+            if (replica_num > 1 && is_replica_worker == false) {
+              if (this->context.lotus_async_repl == false) {
+                send_commands_to_replica(true);
+              }
+            }
+          }
+          DCHECK(get_replica_replay_log_position_responses == get_replica_replay_log_position_requests);
+          if (first_account == 0) {
+            //if (minimum_replayed_log_position < minimum_coord_txn_written_log_position_snap) {
+              auto gap = std::max((int64_t)0, minimum_coord_txn_written_log_position_snap - minimum_replayed_log_position);
+              this->replication_gap_after_active_replica_execution.add(gap);
+            //}
+            first_account = 1;
+          }
+          communication_rounds++;
+        }
+        this->replication_sync_comm_rounds.add(communication_rounds);
+      }
 
-  //     {
-  //       ScopedTimer t0([&, this](uint64_t us) {
-  //         commit_persistence_us += us;
-  //       });
-  //       DCHECK((int)workers_need_persist_cmd_buffer.size() <= this->cluster_worker_num);
-  //       for (int i = 0; i < (int)workers_need_persist_cmd_buffer.size(); ++i) {
-  //         if (!workers_need_persist_cmd_buffer[i] || i == this_cluster_worker_id)
-  //           continue;
-  //         cluster_worker_messages[i]->set_transaction_id(txn_id);
-  //         MessageFactoryType::new_persist_cmd_buffer_message(*cluster_worker_messages[i], 0, this_cluster_worker_id);
-  //         add_outgoing_message(i);
-  //         sent_persist_cmd_buffer_requests++;
-  //       }
-  //       flush_messages();
-  //       while (received_persist_cmd_buffer_responses < sent_persist_cmd_buffer_requests) {
-  //         handle_requests(false);
-  //       }
-  //     }
-  //     if (cmd_buffer_flushed == false) {
-  //       ScopedTimer t0([&, this](uint64_t us) {
-  //         commit_persistence_us = us;
-  //       });
-  //       persist_and_clear_command_buffer(true);
-  //       cmd_buffer_flushed = true;
-  //     }
-  //     if (this->context.lotus_async_repl) {
-  //       send_commands_to_replica(true);
-  //     }
-  //     if (this->context.hstore_active_active) {
-  //       DCHECK(all_txns.size() == 1);
-  //       for (auto lock_id : hstore_active_active_granules_locked) {
-  //         DCHECK(lock_buckets[lock_id] != -1);
-  //         lock_buckets[lock_id] = -1;
-  //         lock_bm.clear_bit(lock_id);
-  //       }
-  //     }
-  //   }
+      {
+        ScopedTimer t0([&, this](uint64_t us) {
+          commit_persistence_us += us;
+        });
+        DCHECK((int)workers_need_persist_cmd_buffer.size() <= this->cluster_worker_num);
+        for (int i = 0; i < (int)workers_need_persist_cmd_buffer.size(); ++i) {
+          if (!workers_need_persist_cmd_buffer[i] || i == this_cluster_worker_id)
+            continue;
+          cluster_worker_messages[i]->set_transaction_id(txn_id);
+          MessageFactoryType::new_persist_cmd_buffer_message(*cluster_worker_messages[i], 0, this_cluster_worker_id);
+          add_outgoing_message(i);
+          sent_persist_cmd_buffer_requests++;
+        }
+        flush_messages();
+        while (received_persist_cmd_buffer_responses < sent_persist_cmd_buffer_requests) {
+          handle_requests(false);
+        }
+      }
+      if (cmd_buffer_flushed == false) {
+        ScopedTimer t0([&, this](uint64_t us) {
+          commit_persistence_us = us;
+        });
+        persist_and_clear_command_buffer(true);
+        cmd_buffer_flushed = true;
+      }
+      if (this->context.lotus_async_repl) {
+        send_commands_to_replica(true);
+      }
+      if (this->context.hstore_active_active) {
+        DCHECK(all_txns.size() == 1);
+        for (auto lock_id : hstore_active_active_granules_locked) {
+          DCHECK(lock_buckets[lock_id] != -1);
+          lock_buckets[lock_id] = -1;
+          lock_bm.clear_bit(lock_id);
+        }
+      }
+    }
 
-  //   auto & txns = all_txns;
-  //   size_t committed = 0;
-  //   for (size_t i = 0; i < txns.size(); ++i) {
-  //     auto txn = txns[i];
-  //     if (txn->abort_lock || txn->abort_no_retry)
-  //       continue;
-  //     committed++;
-  //     txn->record_commit_persistence_time(commit_persistence_us);
-  //     txn->record_commit_replication_time(commit_replication_us);
-  //     //DCHECK(!txn->is_single_partition());
-  //     auto latency =
-  //         std::chrono::duration_cast<std::chrono::microseconds>(
-  //             std::chrono::steady_clock::now() - txn->startTime)
-  //             .count();
-  //     this->percentile.add(latency);
-  //     if (txn->distributed_transaction) {
-  //       this->dist_latency.add(latency);
-  //     } else {
-  //       this->local_latency.add(latency);
-  //     }
-  //     // Make sure it is unlocked.
-  //     // if (txn->is_single_partition())
-  //     //   DCHECK(lock_buckets[partition_id] == -1);
-  //     this->record_txn_breakdown_stats(*txn);
-  //   }
-  //   this->round_concurrency.add(txns.size());
-  //   this->effective_round_concurrency.add(committed);
-  //   mp_concurrency_limit.add(mp_concurrency_max);
-  // }
+    auto & txns = all_txns;
+    size_t committed = 0;
+    for (size_t i = 0; i < txns.size(); ++i) {
+      auto txn = txns[i];
+      if (txn->abort_lock || txn->abort_no_retry)
+        continue;
+      committed++;
+      txn->record_commit_persistence_time(commit_persistence_us);
+      txn->record_commit_replication_time(commit_replication_us);
+      //DCHECK(!txn->is_single_partition());
+      auto latency =
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - txn->startTime)
+              .count();
+      this->percentile.add(latency);
+      if (txn->distributed_transaction) {
+        this->dist_latency.add(latency);
+      } else {
+        this->local_latency.add(latency);
+      }
+      // Make sure it is unlocked.
+      // if (txn->is_single_partition())
+      //   DCHECK(lock_buckets[partition_id] == -1);
+      this->record_txn_breakdown_stats(*txn);
+    }
+    this->round_concurrency.add(txns.size());
+    this->effective_round_concurrency.add(committed);
+    mp_concurrency_limit.add(mp_concurrency_max);
+  }
 
   void post_commit_work(TransactionType* txn, uint64_t commit_persistence_us, uint64_t & committed) {
     if (txn->abort_lock || txn->abort_no_retry)
@@ -2664,6 +2710,8 @@ public:
         {
           ScopedTimer t0([&, this](uint64_t us) {
               commit_persistence_us = us;
+              window_persistence_latency.add(us);
+              this->last_window_persistence_latency.store(window_persistence_latency.average());
             });
           // parallelize execution with persistence
           persist_and_clear_command_buffer(execute_sp);
@@ -2686,6 +2734,8 @@ public:
         {
           ScopedTimer t0([&, this](uint64_t us) {
                 commit_persistence_us = us;
+                window_persistence_latency.add(us);
+                this->last_window_persistence_latency.store(window_persistence_latency.average());
               });
           persist_and_clear_command_buffer(true);
         }
@@ -2705,6 +2755,8 @@ public:
         {
           ScopedTimer t0([&, this](uint64_t us) {
               commit_persistence_us = us;
+              window_persistence_latency.add(us);
+              this->last_window_persistence_latency.store(window_persistence_latency.average());
             });
           persist_and_clear_command_buffer(true);
         }
@@ -2741,8 +2793,7 @@ public:
     }
     
     if (this->context.hstore_active_active) {
-      DCHECK(false);
-      //execute_transaction_batch_haa(txns, sp_txns, mp_txns);
+      execute_transaction_batch_haa(txns, sp_txns, mp_txns);
     } else {
       execute_transaction_batch(txns, sp_txns, mp_txns);
     }
@@ -3309,8 +3360,10 @@ public:
   std::chrono::steady_clock::time_point last_checkpoint_time = std::chrono::steady_clock::now();
   std::chrono::steady_clock::time_point last_cow_dump_start_time = std::chrono::steady_clock::now();
   bool time_to_checkpoint() {
+    if (this->context.lotus_checkpoint == LotusCheckpointScheme::COW_ON_CHECKPOINT_OFF_LOGGING_ON || this->context.lotus_checkpoint == COW_OFF_CHECKPOINT_OFF_LOGGING_ON)
+      return false ;
     auto now = std::chrono::steady_clock::now();
-    if (std::chrono::duration_cast<std::chrono::seconds>(now - last_checkpoint_time).count() >= 10) {
+    if (std::chrono::duration_cast<std::chrono::seconds>(now - last_checkpoint_time).count() >= 30) {
       return true;
     }
     return false;
@@ -3402,7 +3455,9 @@ public:
       enc << txn_command_data.size();
       enc.write_n_bytes(txn_command_data.data(), txn_command_data.size());
       
-      command_buffer_outgoing_data.insert(command_buffer_outgoing_data.end(), command_buffer_data.begin() + command_buffer_data_size, command_buffer_data.end());
+      if (this->context.lotus_async_repl == true) {
+        command_buffer_outgoing_data.insert(command_buffer_outgoing_data.end(), command_buffer_data.begin() + command_buffer_data_size, command_buffer_data.end());
+      }
       persist_and_clear_command_buffer(false);
       if (this->context.lotus_async_repl == true) {
         send_commands_to_replica();
@@ -3577,11 +3632,6 @@ public:
 
   TransactionType * get_next_transaction() {
     if (is_replica_worker) {
-      if (queuedTxns.empty() == false) {
-        auto txn = queuedTxns.front().release();
-        queuedTxns.pop_front();
-        return txn;
-      }
       // Sleep for a while to save cpu
       //std::this_thread::sleep_for(std::chrono::microseconds(10));
       return nullptr;
@@ -3786,7 +3836,7 @@ public:
               << " commit_replication " << this->local_txn_commit_replication_time_pct.avg() << " us, "
               << " commit_write_back " << this->dist_txn_commit_write_back_time_pct.avg() << " us " << this->dist_txn_commit_write_back_time_pct.avg() << " us, "
               << " commit_release_lock " << this->dist_txn_commit_unlock_time_pct.avg() << " us\n";
-
+    LOG(INFO) << "stats memory usage:\n" << memory_usage_from_stats();
     LOG(INFO) << "STRAGGLER DEBUG INFO:\n" << "count " << straggler_count << "\n" << straggler_mp_debug_string;
     if (this->id == 0) {
       for (auto i = 0u; i < this->message_stats.size(); i++) {

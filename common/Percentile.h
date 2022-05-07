@@ -20,7 +20,7 @@ public:
   Percentile() : rand((uint64_t)this){}
   using element_type = T;
   void add(const element_type &value) {
-    if (warmed_up == false || rand.uniform_dist(0, 100) > 5) // record 5% of the data
+    if (warmed_up == false || rand.uniform_dist(0, 100) > 5) // record 2% of the data
       return;
     isSorted_ = false;
     data_.push_back(value);
