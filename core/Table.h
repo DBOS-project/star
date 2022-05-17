@@ -33,6 +33,8 @@ public:
 
   virtual std::tuple<MetaDataType *, void *> search(const void *key) = 0;
 
+  virtual bool contains(const void *key) { return true; }
+
   virtual void *search_value(const void *key) = 0;
 
   virtual MetaDataType &search_metadata(const void *key) = 0;
@@ -106,6 +108,11 @@ public:
     tid_check();
     const auto &k = *static_cast<const KeyType *>(key);
     return std::get<0>(map_[k]);
+  }
+
+  bool contains(const void *key) override {
+    const auto &k = *static_cast<const KeyType *>(key);
+    return map_.contains(k);
   }
 
   void insert(const void *key, const void *value) override {
@@ -188,6 +195,11 @@ public:
   MetaDataType &search_metadata(const void *key) override {
     static MetaDataType v;
     return v;
+  }
+
+  bool contains(const void *key) override {
+    const auto &k = *static_cast<const KeyType *>(key);
+    return map_.contains(k);
   }
 
   void insert(const void *key, const void *value) override {
@@ -273,6 +285,11 @@ public:
     return v;
   }
 
+  bool contains(const void *key) override {
+    const auto &k = *static_cast<const KeyType *>(key);
+    return map_.contains(k);
+  }
+
   void insert(const void *key, const void *value) override {
     const auto &k = *static_cast<const KeyType *>(key);
     const auto &v = *static_cast<const ValueType *>(value);
@@ -351,6 +368,11 @@ public:
     map_.iterate(processor, dump_unlock);
     shadow_map_->iterate(processor, dump_unlock);
     dump_finished = true;
+    auto clear_COW_status_bits_processor = [&](const KeyType & key, std::tuple<MetaDataType, ValueType> & row) {
+      auto & meta = std::get<0>(row);
+      meta.store(0);
+    };
+    map_.iterate_non_const(clear_COW_status_bits_processor, [](){});
   }
 
   virtual bool cow_dump_finished() { return dump_finished; }

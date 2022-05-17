@@ -77,13 +77,27 @@ public:
   //   return remove_lock_bit(tid_);
   // }
 
+  static uint64_t get_or_install_meta(std::atomic<uint64_t> & ptr) {
+    retry:
+    auto v = ptr.load();
+    if(v != 0) {
+      return v;
+    }
+    auto meta_ptr = SundialMetadataInit();
+    if (ptr.compare_exchange_strong(v, meta_ptr) == false) {
+      delete ((SundialMetadata*)meta_ptr);
+      goto retry;
+    }
+    return meta_ptr;
+  }
+
   // Returns <rts, wts> of the tuple.
   static std::pair<uint64_t, uint64_t> read(const std::tuple<MetaDataType *, void *> &row,
                        void *dest, std::size_t size) {
 
     MetaDataType &meta = *std::get<0>(row);
-    SundialMetadata * smeta = reinterpret_cast<SundialMetadata*>(meta.load());
-
+    SundialMetadata * smeta = reinterpret_cast<SundialMetadata*>(get_or_install_meta(meta));
+    DCHECK(smeta != nullptr);
     void *src = std::get<1>(row);
 
     smeta->lock();
@@ -100,7 +114,7 @@ public:
                        std::pair<uint64_t, uint64_t> & rwts, uint64_t transaction_id) {
 
     MetaDataType &meta = *std::get<0>(row);
-    SundialMetadata * smeta = reinterpret_cast<SundialMetadata*>(meta.load());
+    SundialMetadata * smeta = reinterpret_cast<SundialMetadata*>(get_or_install_meta(meta));
 
     bool success = false;
     smeta->lock();
@@ -117,7 +131,7 @@ public:
 
   static bool renew_lease(const std::tuple<MetaDataType *, void *> &row, uint64_t wts, uint64_t commit_ts) {
     MetaDataType &meta = *std::get<0>(row);
-    SundialMetadata * smeta = reinterpret_cast<SundialMetadata*>(meta.load());
+    SundialMetadata * smeta = reinterpret_cast<SundialMetadata*>(get_or_install_meta(meta));
 
     bool success = false;
     smeta->lock();
@@ -136,7 +150,7 @@ public:
                             std::size_t value_size, uint64_t commit_ts) {
     MetaDataType &meta = *std::get<0>(row);
     void * data_ptr = std::get<1>(row);
-    SundialMetadata * smeta = reinterpret_cast<SundialMetadata*>(meta.load());
+    SundialMetadata * smeta = reinterpret_cast<SundialMetadata*>(get_or_install_meta(meta));
 
     smeta->lock();
     DCHECK(smeta->wts == smeta->rts);
@@ -151,7 +165,7 @@ public:
                             std::size_t value_size, uint64_t commit_ts, uint64_t transaction_id) {
     MetaDataType &meta = *std::get<0>(row);
     void * data_ptr = std::get<1>(row);
-    SundialMetadata * smeta = reinterpret_cast<SundialMetadata*>(meta.load());
+    SundialMetadata * smeta = reinterpret_cast<SundialMetadata*>(get_or_install_meta(meta));
 
     smeta->lock();
     CHECK(smeta->owner == transaction_id);
@@ -164,7 +178,7 @@ public:
                             std::size_t value_size, uint64_t commit_ts, uint64_t transaction_id) {
     MetaDataType &meta = *std::get<0>(row);
     void * data_ptr = std::get<1>(row);
-    SundialMetadata * smeta = reinterpret_cast<SundialMetadata*>(meta.load());
+    SundialMetadata * smeta = reinterpret_cast<SundialMetadata*>(get_or_install_meta(meta));
 
     smeta->lock();
     CHECK(smeta->owner == transaction_id);
@@ -176,7 +190,7 @@ public:
 
   static void unlock(const std::tuple<MetaDataType *, void *> &row, uint64_t transaction_id) {
     MetaDataType &meta = *std::get<0>(row);
-    SundialMetadata * smeta = reinterpret_cast<SundialMetadata*>(meta.load());
+    SundialMetadata * smeta = reinterpret_cast<SundialMetadata*>(get_or_install_meta(meta));
 
     smeta->lock();
     CHECK(smeta->owner == transaction_id);

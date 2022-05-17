@@ -3474,7 +3474,7 @@ public:
     if (this->context.lotus_checkpoint == LotusCheckpointScheme::COW_ON_CHECKPOINT_OFF_LOGGING_ON || this->context.lotus_checkpoint == COW_OFF_CHECKPOINT_OFF_LOGGING_ON)
       return false ;
     auto now = std::chrono::steady_clock::now();
-    if (std::chrono::duration_cast<std::chrono::seconds>(now - last_checkpoint_time).count() >= 30) {
+    if (std::chrono::duration_cast<std::chrono::seconds>(now - last_checkpoint_time).count() >= 10) {
       return true;
     }
     return false;
@@ -3944,7 +3944,7 @@ public:
               << " commit_work " << this->dist_txn_commit_work_time_pct.avg() << " us " << this->dist_txn_commit_work_time_pct.avg() << " us, "
               << " commit_prepare " << this->dist_txn_commit_prepare_time_pct.avg() << " us " << this->dist_txn_commit_prepare_time_pct.avg() << " us, "
               << " commit_persistence " << this->dist_txn_commit_persistence_time_pct.avg() << " us, "
-              << " commit_replication " << this->local_txn_commit_replication_time_pct.avg() << " us, "
+              << " commit_replication " << this->dist_txn_commit_replication_time_pct.avg() << " us, "
               << " commit_write_back " << this->dist_txn_commit_write_back_time_pct.avg() << " us " << this->dist_txn_commit_write_back_time_pct.avg() << " us, "
               << " commit_release_lock " << this->dist_txn_commit_unlock_time_pct.avg() << " us\n";
     LOG(INFO) << "stats memory usage:\n" << memory_usage_from_stats();
@@ -3979,7 +3979,7 @@ protected:
     // }
     while (!cluster_worker_messages_ready.empty()) {
       int i = cluster_worker_messages_ready.front();
-      cluster_worker_messages_ready.pop_back();
+      cluster_worker_messages_ready.pop_front();
       DCHECK(cluster_worker_messages_filled_in[i]);
       if (cluster_worker_messages[i]->get_message_count() == 0) {
         cluster_worker_messages_filled_in[i] = false;
