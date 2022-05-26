@@ -154,7 +154,7 @@ public:
     }
 
     // run timeToRun seconds
-    auto timeToRun = 60, warmup = 5, cooldown = 0;
+    auto timeToRun = 40, warmup = 5, cooldown = 0;
     auto startTime = std::chrono::steady_clock::now();
 
     uint64_t total_commit = 0, total_abort_no_retry = 0, total_abort_lock = 0,
@@ -169,8 +169,24 @@ public:
                n_abort_read_validation = 0, n_local = 0,
                n_si_in_serializable = 0, n_network_size = 0;
       uint64_t total_persistence_latency = 0;
-
+      uint64_t total_txn_latency = 0;
+      uint64_t total_queued_lock_latency = 0;
+      uint64_t total_active_txns = 0;
+      uint64_t total_lock_latency = 0;
+      uint64_t n_failed_read_lock = 0, n_failed_write_lock = 0, n_failed_no_cmd = 0, n_failed_cmd_not_ready = 0;
       for (auto i = 0u; i < workers.size(); i++) {
+        
+        n_failed_read_lock += workers[i]->n_failed_read_lock;
+        workers[i]->n_failed_read_lock.store(0);
+
+        n_failed_write_lock += workers[i]->n_failed_write_lock;
+        workers[i]->n_failed_write_lock.store(0);
+
+        n_failed_no_cmd += workers[i]->n_failed_no_cmd;
+        workers[i]->n_failed_no_cmd.store(0);
+
+        n_failed_cmd_not_ready += workers[i]->n_failed_cmd_not_ready;
+        workers[i]->n_failed_cmd_not_ready.store(0);
 
         n_commit += workers[i]->n_commit.load();
         workers[i]->n_commit.store(0);
@@ -194,6 +210,10 @@ public:
         workers[i]->n_network_size.store(0);
 
         total_persistence_latency += workers[i]->last_window_persistence_latency.load();
+        total_txn_latency += workers[i]->last_window_txn_latency.load();
+        total_queued_lock_latency += workers[i]->last_window_queued_lock_req_latency.load();
+        total_lock_latency += workers[i]->last_window_lock_req_latency.load();
+        total_active_txns += workers[i]->last_window_active_txns.load();
       }
 
       LOG(INFO) << "commit: " << n_commit << " abort: "
@@ -201,7 +221,13 @@ public:
                 << " (" << n_abort_no_retry << "/" << n_abort_lock << "/"
                 << n_abort_read_validation
                 << "), persistence latency " << total_persistence_latency / (workers.size() - 1)
-                << " network size: " << n_network_size
+                << ", txn latency " << total_txn_latency / (workers.size() - 1)
+                << ", queued lock latency " << total_queued_lock_latency  / (workers.size() - 1)
+                << ", lock latency " << total_lock_latency / (workers.size() - 1)
+                << ", active_txns " << total_active_txns / (workers.size() - 1)
+                << ", n_failed_read_lock " << n_failed_read_lock << ", n_failed_write_lock " << n_failed_write_lock
+                << ", n_failed_cmd_not_ready " << n_failed_cmd_not_ready << ", n_failed_no_cmd " << n_failed_no_cmd
+                << ", network size: " << n_network_size
                 << ", avg network size: " << 1.0 * n_network_size / n_commit
                 << ", si_in_serializable: " << n_si_in_serializable << " "
                 << 100.0 * n_si_in_serializable / n_commit << " %"

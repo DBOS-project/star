@@ -41,7 +41,7 @@ public:
 
   virtual void insert(const void *key, const void *value) = 0;
 
-  virtual void update(const void *key, const void *value) = 0;
+  virtual void update(const void *key, const void *value, std::function<void(const void *, const void*)> on_update = [](const void*, const void*){}) = 0;
 
   virtual void deserialize_value(const void *key, StringPiece stringPiece) = 0;
 
@@ -126,11 +126,12 @@ public:
     std::get<1>(row) = v;
   }
 
-  void update(const void *key, const void *value) override {
+  void update(const void *key, const void *value, std::function<void(const void *, const void*)> on_update) override {
     tid_check();
     const auto &k = *static_cast<const KeyType *>(key);
     const auto &v = *static_cast<const ValueType *>(value);
     auto &row = map_[k];
+    on_update(key, &std::get<1>(row));
     std::get<1>(row) = v;
   }
 
@@ -211,10 +212,11 @@ public:
     row = v;
   }
 
-  void update(const void *key, const void *value) override {
+  void update(const void *key, const void *value, std::function<void(const void *, const void*)> on_update) override {
     const auto &k = *static_cast<const KeyType *>(key);
     const auto &v = *static_cast<const ValueType *>(value);
     auto &row = map_[k];
+    on_update(key, &row);
     row = v;
   }
 
@@ -299,7 +301,7 @@ public:
     std::get<1>(row) = v;
   }
 
-  void update(const void *key, const void *value) override {
+  void update(const void *key, const void *value, std::function<void(const void *, const void*)> on_update) override {
     const auto &k = *static_cast<const KeyType *>(key);
     const auto &v = *static_cast<const ValueType *>(value);
     auto &row = map_[k];
@@ -309,6 +311,7 @@ public:
         std::get<1>(shadow_row) = std::get<1>(row);
       }
     }
+    on_update(key, &std::get<1>(row));
     std::get<1>(row) = v;
   }
 

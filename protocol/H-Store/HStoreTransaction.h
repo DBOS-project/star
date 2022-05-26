@@ -103,7 +103,7 @@ public:
     tries = 0;
   }
   
-  virtual ~HStoreTransaction() = default;
+  virtual ~HStoreTransaction() {}
 
   void set_logger(WALLogger * logger) {
     this->logger = logger;
