@@ -703,7 +703,7 @@ public:
         lock.set_released();
       }
     }
-    txn.abort_lock_lock_released = true;
+    //txn.abort_lock_lock_released = true;
   }
 
   void write_command_for_sp_group(const std::vector<TransactionType*> & sp_txns) {
@@ -1014,15 +1014,15 @@ public:
         } else {
           auto key_size = table->key_size();
           auto value_size = table->value_size();
-          table->update(key, value);
-          // table->update(key, value, [&, this](const void * key, const void * value) {
-          //   auto old_size = this->undo_buffer.size();
-          //   this->undo_buffer.resize(old_size + key_size);
-          //   memcpy(this->undo_buffer.data() + old_size, key, key_size);
-          //   old_size = this->undo_buffer.size();
-          //   this->undo_buffer.resize(old_size + value_size);
-          //   memcpy(this->undo_buffer.data() + old_size, value, value_size);
-          // });
+          //table->update(key, value);
+          table->update(key, value, [&, this](const void * key, const void * value) {
+            auto old_size = this->undo_buffer.size();
+            this->undo_buffer.resize(old_size + key_size);
+            memcpy(this->undo_buffer.data() + old_size, key, key_size);
+            old_size = this->undo_buffer.size();
+            this->undo_buffer.resize(old_size + value_size);
+            memcpy(this->undo_buffer.data() + old_size, value, value_size);
+          });
         }
       } else {
         //txn.pendingResponses++;
@@ -1087,11 +1087,15 @@ public:
         return;
       }
 
+      if (txn.is_single_partition() == false || this->context.granules_per_partition != 1) {
+        int granuleId = this->context.getGranule(*(int32_t*)key); // for granule-locking overhead expriment
+        CHECK(granuleId == granule_id);
+      }
+
       auto lock_index = txn.readSet[key_offset].get_lock_index();
       DCHECK(lock_index != -1);
       auto success_state = txn.lock_status.get_lock(lock_index).get_success() ;
-      // int granuleId = this->context.getGranule(*(int32_t*)key); // for granule-locking overhead expriment
-      // CHECK(granuleId == granule_id);
+
       if ((int)owner_cluster_worker == this_cluster_worker_id) {
         remote = false;
         auto lock_id = to_lock_id(partition_id, granule_id);
@@ -2694,6 +2698,10 @@ public:
     } else {
       DCHECK(check_granule_set(txn));
     }
+    if (is_replica_worker == false && (txn->abort_lock || txn->abort_no_retry)) {
+      // Early lock release
+      abort(*txn, cluster_worker_messages);
+    }
     if (txn->pendingResponses == 0) {
       async_txns_to_commit.push_back(txn);
     }
@@ -2931,6 +2939,9 @@ public:
     }
     int64_t txn_id = 0;
     int cnt = 0;
+    uint64_t commit_persistence_us = 0;
+    uint64_t commit_replication_us = 0;
+    bool cmd_buffer_flushed = false;
     {
       ScopedTimer t0([&, this](uint64_t us) {
         execution_phase_time.add(us);
@@ -2953,20 +2964,12 @@ public:
           }
         }
       }
-    }
-    ScopedTimer t0([&, this](uint64_t us) {
-      execution_after_commit_time.add(us);
-    });
-    
-    if (replica_num > 1 && is_replica_worker == false) {
-      if (this->context.lotus_async_repl == false) {
-        send_commands_to_replica(true);
+      if (replica_num > 1 && is_replica_worker == false) {
+        if (this->context.lotus_async_repl == false) {
+          send_commands_to_replica(true);
+        }
       }
-    }
-    uint64_t commit_persistence_us = 0;
-    uint64_t commit_replication_us = 0;
-    {
-      bool cmd_buffer_flushed = false;
+
       if (is_replica_worker == false && replica_num > 1) {
         ScopedTimer t1([&, this](uint64_t us) {
           commit_replication_us = us;
@@ -3019,41 +3022,44 @@ public:
         }
         this->replication_sync_comm_rounds.add(communication_rounds);
       }
+    }
 
-      {
-        ScopedTimer t0([&, this](uint64_t us) {
-          commit_persistence_us += us;
-        });
-        DCHECK((int)workers_need_persist_cmd_buffer.size() <= this->cluster_worker_num);
-        for (int i = 0; i < (int)workers_need_persist_cmd_buffer.size(); ++i) {
-          if (!workers_need_persist_cmd_buffer[i] || i == this_cluster_worker_id)
-            continue;
-          cluster_worker_messages[i]->set_transaction_id(txn_id);
-          MessageFactoryType::new_persist_cmd_buffer_message(*cluster_worker_messages[i], 0, this_cluster_worker_id);
-          add_outgoing_message(i);
-          sent_persist_cmd_buffer_requests++;
-        }
-        flush_messages();
-        while (received_persist_cmd_buffer_responses < sent_persist_cmd_buffer_requests) {
-          handle_requests(false);
-        }
+    ScopedTimer t0([&, this](uint64_t us) {
+      execution_after_commit_time.add(us);
+    });
+    {
+      ScopedTimer t0([&, this](uint64_t us) {
+        commit_persistence_us += us;
+      });
+      DCHECK((int)workers_need_persist_cmd_buffer.size() <= this->cluster_worker_num);
+      for (int i = 0; i < (int)workers_need_persist_cmd_buffer.size(); ++i) {
+        if (!workers_need_persist_cmd_buffer[i] || i == this_cluster_worker_id)
+          continue;
+        cluster_worker_messages[i]->set_transaction_id(txn_id);
+        MessageFactoryType::new_persist_cmd_buffer_message(*cluster_worker_messages[i], 0, this_cluster_worker_id);
+        add_outgoing_message(i);
+        sent_persist_cmd_buffer_requests++;
       }
-      if (cmd_buffer_flushed == false) {
-        ScopedTimer t0([&, this](uint64_t us) {
-          commit_persistence_us = us;
-          window_persistence_latency.add(us);
-          this->last_window_persistence_latency.store(window_persistence_latency.average());
-        });
-        persist_and_clear_command_buffer(true);
-        cmd_buffer_flushed = true;
+      flush_messages();
+      while (received_persist_cmd_buffer_responses < sent_persist_cmd_buffer_requests) {
+        handle_requests(false);
       }
-      if (this->context.lotus_async_repl) {
-        send_commands_to_replica(true);
-      }
-      if (this->context.hstore_active_active) {
-        DCHECK(all_txns.size() == 1);
-        release_locks_async(*all_txns[0], cluster_worker_messages, false, true);
-      }
+    }
+    if (cmd_buffer_flushed == false) {
+      ScopedTimer t0([&, this](uint64_t us) {
+        commit_persistence_us += us;
+        window_persistence_latency.add(us);
+        this->last_window_persistence_latency.store(window_persistence_latency.average());
+      });
+      persist_and_clear_command_buffer(true);
+      cmd_buffer_flushed = true;
+    }
+    if (this->context.lotus_async_repl) {
+      send_commands_to_replica(true);
+    }
+    if (this->context.hstore_active_active) {
+      DCHECK(all_txns.size() == 1);
+      release_locks_async(*all_txns[0], cluster_worker_messages, false, true);
     }
 
     auto & txns = all_txns;
@@ -3140,6 +3146,7 @@ public:
     uint64_t commit_persistence_us = 0;
     uint64_t commit_replication_us = 0;
     uint64_t committed = 0;
+    handle_requests(false);
     if (sp_txns.empty() == false) {
       undo_buffer.clear();
       ScopedTimer t0([&, this](uint64_t us) {

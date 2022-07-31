@@ -956,8 +956,8 @@ public:
 
     const void *key = stringPiece.data();
     stringPiece.remove_prefix(key_size);
-    auto valueStringPiece = stringPiece;
-    stringPiece.remove_prefix(field_size);
+    // auto valueStringPiece = stringPiece;
+    // stringPiece.remove_prefix(field_size);
 
     uint64_t commit_ts;
     bool sync_redo = false;
@@ -968,8 +968,8 @@ public:
 
 
 
-    auto row = table.search(key);
-    SundialHelper::replica_update(row, valueStringPiece.data(), field_size, commit_ts);
+    //auto row = table.search(key);
+    //SundialHelper::replica_update(row, valueStringPiece.data(), field_size, commit_ts);
 
     // std::atomic<uint64_t> &tid = table.search_metadata(key);
 
