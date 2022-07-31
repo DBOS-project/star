@@ -1,10 +1,10 @@
-**Yi Lu**, Xiangyao Yu, Samuel Madden
+**Xinjing Zhou**, Xiangyao Yu, Goetz Grafea, Micheal Stonebraker
 
-[STAR: Scaling Transactions through Asymmetric Replication](https://arxiv.org/abs/1811.02059)
+[Lotus: Scalable Multi-Partition Transactions on Single-Threaded Partitioned Databases](https://doi.org/10.14778/3551793.3551843)
 
-*Proc. of the VLDB Endowment (PVLDB), Volume 12, Los Angeles, California, 2019.*
+*Proc. of the VLDB Endowment (PVLDB), Volume 15, Sydney, Australia, 2022.*
 
-[![Build Status](https://travis-ci.org/luyi0619/star.svg?branch=master)](https://travis-ci.org/luyi0619/star)
+This repository contains source code for Lotus. The code is based on the [star](https://github.com/luyi0619/star) framework from Yi Lu.
 
 # Dependencies
 
@@ -16,7 +16,7 @@ sudo apt-get install -y zip make cmake g++ libjemalloc-dev libboost-dev libgoogl
 # Download
 
 ```sh
-git clone https://github.com/luyi0619/star.git
+git clone https://github.com/DBOS-project/lotus.git
 ```
 
 # Build
