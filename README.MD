@@ -51,9 +51,9 @@ cd scripts
 python distribute_script.py 1234 gc_2pl_mp_ycsb.py  us-central1-a # ----- Google Cloud region name
 #                                     |
 #                                 baseline-specific distribution script
-python distribute_script.py 1234 gc_sundial_mp_ycsb.py
-python distribute_script.py 1234 gc_hstore_mp_ycsb.py
-python distribute_script.py 1234 gc_lotus_mp_ycsb.py
+python distribute_script.py 1234 gc_sundial_mp_ycsb.py us-central1-a
+python distribute_script.py 1234 gc_hstore_mp_ycsb.py us-central1-a
+python distribute_script.py 1234 gc_lotus_mp_ycsb.py us-central1-a
 ```
 5. Run the following code on the first node of the cluster to start the benchmark
 ```bash
@@ -63,3 +63,27 @@ sh run_hstore_mp_ycsb.sh
 sh run_lotus_mp_ycsb_sync.sh
 ```
 6. Results are placed under `~/exp_results` on the first node of the cluster.
+
+## Figure 10(a): Comparison with Deterministic Systems
+
+1. Fill in `scripts/ips.txt` with ip addresses of the nodes you want to run the experiments on.
+2. Fill in `scripts/instance_names.txt` with corresponding instance names (Google Cloud Compute Engine instance name) of the nodes supplied in `scripts/ips.txt`.  
+3. Fill in `scripts/ips_half.txt` with first half of the nodes from `scripts/ips.txt`. This is for Calvin and Aria baselines that only need to evaluate the performance of one replica (3 nodes).
+4. Fill in `scripts/instance_names_half.txt` with first half of the nodes from `scripts/instance_names.txt`. 
+5. Run the following bash code on the first node of the cluster to distribute benchmarking scripts to other nodes.
+```bash
+cd scripts
+python distribute_script_half.py 1234 gc_aria_mp_ycsb.py us-central1-a
+python distribute_script_half.py 1234 gc_calvin_mp_ycsb.py us-central1-a
+python distribute_script.py 1234 gc_lotus_mp_ycsb.py us-central1-a
+```
+6. Run the following code on the first node of the cluster to start the benchmark
+```bash
+sh run_aria_mp_ycsb.sh
+sh run_calvin_mp_ycsb.sh
+sh run_lotus_mp_ycsb.sh
+```
+7. Results are placed under `~/exp_results` on the first node of the cluster.
+
+
+
